@@ -1,5 +1,6 @@
 add_library(ps5browser_core STATIC
   bookmarks.cpp
+  drm_policy.cpp
   file_storage.cpp
   fullscreen_controller.cpp
   gamepad_mapper.cpp
