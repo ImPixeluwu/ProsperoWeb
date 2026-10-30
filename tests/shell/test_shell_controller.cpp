@@ -1,0 +1,560 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include <doctest/doctest.h>
+
+#include <memory>
+#include <string>
+
+#include "fakes.h"
+#include "ps5browser/core/in_memory_storage.h"
+#include "ps5browser/core/session.h"
+#include "ps5browser/shell/shell_controller.h"
+
+using namespace ps5browser;
+using core::Button;
+using shell::ShellController;
+using shell::test::FakeChromeUi;
+using shell::test::FakeEngineFactory;
+using shell::test::FakeEngineView;
+using Focus = ShellController::Focus;
+using json = nlohmann::json;
+
+namespace {
+
+constexpr const char* kHome = "https://home.example/";
+
+struct Fixture {
+  core::InMemoryStorage storage;
+  FakeEngineFactory factory;
+  FakeChromeUi chrome;
+  std::unique_ptr<ShellController> shell;
+
+  void make(bool start = true) {
+    ShellController::Config config;
+    config.width = 1920;
+    config.height = 1080;
+    config.home_url = kHome;
+    config.user_agent = "TestUA/1.0";
+    config.now = [] { return std::int64_t{1000}; };
+    shell = std::make_unique<ShellController>(factory, chrome, storage, config);
+    if (start) {
+      shell->start();
+    }
+  }
+
+  FakeEngineView& view(std::size_t i) { return *factory.created.at(i); }
+  FakeEngineView& active() { return *static_cast<FakeEngineView*>(shell->active_view()); }
+
+  void press(Button b) {
+    shell->on_button(b, true);
+    shell->on_button(b, false);
+  }
+  void frame(float dt = 1.0f / 60.0f) { shell->tick(dt); }
+  // Simulates the engine finishing a load of url with a title.
+  void finish_load(FakeEngineView& v, const std::string& url, const std::string& title) {
+    v.client().load_started();
+    v.client().url_changed(url);
+    v.client().title_changed(title);
+    v.client().load_finished();
+  }
+};
+
+}  // namespace
+
+TEST_SUITE("shell.session") {
+  TEST_CASE("start without a session opens the home page") {
+    Fixture f;
+    f.make();
+    REQUIRE(f.factory.created.size() == 1);
+    CHECK(f.view(0).called(std::string("load ") + kHome));
+    CHECK(f.view(0).called("ua TestUA/1.0"));
+    CHECK(f.view(0).visible);
+    CHECK(f.shell->tabs().size() == 1);
+    CHECK(f.chrome.renders >= 1);
+    CHECK(f.chrome.last["focus"] == "page");
+  }
+
+  TEST_CASE("start restores the saved session, loading only the active tab") {
+    Fixture f;
+    {
+      core::TabManager tabs;
+      core::History history;
+      core::Bookmarks bookmarks;
+      tabs.open("https://one.example/");
+      tabs.open("https://two.example/");
+      bookmarks.add("https://one.example/", "One", 1);
+      history.add("https://one.example/", "One", 1);
+      core::Session(f.storage).save_all(tabs, history, bookmarks);
+    }
+    f.make();
+    CHECK(f.shell->tabs().size() == 2);
+    REQUIRE(f.factory.created.size() == 1);
+    CHECK(f.view(0).called("load https://two.example/"));
+    CHECK(f.shell->bookmarks().contains("https://one.example/"));
+    CHECK(f.shell->history().size() == 1);
+    CHECK(f.chrome.last["tabs"].size() == 2);
+
+    // Switching to the other tab creates and loads its view lazily.
+    f.press(Button::L1);
+    REQUIRE(f.factory.created.size() == 2);
+    CHECK(f.view(1).called("load https://one.example/"));
+    CHECK(f.view(1).visible);
+    CHECK_FALSE(f.view(0).visible);
+  }
+
+  TEST_CASE("shutdown saves tabs, history and bookmarks") {
+    Fixture f;
+    f.make();
+    f.shell->navigate("example.org");
+    f.finish_load(f.view(0), "https://example.org/", "Example");
+    f.shell->open_url_in_new_tab("second.example");
+    f.shell->shutdown();
+
+    core::TabManager tabs;
+    core::History history;
+    core::Bookmarks bookmarks;
+    CHECK(core::Session(f.storage).load_all(tabs, history, bookmarks));
+    CHECK(tabs.size() == 2);
+    CHECK(tabs.tabs()[0].url == "https://example.org/");
+    CHECK(tabs.active()->url == "https://second.example");
+    CHECK(history.size() == 1);
+  }
+}
+
+TEST_SUITE("shell.navigation") {
+  TEST_CASE("address bar input is normalized and loaded in the active tab") {
+    Fixture f;
+    f.make();
+    f.shell->on_chrome_event({{"type", "navigate"}, {"text", "  example.com  "}});
+    CHECK(f.view(0).called("load https://example.com"));
+    f.shell->on_chrome_event({{"type", "navigate"}, {"text", "ps5 browser"}});
+    CHECK(f.view(0).called("load https://duckduckgo.com/?q=ps5%20browser"));
+    f.shell->on_chrome_event({{"type", "navigate"}, {"text", "localhost:8080"}});
+    CHECK(f.view(0).called("load http://localhost:8080"));
+  }
+
+  TEST_CASE("load events update tabs, chrome state and history") {
+    Fixture f;
+    f.make();
+    f.view(0).client().load_started();
+    f.frame();
+    CHECK(f.chrome.last["nav"]["loading"] == true);
+    CHECK(f.chrome.last["tabs"][0]["loading"] == true);
+    f.view(0).client().url_changed("https://a.example/");
+    f.view(0).client().title_changed("A page");
+    f.view(0).client().nav_state_changed(true, false);
+    f.view(0).client().load_finished();
+    f.frame();
+    CHECK(f.chrome.last["tabs"][0]["title"] == "A page");
+    CHECK(f.chrome.last["address"]["text"] == "https://a.example/");
+    CHECK(f.chrome.last["nav"]["back"] == true);
+    CHECK(f.chrome.last["nav"]["loading"] == false);
+    REQUIRE(f.shell->history().size() == 1);
+    CHECK(f.shell->history().recent(1)[0].title == "A page");
+  }
+
+  TEST_CASE("load failure on the active tab shows an error notice") {
+    Fixture f;
+    f.make();
+    f.view(0).client().load_failed("https://bad.example/", "Could not resolve host");
+    f.frame();
+    CHECK(f.chrome.last["notice"]["kind"] == "error");
+    CHECK(f.shell->focus() == Focus::Notice);
+    f.press(Button::Cross);
+    CHECK(f.shell->focus() == Focus::Page);
+  }
+
+  TEST_CASE("Circle goes back only when possible") {
+    Fixture f;
+    f.make();
+    f.press(Button::Circle);
+    CHECK_FALSE(f.view(0).called("go_back"));
+    f.view(0).client().nav_state_changed(true, false);
+    f.press(Button::Circle);
+    CHECK(f.view(0).count("go_back") == 1);
+  }
+
+  TEST_CASE("new window requests open a new tab") {
+    Fixture f;
+    f.make();
+    f.view(0).client().new_window_requested("https://popup.example/");
+    CHECK(f.shell->tabs().size() == 2);
+    REQUIRE(f.factory.created.size() == 2);
+    CHECK(f.view(1).called("load https://popup.example/"));
+    CHECK(f.view(1).visible);
+  }
+}
+
+TEST_SUITE("shell.tabs") {
+  TEST_CASE("open, switch and close toggle view visibility") {
+    Fixture f;
+    f.make();
+    CHECK(f.shell->open_url_in_new_tab("b.example"));
+    REQUIRE(f.factory.created.size() == 2);
+    CHECK_FALSE(f.view(0).visible);
+    CHECK(f.view(1).visible);
+
+    f.press(Button::L1);  // previous tab
+    CHECK(f.view(0).visible);
+    CHECK_FALSE(f.view(1).visible);
+    f.press(Button::R1);  // next tab
+    CHECK(f.view(1).visible);
+
+    const auto first = f.shell->tabs().tabs()[0].id;
+    f.shell->on_chrome_event({{"type", "tab_select"}, {"id", first}});
+    CHECK(f.view(0).visible);
+
+    const auto second = f.shell->tabs().tabs()[1].id;
+    f.shell->on_chrome_event({{"type", "tab_close"}, {"id", second}});
+    CHECK(f.shell->tabs().size() == 1);
+    CHECK(f.shell->view_for(second) == nullptr);
+  }
+
+  TEST_CASE("closing the last tab opens the home page") {
+    Fixture f;
+    f.make();
+    const auto id = *f.shell->tabs().active_id();
+    f.shell->on_chrome_event({{"type", "tab_close"}, {"id", id}});
+    CHECK(f.shell->tabs().size() == 1);
+    CHECK(*f.shell->tabs().active_id() != id);
+    REQUIRE(f.factory.created.size() == 2);
+    CHECK(f.view(1).called(std::string("load ") + kHome));
+    CHECK(f.view(1).visible);
+  }
+
+  TEST_CASE("NewTab when full shows the tab limit notice") {
+    Fixture f;
+    f.make();
+    for (std::size_t i = 1; i < core::TabManager::kMaxTabs; ++i) {
+      f.press(Button::Touchpad);
+    }
+    CHECK(f.shell->tabs().size() == core::TabManager::kMaxTabs);
+    CHECK(f.shell->focus() == Focus::Page);
+    f.press(Button::Touchpad);
+    f.frame();
+    CHECK(f.shell->tabs().size() == core::TabManager::kMaxTabs);
+    CHECK(f.chrome.last["notice"]["title"] == "Tab limit reached");
+    CHECK(f.shell->focus() == Focus::Notice);
+  }
+}
+
+TEST_SUITE("shell.input") {
+  TEST_CASE("Cross clicks at the pointer with trusted pointer events") {
+    Fixture f;
+    f.make();
+    f.shell->on_sticks(1.0f, 0.0f, 0.0f, 0.0f);
+    f.frame(0.1f);
+    f.shell->on_sticks(0.0f, 0.0f, 0.0f, 0.0f);
+    const auto p = f.shell->pointer();
+    CHECK(p.x > 960.0f);
+    CHECK(f.view(0).called_prefix("pointer_move "));
+    f.frame();
+    CHECK(f.chrome.last["pointer"]["visible"] == true);
+    CHECK(f.chrome.last["pointer"]["x"].get<float>() == doctest::Approx(p.x));
+
+    f.view(0).calls.clear();
+    f.press(Button::Cross);
+    const int x = static_cast<int>(p.x);
+    const int y = static_cast<int>(p.y) - ShellController::kChromeBandHeight;
+    const std::string at = std::to_string(x) + "," + std::to_string(y);
+    REQUIRE(f.view(0).calls.size() == 3);
+    CHECK(f.view(0).calls[0] == "pointer_move " + at);
+    CHECK(f.view(0).calls[1] == "pointer_button " + at + " 1 down");
+    CHECK(f.view(0).calls[2] == "pointer_button " + at + " 1 up");
+    CHECK_FALSE(f.view(0).called_prefix("js "));
+  }
+
+  TEST_CASE("Cross over the chrome band clicks the chrome, not the page") {
+    Fixture f;
+    f.make();
+    f.shell->on_mouse_move(100.0f, 40.0f);
+    f.view(0).calls.clear();
+    f.press(Button::Cross);
+    CHECK(f.view(0).calls.empty());
+    REQUIRE(f.chrome.clicks.size() == 1);
+    CHECK(f.chrome.clicks[0] == std::make_pair(100, 40));
+  }
+
+  TEST_CASE("D-pad and triggers scroll, with auto-repeat while held") {
+    Fixture f;
+    f.make();
+    f.press(Button::Down);
+    CHECK(f.view(0).called("scroll 0,120"));
+    f.press(Button::R2);
+    CHECK(f.view(0).called_prefix("scroll 0,8"));  // 85% of 984 px
+
+    f.view(0).calls.clear();
+    f.shell->on_button(Button::Up, true);
+    CHECK(f.view(0).count("scroll 0,-120") == 1);
+    f.frame(0.5f);  // 300 ms delay + repeats every 60 ms
+    CHECK(f.view(0).count("scroll 0,-120") >= 3);
+    f.shell->on_button(Button::Up, false);
+    const auto n = f.view(0).count("scroll 0,-120");
+    f.frame(0.5f);
+    CHECK(f.view(0).count("scroll 0,-120") == n);
+  }
+
+  TEST_CASE("right stick scrolls the page") {
+    Fixture f;
+    f.make();
+    f.shell->on_sticks(0.0f, 0.0f, 0.0f, 1.0f);
+    f.frame(0.1f);
+    CHECK(f.view(0).called_prefix("scroll 0,"));
+  }
+
+  TEST_CASE("mouse use hides the gamepad pointer until the stick moves") {
+    Fixture f;
+    f.make();
+    f.shell->on_mouse_move(10.0f, 500.0f);
+    f.frame();
+    CHECK(f.chrome.last["pointer"]["visible"] == false);
+    f.shell->on_sticks(0.0f, 1.0f, 0.0f, 0.0f);
+    f.frame();
+    CHECK(f.chrome.last["pointer"]["visible"] == true);
+  }
+}
+
+TEST_SUITE("shell.osk") {
+  TEST_CASE("Triangle edits the address with the OSK and navigates on commit") {
+    Fixture f;
+    f.make();
+    f.press(Button::Triangle);
+    f.frame();
+    CHECK(f.shell->focus() == Focus::Osk);
+    CHECK(f.chrome.last["osk"]["open"] == true);
+    CHECK(f.chrome.last["osk"]["target"] == "address");
+    CHECK(f.chrome.last["osk"]["text"] == kHome);
+    CHECK(f.chrome.last["address"]["editing"] == true);
+    CHECK(f.chrome.last["osk"]["rows"].size() == 5);
+
+    // Replace the text: clear it, type "q" via cursor and Cross, commit.
+    for (std::size_t i = 0; i < std::string(kHome).size(); ++i) {
+      f.press(Button::Square);  // backspace
+    }
+    f.press(Button::Down);  // row 1 starts with "q"
+    f.press(Button::Cross);
+    f.frame();
+    CHECK(f.chrome.last["osk"]["text"] == "q");
+    f.press(Button::Options);  // confirm
+    CHECK(f.shell->focus() == Focus::Page);
+    CHECK(f.view(0).called("load https://duckduckgo.com/?q=q"));
+  }
+
+  TEST_CASE("Square opens the OSK for the page field and inserts text on commit") {
+    Fixture f;
+    f.make();
+    f.press(Button::Square);
+    CHECK(f.shell->focus() == Focus::Osk);
+    f.shell->on_chrome_event({{"type", "osk_key"}, {"row", 1}, {"col", 4}});  // "t"
+    f.press(Button::Triangle);                                                // space
+    f.press(Button::Options);
+    CHECK(f.view(0).called("insert_text t "));
+    CHECK(f.shell->focus() == Focus::Page);
+  }
+
+  TEST_CASE("Circle cancels the OSK without side effects") {
+    Fixture f;
+    f.make();
+    f.press(Button::Square);
+    f.press(Button::Cross);
+    f.press(Button::Circle);
+    CHECK(f.shell->focus() == Focus::Page);
+    CHECK_FALSE(f.view(0).called_prefix("insert_text"));
+  }
+
+  TEST_CASE("a text field focused right after a click opens the OSK") {
+    Fixture f;
+    f.make();
+    f.view(0).client().text_input_focused(true);  // not caused by our click
+    CHECK(f.shell->focus() == Focus::Page);
+    f.press(Button::Cross);
+    f.view(0).client().text_input_focused(true);
+    CHECK(f.shell->focus() == Focus::Osk);
+    f.frame();
+    CHECK(f.chrome.last["osk"]["target"] == "page");
+  }
+}
+
+TEST_SUITE("shell.fullscreen") {
+  TEST_CASE("R3 hides and shows the chrome and resizes the view") {
+    Fixture f;
+    f.make();
+    CHECK(f.view(0).height == 1080 - ShellController::kChromeBandHeight);
+    f.press(Button::R3);
+    f.frame();
+    CHECK(f.chrome.last["chrome_visible"] == false);
+    CHECK(f.chrome.last["fullscreen_state"] == "chrome_hidden");
+    CHECK(f.chrome.last["content"]["y"] == 0);
+    CHECK(f.view(0).height == 1080);
+    f.press(Button::R3);
+    f.frame();
+    CHECK(f.chrome.last["chrome_visible"] == true);
+    CHECK(f.view(0).height == 1080 - ShellController::kChromeBandHeight);
+  }
+
+  TEST_CASE("page-initiated fullscreen: Circle asks the engine to exit") {
+    Fixture f;
+    f.make();
+    f.view(0).client().nav_state_changed(true, false);
+    f.view(0).client().fullscreen_entered();
+    f.frame();
+    CHECK(f.chrome.last["fullscreen_state"] == "element");
+    CHECK(f.chrome.last["chrome_visible"] == false);
+    f.press(Button::Circle);
+    CHECK(f.view(0).called("request_exit_fullscreen"));
+    CHECK_FALSE(f.view(0).called("go_back"));
+    f.view(0).client().fullscreen_exited();
+    f.frame();
+    CHECK(f.chrome.last["fullscreen_state"] == "normal");
+  }
+
+  TEST_CASE("page leaving fullscreen by itself restores the previous state") {
+    Fixture f;
+    f.make();
+    f.press(Button::R3);  // chrome hidden
+    f.view(0).client().fullscreen_entered();
+    f.press(Button::R3);  // R3 during element fullscreen exits it
+    CHECK(f.view(0).count("request_exit_fullscreen") == 1);
+    f.view(0).client().fullscreen_entered();
+    f.view(0).client().fullscreen_exited();
+    f.frame();
+    CHECK(f.chrome.last["fullscreen_state"] == "normal");
+  }
+}
+
+TEST_SUITE("shell.drm") {
+  TEST_CASE("EME script message shows the notice once per origin") {
+    Fixture f;
+    f.make();
+    const std::string msg =
+        R"({"type":"eme","keySystem":"com.widevine.alpha","origin":"https://video.example"})";
+    f.view(0).client().script_message(msg);
+    f.frame();
+    CHECK(f.chrome.last["notice"]["kind"] == "drm");
+    CHECK(f.shell->focus() == Focus::Notice);
+    f.press(Button::Cross);
+    f.frame();
+    CHECK(f.chrome.last["notice"]["kind"].is_null());
+    f.view(0).client().script_message(msg);
+    CHECK(f.shell->focus() == Focus::Page);
+    // Clear Key needs no CDM: no notice.
+    f.view(0).client().script_message(
+        R"({"type":"eme","keySystem":"org.w3.clearkey","origin":"https://other.example"})");
+    CHECK(f.shell->focus() == Focus::Page);
+    // Garbage is ignored.
+    f.view(0).client().script_message("not json");
+    CHECK(f.shell->focus() == Focus::Page);
+  }
+
+  TEST_CASE("navigating to a known Widevine-only host shows the notice first") {
+    Fixture f;
+    f.make();
+    f.shell->navigate("https://www.netflix.com/browse");
+    CHECK_FALSE(f.view(0).called_prefix("load https://www.netflix.com"));
+    CHECK(f.shell->focus() == Focus::Notice);
+    f.press(Button::Up);  // other buttons do nothing while the notice is up
+    CHECK(f.shell->focus() == Focus::Notice);
+    f.press(Button::Cross);
+    CHECK(f.view(0).called("load https://www.netflix.com/browse"));
+    // Second visit to the same origin: no notice.
+    f.shell->navigate("https://www.netflix.com/title/1");
+    CHECK(f.view(0).called("load https://www.netflix.com/title/1"));
+    CHECK(f.shell->focus() == Focus::Page);
+  }
+
+  TEST_CASE("Circle on the pre-navigation notice cancels the navigation") {
+    Fixture f;
+    f.make();
+    f.shell->navigate("kinopoisk.ru");
+    f.press(Button::Circle);
+    CHECK_FALSE(f.view(0).called_prefix("load https://kinopoisk.ru"));
+    CHECK(f.shell->focus() == Focus::Page);
+  }
+}
+
+TEST_SUITE("shell.menu") {
+  TEST_CASE("Options menu adds and removes a bookmark") {
+    Fixture f;
+    f.make();
+    f.finish_load(f.view(0), "https://page.example/", "Page");
+    f.press(Button::Options);
+    f.frame();
+    CHECK(f.shell->focus() == Focus::Menu);
+    CHECK(f.chrome.last["menu"]["open"] == true);
+    CHECK(f.chrome.last["menu"]["section"] == "main");
+    CHECK(f.chrome.last["menu"]["items"][2]["label"] == "Add bookmark");
+    f.press(Button::Down);
+    f.press(Button::Down);
+    f.frame();
+    CHECK(f.chrome.last["menu"]["selected"] == 2);
+    f.press(Button::Cross);
+    CHECK(f.shell->bookmarks().contains("https://page.example/"));
+    CHECK(f.shell->focus() == Focus::Page);
+    CHECK(f.storage.data().count("bookmarks") == 1);
+
+    // The bookmarks section lists it and opens it.
+    f.press(Button::Options);
+    f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 0}});
+    f.frame();
+    CHECK(f.chrome.last["menu"]["section"] == "bookmarks");
+    CHECK(f.chrome.last["menu"]["items"][0]["label"] == "Page");
+    f.press(Button::Circle);  // back to main
+    f.frame();
+    CHECK(f.chrome.last["menu"]["section"] == "main");
+    CHECK(f.chrome.last["menu"]["items"][2]["label"] == "Remove bookmark");
+    f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 2}});
+    CHECK_FALSE(f.shell->bookmarks().contains("https://page.example/"));
+  }
+
+  TEST_CASE("history section loads the selected entry") {
+    Fixture f;
+    f.make();
+    f.finish_load(f.view(0), "https://visited.example/", "Visited");
+    f.press(Button::Options);
+    f.press(Button::Down);
+    f.press(Button::Cross);  // History
+    f.frame();
+    CHECK(f.chrome.last["menu"]["section"] == "history");
+    f.view(0).calls.clear();
+    f.press(Button::Cross);
+    CHECK(f.view(0).called("load https://visited.example/"));
+    CHECK(f.shell->focus() == Focus::Page);
+  }
+
+  TEST_CASE("Circle closes the menu") {
+    Fixture f;
+    f.make();
+    f.press(Button::Options);
+    f.press(Button::Circle);
+    CHECK(f.shell->focus() == Focus::Page);
+    f.frame();
+    CHECK(f.chrome.last["menu"]["open"] == false);
+  }
+}
+
+TEST_SUITE("shell.chrome_events") {
+  TEST_CASE("nav buttons and address focus") {
+    Fixture f;
+    f.make();
+    f.shell->on_chrome_event({{"type", "nav"}, {"action", "reload"}});
+    f.shell->on_chrome_event({{"type", "nav"}, {"action", "forward"}});
+    CHECK(f.view(0).called("reload"));
+    CHECK(f.view(0).called("go_forward"));
+    f.shell->on_chrome_event({{"type", "address_focus"}});
+    CHECK(f.shell->focus() == Focus::Chrome);
+    f.shell->on_chrome_event({{"type", "address_blur"}});
+    CHECK(f.shell->focus() == Focus::Page);
+    f.shell->on_chrome_event({{"type", "tab_new"}});
+    CHECK(f.shell->tabs().size() == 2);
+    f.shell->on_chrome_event(json::array());  // ignored
+    f.shell->on_chrome_event({{"type", "unknown"}});
+    CHECK(f.shell->tabs().size() == 2);
+  }
+
+  TEST_CASE("Quit menu item requests exit") {
+    Fixture f;
+    f.make();
+    f.press(Button::Options);
+    f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 8}});
+    CHECK(f.shell->quit_requested());
+  }
+}
