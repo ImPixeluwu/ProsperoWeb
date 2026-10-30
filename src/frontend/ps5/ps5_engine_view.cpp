@@ -1,0 +1,158 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "ps5_engine_view.h"
+
+#include <WebKit/WKContext.h>
+#include <WebKit/WKContextConfigurationRef.h>
+#include <WebKit/WKContextConfigurationPlayStation.h>
+#include <WebKit/WKEvent.h>
+#include <WebKit/WKString.h>
+#include <WebKit/WKWebsiteDataStoreConfigurationRef.h>
+#include <WebKit/WKWebsiteDataStoreRef.h>
+
+#include "wk_helpers.h"
+
+namespace ps5browser::frontend {
+
+namespace {
+
+int to_wk_mouse_button(shell::MouseButton b) {
+  switch (b) {
+    case shell::MouseButton::Left:
+      return kWKEventMouseButtonLeftButton;
+    case shell::MouseButton::Middle:
+      return kWKEventMouseButtonMiddleButton;
+    case shell::MouseButton::Right:
+      return kWKEventMouseButtonRightButton;
+  }
+  return kWKEventMouseButtonLeftButton;
+}
+
+// Escapes a UTF-8 string into a JS string literal body (without quotes).
+std::string js_escape(const std::string& s) {
+  std::string out;
+  out.reserve(s.size() + 8);
+  for (char c : s) {
+    switch (c) {
+      case '\\': out += "\\\\"; break;
+      case '\'': out += "\\'"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      default: out += c; break;
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+Ps5EngineView::Ps5EngineView(shell::EngineViewClient& client, WKContextRef context,
+                             WKWebsiteDataStoreRef data_store,
+                             const std::vector<std::string>& user_scripts,
+                             const std::string& user_agent)
+    : client_(client) {
+  WkWebView::Callbacks cb;
+  cb.load_started = [this]() { client_.load_started(); };
+  cb.load_finished = [this]() { client_.load_finished(); };
+  cb.load_failed = [this](const std::string& url, const std::string& err) {
+    client_.load_failed(url, err);
+  };
+  cb.url_changed = [this](const std::string& url) { client_.url_changed(url); };
+  cb.title_changed = [this](const std::string& t) { client_.title_changed(t); };
+  cb.nav_state_changed = [this](bool b, bool f) { client_.nav_state_changed(b, f); };
+  cb.enter_fullscreen = [this]() { client_.fullscreen_entered(); };
+  cb.exit_fullscreen = [this]() { client_.fullscreen_exited(); };
+  cb.create_new_page = [this](const std::string& url) {
+    client_.new_window_requested(url);
+  };
+  cb.script_message = [this](const std::string& json) { client_.script_message(json); };
+
+  web_ = std::make_unique<WkWebView>(context, data_store, "ps5browser", user_scripts,
+                                     /*fullscreen_enabled=*/true, std::move(cb));
+  web_->set_size(1920, 1080);
+  if (!user_agent.empty()) {
+    web_->set_user_agent(user_agent);
+  }
+}
+
+void Ps5EngineView::load(const std::string& url) { web_->load_url(url); }
+void Ps5EngineView::go_back() { web_->go_back(); }
+void Ps5EngineView::go_forward() { web_->go_forward(); }
+void Ps5EngineView::reload() { web_->reload(); }
+void Ps5EngineView::stop() { web_->stop(); }
+void Ps5EngineView::set_size(int w, int h) { web_->set_size(w, h); }
+void Ps5EngineView::set_visible(bool v) { web_->set_visible(v); }
+void Ps5EngineView::pointer_move(int x, int y) { web_->pointer_move(x, y); }
+
+void Ps5EngineView::pointer_button(int x, int y, shell::MouseButton button, bool pressed) {
+  web_->pointer_button(x, y, to_wk_mouse_button(button), pressed);
+}
+
+void Ps5EngineView::scroll(int x, int y, int dx, int dy) { web_->scroll(x, y, dx, dy); }
+
+void Ps5EngineView::key(std::uint32_t key_code, std::uint32_t modifiers, bool pressed,
+                        const std::string& text) {
+  // shell::KeyModifier bits match WKEventModifiers bits (shift/control/alt/meta).
+  web_->key(key_code, modifiers, pressed, text);
+}
+
+void Ps5EngineView::insert_text(const std::string& utf8) {
+  // No public PlayStation C API for programmatic text insertion; fall back to
+  // execCommand('insertText') in the focused editable element.
+  web_->run_javascript("document.execCommand('insertText', false, '" +
+                       js_escape(utf8) + "')");
+}
+
+void Ps5EngineView::request_exit_fullscreen() { web_->request_exit_fullscreen(); }
+void Ps5EngineView::run_javascript(const std::string& js) { web_->run_javascript(js); }
+void Ps5EngineView::set_user_agent(const std::string& ua) { web_->set_user_agent(ua); }
+
+// --- factory ----------------------------------------------------------------
+
+Ps5EngineFactory::Ps5EngineFactory(const std::string& base_dir,
+                                   std::vector<std::string> user_scripts,
+                                   std::string user_agent)
+    : user_scripts_(std::move(user_scripts)), user_agent_(std::move(user_agent)) {
+  WKContextConfigurationRef ctx_config = WKContextConfigurationCreate();
+  // The launcher's argv[0] is the role name; our patched
+  // ProcessLauncherPlayStation ignores the stored path, but set the role names
+  // so the contract is explicit.
+  {
+    auto web = make_wk_string("WebProcess");
+    WKContextConfigurationSetWebProcessPath(ctx_config, web.get());
+    auto net = make_wk_string("NetworkProcess");
+    WKContextConfigurationSetNetworkProcessPath(ctx_config, net.get());
+  }
+  context_ = WKContextCreateWithConfiguration(ctx_config);
+  WKRelease(ctx_config);
+
+  WKWebsiteDataStoreConfigurationRef ds_config = WKWebsiteDataStoreConfigurationCreate();
+  {
+    auto cache = make_wk_string(base_dir + "/cache");
+    WKWebsiteDataStoreConfigurationSetNetworkCacheDirectory(ds_config, cache.get());
+    auto storage = make_wk_string(base_dir + "/storage");
+    WKWebsiteDataStoreConfigurationSetGeneralStorageDirectory(ds_config, storage.get());
+    auto local = make_wk_string(base_dir + "/localstorage");
+    WKWebsiteDataStoreConfigurationSetLocalStorageDirectory(ds_config, local.get());
+    auto idb = make_wk_string(base_dir + "/indexeddb");
+    WKWebsiteDataStoreConfigurationSetIndexedDBDatabaseDirectory(ds_config, idb.get());
+  }
+  data_store_ = WKWebsiteDataStoreCreateWithConfiguration(ds_config);
+  WKRelease(ds_config);
+}
+
+Ps5EngineFactory::~Ps5EngineFactory() {
+  if (data_store_) {
+    WKRelease(data_store_);
+  }
+  if (context_) {
+    WKRelease(context_);
+  }
+}
+
+std::unique_ptr<shell::EngineView> Ps5EngineFactory::create(
+    shell::EngineViewClient& client) {
+  return std::make_unique<Ps5EngineView>(client, context_, data_store_, user_scripts_,
+                                         user_agent_);
+}
+
+}  // namespace ps5browser::frontend
