@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Media playback probe for the host screenshots: video.html?src=<url> -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Video probe</title>
+<style>
+  body { margin: 0; background: #000; color: #eee; font: 22px/1.4 sans-serif; }
+  video { display: block; width: 1280px; height: 720px; margin: 24px auto 0; background: #111; }
+  #status { width: 1280px; margin: 12px auto; white-space: pre-wrap; font-family: monospace; }
+</style>
+</head>
+<body>
+<video id="v" autoplay muted playsinline controls></video>
+<div id="status">loading...</div>
+<script>
+  var src = new URLSearchParams(location.search).get('src') || '';
+  var v = document.getElementById('v');
+  var out = document.getElementById('status');
+  var events = [];
+  ['loadedmetadata', 'canplay', 'playing', 'waiting', 'stalled', 'error'].forEach(function (name) {
+    v.addEventListener(name, function () { events.push(name); });
+  });
+  function show() {
+    var err = v.error ? ('code ' + v.error.code + ' ' + (v.error.message || '')) : 'none';
+    out.textContent =
+      'src: ' + src + '\n' +
+      'canPlayType(video/mp4; avc1.42E01E): "' + v.canPlayType('video/mp4; codecs="avc1.42E01E"') + '"' +
+      '  canPlayType(application/vnd.apple.mpegurl): "' + v.canPlayType('application/vnd.apple.mpegurl') + '"\n' +
+      'MediaSource: ' + (typeof MediaSource) +
+      '  readyState: ' + v.readyState + '  paused: ' + v.paused +
+      '  currentTime: ' + v.currentTime.toFixed(2) + 's  size: ' + v.videoWidth + 'x' + v.videoHeight + '\n' +
+      'error: ' + err + '\n' +
+      'events: ' + events.join(' ');
+    document.title = 'Video probe t=' + v.currentTime.toFixed(1);
+  }
+  v.src = src;
+  v.play().catch(function (e) { events.push('play() rejected: ' + e.name); });
+  setInterval(show, 250);
+  show();
+</script>
+</body>
+</html>

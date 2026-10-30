@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- EME probe: asks for Widevine the way DRM video sites do. The injected
+     EME detector reports it to the shell, which shows the DRM notice. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>EME probe</title>
+<style>
+  body { margin: 0; padding: 48px 160px; background: #f4f5f7; color: #222; font: 26px/1.5 sans-serif; }
+  pre { font-size: 22px; background: #fff; padding: 16px; border: 1px solid #ccc; }
+</style>
+</head>
+<body>
+<h1>EME probe</h1>
+<p>Requesting <code>com.widevine.alpha</code> through <code>navigator.requestMediaKeySystemAccess()</code>.</p>
+<pre id="out">pending...</pre>
+<script>
+  var out = document.getElementById('out');
+  var config = [{
+    initDataTypes: ['cenc'],
+    videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.42E01E"' }]
+  }];
+  if (!navigator.requestMediaKeySystemAccess) {
+    out.textContent = 'navigator.requestMediaKeySystemAccess is not available';
+  } else {
+    navigator.requestMediaKeySystemAccess('com.widevine.alpha', config).then(function () {
+      out.textContent = 'resolved (unexpected: no CDM is shipped)';
+    }, function (e) {
+      out.textContent = 'rejected: ' + e.name + ': ' + e.message;
+    });
+  }
+</script>
+</body>
+</html>

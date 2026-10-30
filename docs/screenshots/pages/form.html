@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Text input probe: an autofocused field for the OSK insert_text path. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Form probe</title>
+<style>
+  body { margin: 0; padding: 64px 160px; background: #f4f5f7; font: 28px/1.5 sans-serif; }
+  input { font: inherit; width: 900px; padding: 8px 12px; }
+</style>
+</head>
+<body>
+<h1>Form probe</h1>
+<p><input id="q" autofocus placeholder="Type here"></p>
+<p id="log">input events: 0</p>
+<script>
+  var n = 0;
+  document.getElementById('q').addEventListener('input', function (e) {
+    n++;
+    document.getElementById('log').textContent =
+      'input events: ' + n + ', value: "' + e.target.value + '"';
+  });
+</script>
+</body>
+</html>
