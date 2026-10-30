@@ -24,6 +24,7 @@ JOBS="${JOBS:-4}"
 WEBKIT_DIR="${ROOT}/third_party/webkit"
 PORT_DIR="${ROOT}/webkit-port"
 STUBS_BUILD="${BUILD}/gl-stubs"
+export PS5_PAYLOAD_SDK="${SDK}"
 
 log() { printf '[build-webkit] %s\n' "$*"; }
 die() { printf '[build-webkit] error: %s\n' "$*" >&2; exit 1; }
@@ -36,7 +37,7 @@ require_deps() {
 build_stubs() {
     log "building EGL/GLESv2 link stubs"
     cmake -S "${PORT_DIR}/stubs" -B "${STUBS_BUILD}" -G Ninja \
-        -DCMAKE_TOOLCHAIN_FILE="${SDK}/toolchain/prospero.cmake" \
+        -DCMAKE_TOOLCHAIN_FILE="${PORT_DIR}/toolchain/ps5.cmake" \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=OFF >/dev/null
     ninja -C "${STUBS_BUILD}" >/dev/null
 }
@@ -48,7 +49,7 @@ configure() {
     local release_flags="-O2 -DNDEBUG -g0"
     # shellcheck disable=SC2086
     cmake -S "${WEBKIT_DIR}" -B "${BUILD}" -G Ninja \
-        -DCMAKE_TOOLCHAIN_FILE="${SDK}/toolchain/prospero.cmake" \
+        -DCMAKE_TOOLCHAIN_FILE="${PORT_DIR}/toolchain/ps5.cmake" \
         -DCMAKE_PROJECT_WebKit_INCLUDE="${PORT_DIR}/cmake/ps5-project-include.cmake" \
         -DCMAKE_PREFIX_PATH="${PREFIX}" \
         -DCMAKE_FIND_ROOT_PATH="${PREFIX}" \

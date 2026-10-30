@@ -16,6 +16,9 @@ not apply. Instead the shell is one static multi-call executable:
  - WebKit/CMakeLists.txt skips the WebProcess/NetworkProcess executables
    when WebKit_NO_AUXILIARY_EXECUTABLES is set (by patch 0001).
 PS5WEBKIT_INCLUDE_DIR must point to webkit-port/include.
+
+Also fixes the case of WKRunLoop.{cpp,h} in PlatformPlayStation.cmake
+(upstream only builds the port on case-insensitive Windows hosts).
 diff --git a/Source/WebKit/CMakeLists.txt b/Source/WebKit/CMakeLists.txt
 index 8067b2158..5567b5745 100644
 --- a/Source/WebKit/CMakeLists.txt
@@ -102,7 +105,7 @@ index 162edd286..ce7d2bb2c 100644
  }
 +#endif // defined(PS5_HOMEBREW)
 diff --git a/Source/WebKit/PlatformPlayStation.cmake b/Source/WebKit/PlatformPlayStation.cmake
-index 0a6968d20..9d73ef9db 100644
+index 0a6968d20..8caba173f 100644
 --- a/Source/WebKit/PlatformPlayStation.cmake
 +++ b/Source/WebKit/PlatformPlayStation.cmake
 @@ -1,6 +1,22 @@
@@ -128,6 +131,24 @@ index 0a6968d20..9d73ef9db 100644
  WEBKIT_ADD_TARGET_CXX_FLAGS(WebKit -Wno-unused-lambda-capture)
  
  list(APPEND WebProcess_SOURCES
+@@ -69,7 +85,7 @@ list(APPEND WebKit_SOURCES
+ 
+     UIProcess/API/C/playstation/WKContextConfigurationPlayStation.cpp
+     UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
+-    UIProcess/API/C/playstation/WKRunloop.cpp
++    UIProcess/API/C/playstation/WKRunLoop.cpp
+     UIProcess/API/C/playstation/WKView.cpp
+ 
+     UIProcess/CoordinatedGraphics/DrawingAreaProxyCoordinatedGraphics.cpp
+@@ -176,7 +192,7 @@ list(APPEND WebKit_PUBLIC_FRAMEWORK_HEADERS
+ 
+     UIProcess/API/C/playstation/WKContextConfigurationPlayStation.h
+     UIProcess/API/C/playstation/WKPagePrivatePlayStation.h
+-    UIProcess/API/C/playstation/WKRunloop.h
++    UIProcess/API/C/playstation/WKRunLoop.h
+     UIProcess/API/C/playstation/WKView.h
+     UIProcess/API/C/playstation/WKViewClient.h
+ )
 diff --git a/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp b/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp
 index f510f5eeb..d7df0ac17 100644
 --- a/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp

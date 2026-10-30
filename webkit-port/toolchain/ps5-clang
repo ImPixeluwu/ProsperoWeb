@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Wrapper around the SDK's prospero-clang. The SDK driver appends crt1.o and the
+# default libraries whenever a non-option argument is present and -c is not,
+# which turns preprocessor-only probes such as WebKit's
+# "$CC -v -E -x c++ dummy" into preprocessing crt1.o as C++ (tens of
+# thousands of diagnostics, minutes of CMake regex matching). For -E / -M
+# style invocations, pass -nostartfiles so crt1.o is not added.
+sdk="${PS5_PAYLOAD_SDK:-/opt/ps5-payload-sdk}"
+for a in "$@"; do
+    case "$a" in
+        -E|-M|-MM)
+            exec "${sdk}/bin/prospero-clang" -nostartfiles "$@" ;;
+    esac
+done
+exec "${sdk}/bin/prospero-clang" "$@"
