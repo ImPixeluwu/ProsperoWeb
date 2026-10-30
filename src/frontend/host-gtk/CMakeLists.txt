@@ -1,3 +1,5 @@
+include(GNUInstallDirs)
+
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PS5BROWSER_GTK REQUIRED IMPORTED_TARGET gtk4 webkitgtk-6.0)
 pkg_check_modules(PS5BROWSER_SDL2 IMPORTED_TARGET sdl2)
