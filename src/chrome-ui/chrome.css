@@ -353,7 +353,7 @@ button {
 .osk {
   position: fixed;
   inset: auto 0 0 0;
-  height: 36vh;
+  max-height: 45vh;
   display: flex;
   flex-direction: column;
   background: rgba(16, 18, 23, 0.97);
@@ -405,19 +405,18 @@ button {
 @keyframes blink { 50% { opacity: 0; } }
 
 .osk-keys {
-  flex: 1;
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 0.5rem;
-  padding: 0.25rem 15rem;
+  padding: 0.5rem 15rem 0.75rem;
 }
 
 .osk-row { display: flex; gap: 0.5rem; justify-content: center; }
 
 .osk-key {
   flex: 1 1 0;
-  height: 3.75rem;
+  height: 3.25rem;
   max-width: 8rem;
   border-radius: 0.625rem;
   background: var(--bg-3);
