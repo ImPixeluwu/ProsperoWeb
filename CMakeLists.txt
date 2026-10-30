@@ -27,6 +27,7 @@ target_compile_options(ps5browser_warnings INTERFACE -Wall -Wextra -Werror)
 
 add_subdirectory(src/core)
 add_subdirectory(src/shell)
+add_subdirectory(src/chrome-ui)
 
 if(PS5BROWSER_FRONTEND STREQUAL "host-gtk")
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/frontend/host-gtk/CMakeLists.txt")
