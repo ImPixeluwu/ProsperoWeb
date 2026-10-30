@@ -118,6 +118,9 @@ class ShellController {
   EngineView* active_view();
   EngineView* view_for(std::uint64_t tab_id);
   bool quit_requested() const { return quit_requested_; }
+  // True while the active page reports a focused editable element; hosts
+  // with a physical keyboard use it to stop treating letters as buttons.
+  bool text_input_focused() const { return text_input_focused_; }
 
  private:
   class TabClient;
