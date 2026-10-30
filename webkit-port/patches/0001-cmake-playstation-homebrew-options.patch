@@ -1,0 +1,131 @@
+Subject: cmake: add a PS5_HOMEBREW mode to OptionsPlayStation
+
+The PlayStation port assumes Sony's SDK: -sce-stdlib=v2, libc/libkernel
+found by name, --wrap=mmap on every binary, an sce_sys/ package copy,
+Sony's memory-extra library and a shared libWebKit loaded by separate
+process executables. None of that exists for the open ps5-payload-sdk.
+
+With -DPS5_HOMEBREW=ON (defines PS5_HOMEBREW=1 for C/C++) this patch:
+ - keeps Release builds free of the forced -g (disk/link size),
+ - drops -sce-stdlib=v2 and the libc/libkernel lookups (the SDK driver
+   links libc and libkernel_web itself),
+ - defaults ENABLE_RESOURCE_USAGE off (needs memory-extra) and allows
+   ENABLE_GAMEPAD without the WPE PlayStation backend,
+ - builds WebKit as a STATIC library and no WebProcess/NetworkProcess
+   executables (WebKit_NO_AUXILIARY_EXECUTABLES, see patch 0005),
+ - skips the mmap wrapping and the sce_sys/ copy.
+Without PS5_HOMEBREW the behaviour is unchanged.
+diff --git a/Source/cmake/OptionsPlayStation.cmake b/Source/cmake/OptionsPlayStation.cmake
+index f55771f99..9a69cb5af 100644
+--- a/Source/cmake/OptionsPlayStation.cmake
++++ b/Source/cmake/OptionsPlayStation.cmake
+@@ -1,7 +1,14 @@
+ set(PORT PlayStation)
+ 
+-string(APPEND CMAKE_C_FLAGS_RELEASE " -g")
+-string(APPEND CMAKE_CXX_FLAGS_RELEASE " -g")
++# PS5_HOMEBREW: build with the open ps5-payload-sdk (upstream clang, no Sony
++# SDK/WebKitRequirements, everything linked statically into one payload).
++option(PS5_HOMEBREW "Build for the PS5 homebrew payload SDK" OFF)
++if (PS5_HOMEBREW)
++    add_definitions(-DPS5_HOMEBREW=1)
++else ()
++    string(APPEND CMAKE_C_FLAGS_RELEASE " -g")
++    string(APPEND CMAKE_CXX_FLAGS_RELEASE " -g")
++endif ()
+ set(CMAKE_CONFIGURATION_TYPES "Debug" "Release")
+ 
+ include(PlayStationModule)
+@@ -22,7 +29,9 @@ set(CMAKE_CXX_LINKER_WRAPPER_FLAG "-Wl,")
+ set(CMAKE_CXX_LINKER_WRAPPER_FLAG_SEP ",")
+ 
+ # Set the standard libary version
+-WEBKIT_PREPEND_GLOBAL_COMPILER_FLAGS(-sce-stdlib=v2)
++if (NOT PS5_HOMEBREW)
++    WEBKIT_PREPEND_GLOBAL_COMPILER_FLAGS(-sce-stdlib=v2)
++endif ()
+ 
+ set(ENABLE_WEBKIT_LEGACY OFF)
+ set(ENABLE_WEBINSPECTORUI OFF)
+@@ -51,8 +60,11 @@ endmacro()
+ list(APPEND CMAKE_PREFIX_PATH ${WEBKIT_LIBRARIES_DIR})
+ 
+ # Find libraries
+-find_library(C_STD_LIBRARY c)
+-find_library(KERNEL_LIBRARY kernel)
++if (NOT PS5_HOMEBREW)
++    # The payload SDK compiler driver already links libc and libkernel_web.
++    find_library(C_STD_LIBRARY c)
++    find_library(KERNEL_LIBRARY kernel)
++endif ()
+ find_package(ICU 70.1 REQUIRED COMPONENTS data i18n uc)
+ find_package(Threads REQUIRED)
+ 
+@@ -184,7 +196,12 @@ WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_ISO_MALLOC PRIVATE OFF)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_FULLSCREEN_API PRIVATE ON)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_PERIODIC_MEMORY_MONITOR PRIVATE ON)
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_REMOTE_INSPECTOR PRIVATE ON)
+-WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_RESOURCE_USAGE PRIVATE ON)
++if (PS5_HOMEBREW)
++    # ResourceUsageThreadPlayStation needs Sony's memory-extra library.
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_RESOURCE_USAGE PRIVATE OFF)
++else ()
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_RESOURCE_USAGE PRIVATE ON)
++endif ()
+ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_SMOOTH_SCROLLING PRIVATE ON)
+ 
+ if (USE_WPE_BACKEND_PLAYSTATION)
+@@ -196,6 +213,9 @@ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_APPLICATION_MANIFEST PRIVATE ${ENABLE_EX
+ 
+ if (USE_WPE_BACKEND_PLAYSTATION)
+     WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GAMEPAD PRIVATE ${ENABLE_EXPERIMENTAL_FEATURES})
++elseif (PS5_HOMEBREW)
++    # Gamepads come through libwpe's gamepad provider API, fed by the shell.
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GAMEPAD PRIVATE ON)
+ endif ()
+ 
+ # Enable variation fonts when cairo >= 1.16, fontconfig >= 2.13.0, freetype >= 2.9.0 and harfbuzz >= 1.4.2
+@@ -371,10 +391,20 @@ endif ()
+ # for ranlib.
+ set(PAL_LIBRARY_TYPE OBJECT)
+ set(WebCore_LIBRARY_TYPE OBJECT)
+-set(WebKit_LIBRARY_TYPE SHARED)
++if (PS5_HOMEBREW)
++    # Homebrew payloads cannot rely on loading our own .so files: the shell
++    # links one static multi-call executable, which also hosts the auxiliary
++    # processes (see Source/WebKit/PlatformPlayStation.cmake).
++    set(WebKit_LIBRARY_TYPE STATIC)
++    set(WebKit_NO_AUXILIARY_EXECUTABLES ON)
++else ()
++    set(WebKit_LIBRARY_TYPE SHARED)
++endif ()
+ 
+-find_library(MEMORY_EXTRA_LIB MemoryExtra)
+-find_path(MEMORY_EXTRA_INCLUDE_DIR NAMES memory-extra)
++if (NOT PS5_HOMEBREW)
++    find_library(MEMORY_EXTRA_LIB MemoryExtra)
++    find_path(MEMORY_EXTRA_INCLUDE_DIR NAMES memory-extra)
++endif ()
+ 
+ # Enable multi process builds for Visual Studio
+ if (NOT ${CMAKE_GENERATOR} MATCHES "Ninja")
+@@ -387,6 +417,9 @@ if (TARGET libdl::dl)
+     add_link_options("$<$<OR:$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>,$<STREQUAL:$<TARGET_PROPERTY:TYPE>,SHARED_LIBRARY>>:$<TARGET_PROPERTY:libdl::dl,INTERFACE_LINK_OPTIONS>>")
+ endif ()
+ 
++if (NOT PS5_HOMEBREW)
++# The homebrew build uses plain mmap() from libkernel_web, and has no
++# sce_sys/ package tree to copy.
+ function(add_executable target)
+     _add_executable(${ARGV})
+     target_link_options(${target} PRIVATE "LINKER:--wrap=mmap")
+@@ -411,6 +444,9 @@ add_custom_target(playstation_tools_copy
+         ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ebootparam.ini
+ )
+ set_target_properties(playstation_tools_copy PROPERTIES FOLDER "PlayStation")
++else ()
++add_custom_target(playstation_tools_copy)
++endif ()
+ 
+ macro(WEBKIT_EXECUTABLE _target)
+     _WEBKIT_EXECUTABLE(${_target})

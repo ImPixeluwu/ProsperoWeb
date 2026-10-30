@@ -1,0 +1,50 @@
+Subject: WebCore: load TLS roots from a PEM bundle for PS5_HOMEBREW
+
+CurlSSLHandlePlayStation.cpp takes root certificates and cipher lists
+from Sony's CertificateStore. For homebrew, point curl at a CA bundle
+file instead: $PS5BROWSER_CA_BUNDLE if set, else the compile-time
+PS5BROWSER_CA_BUNDLE (default /data/ps5browser/cacert.pem). Cipher
+suites and curves stay at OpenSSL/curl defaults.
+diff --git a/Source/WebCore/platform/network/playstation/CurlSSLHandlePlayStation.cpp b/Source/WebCore/platform/network/playstation/CurlSSLHandlePlayStation.cpp
+index 0f0160090..47b623f26 100644
+--- a/Source/WebCore/platform/network/playstation/CurlSSLHandlePlayStation.cpp
++++ b/Source/WebCore/platform/network/playstation/CurlSSLHandlePlayStation.cpp
+@@ -26,10 +26,31 @@
+ #include "config.h"
+ #include "CurlSSLHandle.h"
+ 
++#if defined(PS5_HOMEBREW)
++#include <stdlib.h>
++#include <wtf/text/WTFString.h>
++
++// Sony's CertificateStore is not available to homebrew. Use a PEM bundle
++// (e.g. curl's cacert.pem) shipped with the application instead. The path can
++// be overridden at runtime with the PS5BROWSER_CA_BUNDLE environment variable.
++#ifndef PS5BROWSER_CA_BUNDLE
++#define PS5BROWSER_CA_BUNDLE "/data/ps5browser/cacert.pem"
++#endif
++#else
+ #include <CertificateStore/CertificateStore.h>
++#endif
+ 
+ namespace WebCore {
+ 
++#if defined(PS5_HOMEBREW)
++void CurlSSLHandle::platformInitialize()
++{
++    const char* path = getenv("PS5BROWSER_CA_BUNDLE");
++    if (!path || !*path)
++        path = PS5BROWSER_CA_BUNDLE;
++    setCACertPath(String::fromUTF8(path));
++}
++#else
+ void CurlSSLHandle::platformInitialize()
+ {
+     auto certificateData = CertificateData::create();
+@@ -45,5 +66,6 @@ void CurlSSLHandle::platformInitialize()
+ 
+     setIgnoreSSLErrors(CertificateStore::shouldIgnoreTLSErrors());
+ }
++#endif
+ 
+ } // namespace WebCore

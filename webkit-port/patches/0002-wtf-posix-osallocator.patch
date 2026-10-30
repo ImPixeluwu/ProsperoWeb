@@ -1,0 +1,33 @@
+Subject: WTF: use the POSIX OSAllocator for PS5_HOMEBREW
+
+OSAllocatorPlayStation.cpp reserves memory through Sony's proprietary
+memory-extra (vss) library. Homebrew processes can use plain
+mmap/mprotect/madvise from libkernel_web, which OSAllocatorPOSIX.cpp
+already implements (HAVE_MAP_ALIGNED stays off, as upstream).
+diff --git a/Source/WTF/wtf/PlatformPlayStation.cmake b/Source/WTF/wtf/PlatformPlayStation.cmake
+index f22c5f7a0..cee8a0b44 100644
+--- a/Source/WTF/wtf/PlatformPlayStation.cmake
++++ b/Source/WTF/wtf/PlatformPlayStation.cmake
+@@ -6,7 +6,6 @@ list(APPEND WTF_SOURCES
+ 
+     playstation/FileSystemPlayStation.cpp
+     playstation/LanguagePlayStation.cpp
+-    playstation/OSAllocatorPlayStation.cpp
+     playstation/UniStdExtrasPlayStation.cpp
+ 
+     posix/CPUTimePOSIX.cpp
+@@ -21,6 +20,14 @@ list(APPEND WTF_SOURCES
+     unix/MemoryPressureHandlerUnix.cpp
+ )
+ 
++# The PlayStation allocator needs Sony's memory-extra library; the homebrew
++# build reserves address space with plain mmap() instead.
++if (PS5_HOMEBREW)
++    list(APPEND WTF_SOURCES posix/OSAllocatorPOSIX.cpp)
++else ()
++    list(APPEND WTF_SOURCES playstation/OSAllocatorPlayStation.cpp)
++endif ()
++
+ list(APPEND WTF_PUBLIC_HEADERS
+     PlatformEnablePlayStation.h
+ 

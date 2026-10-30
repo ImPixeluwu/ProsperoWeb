@@ -1,0 +1,54 @@
+Subject: JSC: build the generic jsc shell for PS5_HOMEBREW
+
+The PlayStation jsc shell (shell/playstation/*) needs Sony's
+libtestwrappers, and the JSC/LLInt extractor targets link Sony's
+MemoryExtra unconditionally. Use the generic jsc.cpp and only link
+MemoryExtra when it was found.
+diff --git a/Source/JavaScriptCore/PlatformPlayStation.cmake b/Source/JavaScriptCore/PlatformPlayStation.cmake
+index 8ee3258da..bac1085fd 100644
+--- a/Source/JavaScriptCore/PlatformPlayStation.cmake
++++ b/Source/JavaScriptCore/PlatformPlayStation.cmake
+@@ -7,8 +7,10 @@ list(APPEND JavaScriptCore_PRIVATE_DEFINITIONS
+ 
+ list(APPEND JavaScriptCore_PRIVATE_INCLUDE_DIRECTORIES ${MEMORY_EXTRA_INCLUDE_DIR})
+ 
+-target_link_libraries(LLIntSettingsExtractor PRIVATE ${MEMORY_EXTRA_LIB})
+-target_link_libraries(LLIntOffsetsExtractor PRIVATE ${MEMORY_EXTRA_LIB})
++if (MEMORY_EXTRA_LIB)
++    target_link_libraries(LLIntSettingsExtractor PRIVATE ${MEMORY_EXTRA_LIB})
++    target_link_libraries(LLIntOffsetsExtractor PRIVATE ${MEMORY_EXTRA_LIB})
++endif ()
+ 
+ if (DEVELOPER_MODE)
+     add_subdirectory(testmem)
+diff --git a/Source/JavaScriptCore/shell/PlatformPlayStation.cmake b/Source/JavaScriptCore/shell/PlatformPlayStation.cmake
+index 6ed5fac94..ef3124fd2 100644
+--- a/Source/JavaScriptCore/shell/PlatformPlayStation.cmake
++++ b/Source/JavaScriptCore/shell/PlatformPlayStation.cmake
+@@ -1,3 +1,7 @@
++if (PS5_HOMEBREW)
++    # Use the generic jsc.cpp shell: the PlayStation test shell needs Sony's
++    # libtestwrappers.
++else ()
+ list(REMOVE_ITEM jsc_SOURCES ../jsc.cpp)
+ list(APPEND jsc_SOURCES
+     ${JAVASCRIPTCORE_DIR}/shell/playstation/TestShell.cpp
+@@ -16,6 +20,7 @@ else ()
+     set(PLAYSTATION_jsc_WRAP fopen getcwd chdir main)
+     list(APPEND jsc_LIBRARIES ${LIBTESTWRAPPERS})
+ endif ()
++endif ()
+ 
+ set(PLAYSTATION_jsc_PROCESS_NAME "JSCShell")
+ set(PLAYSTATION_jsc_MAIN_THREAD_NAME "JSCShell")
+@@ -30,7 +35,9 @@ if (${CMAKE_GENERATOR} MATCHES "Visual Studio")
+     endif ()
+ endif ()
+ 
+-list(APPEND jsc_LIBRARIES ${MEMORY_EXTRA_LIB})
++if (MEMORY_EXTRA_LIB)
++    list(APPEND jsc_LIBRARIES ${MEMORY_EXTRA_LIB})
++endif ()
+ 
+ if (DEVELOPER_MODE)
+     list(APPEND testapi_LIBRARIES ${MEMORY_EXTRA_LIB})

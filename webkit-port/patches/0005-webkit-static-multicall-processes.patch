@@ -1,0 +1,231 @@
+Subject: WebKit: multi-call process model for PS5_HOMEBREW
+
+Homebrew payloads are not executables the kernel can exec, and the
+payload loader starts children with an empty fd table, so the Sony
+model (separate WebProcess.self/NetworkProcess.self, launched by
+<process-launcher.h>, receiving the IPC socket via
+PlayStation::getConnectionIdentifier() and dlopen()ing libWebKit) does
+not apply. Instead the shell is one static multi-call executable:
+ - ProcessLauncherPlayStation calls ps5_spawn_self({"WebProcess" |
+   "NetworkProcess", id, "3"}, {clientFd}, 1) and ps5_terminate_process()
+   (declared in webkit-port/include/ps5webkit/spawn.h, implemented by
+   the shell),
+ - the playstation EntryPoint files define ps5_webkit_web_process_main()
+   and ps5_webkit_network_process_main() (ps5webkit/entry.h) without any
+   dlopen() and are compiled into libWebKit,
+ - WebKit/CMakeLists.txt skips the WebProcess/NetworkProcess executables
+   when WebKit_NO_AUXILIARY_EXECUTABLES is set (by patch 0001).
+PS5WEBKIT_INCLUDE_DIR must point to webkit-port/include.
+diff --git a/Source/WebKit/CMakeLists.txt b/Source/WebKit/CMakeLists.txt
+index 8067b2158..5567b5745 100644
+--- a/Source/WebKit/CMakeLists.txt
++++ b/Source/WebKit/CMakeLists.txt
+@@ -864,7 +864,7 @@ if (NOT USE_HEADER_MAPS AND NOT USE_FRAMEWORK_BUNDLES)
+     )
+     set(WebKit_INTERFACE_DEPENDENCIES "")
+ endif ()
+-if (NOT USE_EXTENSIONKIT)
++if (NOT USE_EXTENSIONKIT AND NOT WebKit_NO_AUXILIARY_EXECUTABLES)
+     # ExtensionKit processes (on iOS) are separate targets, and not part of the
+     # WebKit.framework bundle.
+     set(WebKit_INTERFACE_LINK_DEPENDS
+@@ -1674,7 +1674,7 @@ if (WEBKIT_SDK_IS_MACOS OR WEBKIT_SDK_IS_IOS_FAMILY)
+     WEBKIT_DEFINE_AUXILIARY_PROCESSES()
+ endif ()
+ 
+-if (NOT USE_EXTENSIONKIT)
++if (NOT USE_EXTENSIONKIT AND NOT WebKit_NO_AUXILIARY_EXECUTABLES)
+     list(APPEND WebProcess_PRIVATE_INCLUDE_DIRECTORIES $<TARGET_PROPERTY:WebKit,INCLUDE_DIRECTORIES>)
+     WEBKIT_EXECUTABLE(WebProcess)
+     WEBKIT_REUSE_PREFIX_HEADER(WebProcess WebKit WebKitPrefix.h PREFIX_LANGUAGES CXX)
+@@ -1692,7 +1692,7 @@ endif ()
+ 
+ if (COMPILER_IS_GCC_OR_CLANG)
+     WEBKIT_ADD_TARGET_CXX_FLAGS(WebKit -Wno-unused-parameter)
+-    if (NOT USE_EXTENSIONKIT)
++    if (NOT USE_EXTENSIONKIT AND NOT WebKit_NO_AUXILIARY_EXECUTABLES)
+         WEBKIT_ADD_TARGET_CXX_FLAGS(WebProcess -Wno-unused-parameter)
+         WEBKIT_ADD_TARGET_CXX_FLAGS(NetworkProcess -Wno-unused-parameter)
+         if (ENABLE_GPU_PROCESS)
+@@ -1713,13 +1713,20 @@ if (NOT APPLE)
+         set_target_properties(WebKit PROPERTIES VERSION ${WEBKIT_VERSION} SOVERSION ${WEBKIT_VERSION_MAJOR})
+     endif ()
+ 
++    if (WebKit_NO_AUXILIARY_EXECUTABLES)
++        install(TARGETS WebKit
++            LIBRARY DESTINATION "${LIB_INSTALL_DIR}"
++            ARCHIVE DESTINATION "${LIB_INSTALL_DIR}"
++        )
++    else ()
+     install(TARGETS WebKit WebProcess NetworkProcess
+         LIBRARY DESTINATION "${LIB_INSTALL_DIR}"
+         RUNTIME DESTINATION "${LIBEXEC_INSTALL_DIR}"
+         FRAMEWORK DESTINATION "${LIB_INSTALL_DIR}"
+         BUNDLE DESTINATION "${LIBEXEC_INSTALL_DIR}"
+     )
+-    if (ENABLE_GPU_PROCESS)
++    endif ()
++    if (ENABLE_GPU_PROCESS AND NOT WebKit_NO_AUXILIARY_EXECUTABLES)
+         install(TARGETS GPUProcess
+             LIBRARY DESTINATION "${LIB_INSTALL_DIR}"
+             RUNTIME DESTINATION "${LIBEXEC_INSTALL_DIR}"
+diff --git a/Source/WebKit/NetworkProcess/EntryPoint/playstation/NetworkProcessMain.cpp b/Source/WebKit/NetworkProcess/EntryPoint/playstation/NetworkProcessMain.cpp
+index 162edd286..ce7d2bb2c 100644
+--- a/Source/WebKit/NetworkProcess/EntryPoint/playstation/NetworkProcessMain.cpp
++++ b/Source/WebKit/NetworkProcess/EntryPoint/playstation/NetworkProcessMain.cpp
+@@ -26,6 +26,22 @@
+ #include "config.h"
+ #include "NetworkProcessMain.h"
+ 
++#if defined(PS5_HOMEBREW)
++#include <ps5webkit/entry.h>
++#include <stdio.h>
++
++// Statically linked into the shell's multi-call executable: nothing to
++// dlopen(), and the launcher already passes argv in the AuxiliaryProcessMain
++// format { name, processIdentifier, fd } (see ps5webkit/entry.h).
++extern "C" int ps5_webkit_network_process_main(int argc, char** argv)
++{
++    if (argc < 3) {
++        fprintf(stderr, "ps5_webkit_network_process_main: unexpected argument count %d\n", argc);
++        return 1;
++    }
++    return WebKit::NetworkProcessMain(argc, argv);
++}
++#else
+ #include <dlfcn.h>
+ #include <process-initialization/nk-networkprocess.h>
+ #include <stdio.h>
+@@ -79,3 +95,4 @@ int main(int argc, char** argv)
+     };
+     return WebKit::NetworkProcessMain(sizeof(internalArgv) / sizeof(char*), internalArgv);
+ }
++#endif // defined(PS5_HOMEBREW)
+diff --git a/Source/WebKit/PlatformPlayStation.cmake b/Source/WebKit/PlatformPlayStation.cmake
+index 0a6968d20..9d73ef9db 100644
+--- a/Source/WebKit/PlatformPlayStation.cmake
++++ b/Source/WebKit/PlatformPlayStation.cmake
+@@ -1,6 +1,22 @@
+ include(Headers.cmake)
+ include(Platform/Curl.cmake)
+ 
++if (PS5_HOMEBREW)
++    # No separate WebProcess/NetworkProcess executables: their entry points
++    # (ps5_webkit_*_process_main) are compiled into the static libWebKit and
++    # called by the shell's multi-call executable. The launcher calls
++    # ps5_spawn_self(), provided by the shell. Both contracts live in
++    # ${PS5WEBKIT_INCLUDE_DIR}/ps5webkit/.
++    if (NOT PS5WEBKIT_INCLUDE_DIR)
++        message(FATAL_ERROR "PS5_HOMEBREW requires PS5WEBKIT_INCLUDE_DIR (webkit-port/include)")
++    endif ()
++    list(APPEND WebKit_SOURCES
++        NetworkProcess/EntryPoint/playstation/NetworkProcessMain.cpp
++        WebProcess/EntryPoint/playstation/WebProcessMain.cpp
++    )
++    list(APPEND WebKit_PRIVATE_INCLUDE_DIRECTORIES "${PS5WEBKIT_INCLUDE_DIR}")
++endif ()
++
+ WEBKIT_ADD_TARGET_CXX_FLAGS(WebKit -Wno-unused-lambda-capture)
+ 
+ list(APPEND WebProcess_SOURCES
+diff --git a/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp b/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp
+index f510f5eeb..d7df0ac17 100644
+--- a/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp
++++ b/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp
+@@ -36,13 +36,16 @@
+ 
+ #if USE(WPE_BACKEND_PLAYSTATION)
+ #include "ProcessProviderLibWPE.h"
++#elif defined(PS5_HOMEBREW)
++#include <inttypes.h>
++#include <ps5webkit/spawn.h>
+ #else
+ #include <process-launcher.h>
+ #endif
+ 
+ namespace WebKit {
+ 
+-#if !USE(WPE_BACKEND_PLAYSTATION)
++#if !USE(WPE_BACKEND_PLAYSTATION) && !defined(PS5_HOMEBREW)
+ #define MAKE_PROCESS_PATH(x) "/app0/" #x "Process.self"
+ static const char* defaultProcessPath(ProcessLauncher::ProcessType processType)
+ {
+@@ -72,6 +75,24 @@ void ProcessLauncher::launchProcess()
+     setsockopt(socketPair.server.value(), SOL_SOCKET, SO_RCVBUF, &recvBufSize, 4);
+     setsockopt(socketPair.client.value(), SOL_SOCKET, SO_RCVBUF, &recvBufSize, 4);
+ 
++#if defined(PS5_HOMEBREW) && !USE(WPE_BACKEND_PLAYSTATION)
++    // The shell re-executes its own multi-call ELF: argv[0] selects the role
++    // and the client socket is passed as fd 3 (see ps5webkit/spawn.h).
++    char coreProcessIdentifierString[32];
++    snprintf(coreProcessIdentifierString, sizeof coreProcessIdentifierString, "%" PRIu64, m_launchOptions.processIdentifier.toUInt64());
++
++    const char* processName = "WebProcess";
++    if (m_launchOptions.processType == ProcessLauncher::ProcessType::Network)
++        processName = "NetworkProcess";
++#if ENABLE(GPU_PROCESS)
++    else if (m_launchOptions.processType == ProcessLauncher::ProcessType::GPU)
++        processName = "GPUProcess";
++#endif
++
++    const char* argv[] = { processName, coreProcessIdentifierString, "3", nullptr };
++    int fds[] = { socketPair.client.value() };
++    int32_t appLocalPid = ps5_spawn_self(argv, fds, 1);
++#else
+     char coreProcessIdentifierString[16];
+     snprintf(coreProcessIdentifierString, sizeof coreProcessIdentifierString, "%ld", m_launchOptions.processIdentifier.toUInt64());
+ 
+@@ -79,9 +100,12 @@ void ProcessLauncher::launchProcess()
+         coreProcessIdentifierString,
+         nullptr
+     };
++#endif
+ 
+ #if USE(WPE_BACKEND_PLAYSTATION)
+     auto appLocalPid = ProcessProviderLibWPE::singleton().launchProcess(m_launchOptions, argv, socketPair.client.value());
++#elif defined(PS5_HOMEBREW)
++    // Launched above.
+ #else
+     PlayStation::LaunchParam param { socketPair.client.value(), m_launchOptions.userId };
+     int32_t appLocalPid = PlayStation::launchProcess(
+@@ -109,6 +133,8 @@ void ProcessLauncher::terminateProcess(const String&)
+ 
+ #if USE(WPE_BACKEND_PLAYSTATION)
+     ProcessProviderLibWPE::singleton().kill(m_processID);
++#elif defined(PS5_HOMEBREW)
++    ps5_terminate_process(m_processID);
+ #else
+     PlayStation::terminateProcess(m_processID);
+ #endif
+diff --git a/Source/WebKit/WebProcess/EntryPoint/playstation/WebProcessMain.cpp b/Source/WebKit/WebProcess/EntryPoint/playstation/WebProcessMain.cpp
+index 0094a0358..664024c15 100644
+--- a/Source/WebKit/WebProcess/EntryPoint/playstation/WebProcessMain.cpp
++++ b/Source/WebKit/WebProcess/EntryPoint/playstation/WebProcessMain.cpp
+@@ -26,6 +26,22 @@
+ #include "config.h"
+ #include "WebProcessMain.h"
+ 
++#if defined(PS5_HOMEBREW)
++#include <ps5webkit/entry.h>
++#include <stdio.h>
++
++// Statically linked into the shell's multi-call executable: nothing to
++// dlopen(), and the launcher already passes argv in the AuxiliaryProcessMain
++// format { name, processIdentifier, fd } (see ps5webkit/entry.h).
++extern "C" int ps5_webkit_web_process_main(int argc, char** argv)
++{
++    if (argc < 3) {
++        fprintf(stderr, "ps5_webkit_web_process_main: unexpected argument count %d\n", argc);
++        return 1;
++    }
++    return WebKit::WebProcessMain(argc, argv);
++}
++#else
+ #include <dlfcn.h>
+ #include <process-initialization/nk-webprocess.h>
+ #include <stdio.h>
+@@ -99,3 +115,4 @@ int main(int argc, char** argv)
+     };
+     return WebKit::WebProcessMain(sizeof(internalArgv) / sizeof(char*), internalArgv);
+ }
++#endif // defined(PS5_HOMEBREW)
