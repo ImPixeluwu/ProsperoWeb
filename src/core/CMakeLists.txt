@@ -1,8 +1,13 @@
 add_library(ps5browser_core STATIC
   bookmarks.cpp
   file_storage.cpp
+  fullscreen_controller.cpp
+  gamepad_mapper.cpp
   history.cpp
   in_memory_storage.cpp
+  on_screen_keyboard.cpp
+  pointer_model.cpp
+  repeat_timer.cpp
   session.cpp
   storage.cpp
   tab_manager.cpp
