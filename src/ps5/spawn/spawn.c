@@ -24,9 +24,13 @@ static pthread_mutex_t g_image_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint8_t* g_image_bytes = NULL;
 static size_t g_image_size = 0;
 
+// Adapter: this libc declares getenv() as char*(const char*); the resolver
+// takes a const char*(const char*) lookup.
+static const char* getenv_const(const char* name) { return getenv(name); }
+
 static int load_self_image(const char* argv0) {
   char path[1024];
-  if (ps5_spawn_resolve_self_path(argv0, getenv, path, sizeof(path)) != 0) {
+  if (ps5_spawn_resolve_self_path(argv0, getenv_const, path, sizeof(path)) != 0) {
     fprintf(stderr, "ps5_spawn: cannot resolve self ELF path\n");
     return -1;
   }
