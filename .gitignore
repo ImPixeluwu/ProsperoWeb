@@ -1,0 +1,18 @@
+# Upstream WebKit checkout (fetched separately, never committed)
+third_party/webkit/
+
+# Build trees
+build/
+build-*/
+out/
+
+# Artifacts
+*.elf
+*.o
+*.a
+
+# Editors / tooling
+.cache/
+compile_commands.json
+.vscode/
+.idea/

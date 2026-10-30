@@ -1,0 +1,49 @@
+cmake_minimum_required(VERSION 3.20)
+
+project(ps5browser LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if(CMAKE_CROSSCOMPILING)
+  set(_ps5browser_tests_default OFF)
+else()
+  set(_ps5browser_tests_default ON)
+endif()
+option(PS5BROWSER_BUILD_TESTS "Build unit tests" ${_ps5browser_tests_default})
+
+set(PS5BROWSER_FRONTEND "none" CACHE STRING "Frontend to build: none, host-gtk or ps5")
+set_property(CACHE PS5BROWSER_FRONTEND PROPERTY STRINGS none host-gtk ps5)
+if(NOT PS5BROWSER_FRONTEND MATCHES "^(none|host-gtk|ps5)$")
+  message(FATAL_ERROR "PS5BROWSER_FRONTEND must be one of: none, host-gtk, ps5 (got '${PS5BROWSER_FRONTEND}')")
+endif()
+
+set(PS5BROWSER_THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+
+add_library(ps5browser_warnings INTERFACE)
+target_compile_options(ps5browser_warnings INTERFACE -Wall -Wextra -Werror)
+
+add_subdirectory(src/core)
+
+if(PS5BROWSER_FRONTEND STREQUAL "host-gtk")
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/frontend/host-gtk/CMakeLists.txt")
+    add_subdirectory(src/frontend/host-gtk)
+  else()
+    message(FATAL_ERROR "host-gtk frontend is not available yet")
+  endif()
+elseif(PS5BROWSER_FRONTEND STREQUAL "ps5")
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/frontend/ps5/CMakeLists.txt")
+    add_subdirectory(src/frontend/ps5)
+  else()
+    message(FATAL_ERROR "ps5 frontend is not available yet")
+  endif()
+endif()
+
+if(PS5BROWSER_BUILD_TESTS)
+  enable_testing()
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/CMakeLists.txt")
+    add_subdirectory(tests/core)
+  endif()
+endif()
