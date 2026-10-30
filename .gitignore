@@ -1,6 +1,11 @@
 # Upstream WebKit checkout (fetched separately, never committed)
 third_party/webkit/
 
+# PS5 cross-built dependencies (scripts/ps5/build-deps.sh)
+third_party/ps5-prefix/
+third_party/dl/
+build-deps/
+
 # Build trees
 build/
 build-*/

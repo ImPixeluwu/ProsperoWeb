@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# pkg-config wrapper for PS5 cross builds. Same as the SDK's
+# prospero-pkg-config, but searches the dependency prefix built by
+# build-deps.sh before the SDK sysroot. prospero-pkg-config overwrites
+# PKG_CONFIG_PATH, so it cannot be pointed at the prefix from outside.
+#
+# PKG_CONFIG_SYSROOT_DIR is the SDK target dir (needed for the SDK .pc
+# files, which hardcode /user/homebrew). build-deps.sh therefore rewrites
+# the prefix in its own .pc files as "/../../..<prefix>": with the sysroot
+# prepended it climbs back to "/", without it "/.." is "/" anyway.
+
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+sdk="${PS5_PAYLOAD_SDK:-/opt/ps5-payload-sdk}"
+sysroot="$(realpath "${sdk}/target")"
+prefix="${PS5_DEPS_PREFIX:-${here}/../../third_party/ps5-prefix}"
+prefix="$(realpath -m "${prefix}")"
+
+export PKG_CONFIG_DIR=
+export PKG_CONFIG_SYSROOT_DIR="${sysroot}"
+export PKG_CONFIG_LIBDIR="${prefix}/lib/pkgconfig:${prefix}/share/pkgconfig:${sysroot}/user/homebrew/lib/pkgconfig:${sysroot}/user/homebrew/libdata/pkgconfig"
+# PKG_CONFIG_PATH from the caller, if any, is searched first.
+unset DESTDIR
+
+exec pkg-config --static "$@"
