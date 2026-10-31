@@ -11,7 +11,8 @@
 #     config.json.sample          copy to config.json to override defaults
 #     LICENSES/                   GPL-3.0 (ps5browser), MPL-2.0 notice (cacert)
 #     README-install.txt
-#   dist/homebrew/ps5browser/   -> copy to /data/homebrew/ps5browser/ (websrv tile)
+#   dist/homebrew/ps5browser/   -> copy to /data/homebrew/ps5browser/ (websrv tile,
+#                                  the only supported way to launch the browser)
 #     homebrew.js                 launches /data/ps5browser/ps5browser.elf
 #     sce_sys/icon0.png           512x512 tile icon
 #
@@ -191,14 +192,14 @@ cat > "${OUT}/README-install.txt" <<EOF
 ps5browser - installation
 =========================
 
-Requirements: a jailbroken PS5 running ps5-payload-dev/elfldr (port 9021),
-and for the launcher tile ps5-payload-dev/websrv (port 8080); ftpsrv
-(port 2121) to copy the files.
+Requirements: a jailbroken PS5 running ps5-payload-dev/websrv (port 8080),
+which launches the browser; ftpsrv (port 2121) to copy the files;
+optionally klogsrv (port 3232) to read the debug output.
 
 1. Copy the files (FTP, ftpsrv on port 2121):
 
      ps5browser/          -> ${INSTALL_DIR}/
-     homebrew/ps5browser/ -> /data/homebrew/ps5browser/   (optional, websrv tile)
+     homebrew/ps5browser/ -> /data/homebrew/ps5browser/   (the websrv tile)
 
    For example with lftp:
 
@@ -211,23 +212,34 @@ and for the launcher tile ps5-payload-dev/websrv (port 8080); ftpsrv
 
 2. Optional: copy config.json.sample to config.json and edit it.
 
-3. Launch, one of:
+3. Launch ONLY through the websrv tile: open http://PS5_IP:8080/ (or the
+   Homebrew Launcher app) and select the "ps5browser" tile. websrv starts
+   the browser as the foreground app (hbldr, title FAKE00000), which is the
+   only way it gets the screen and the controller.
 
-   - websrv: open http://PS5_IP:8080/ (or the Homebrew Launcher app) and
-     select the "ps5browser" tile.
-   - elfldr, loading the installed file on the console:
+   Do NOT launch ps5browser.elf through elfldr (port 9021) or the Payload
+   Manager. That starts it as a background payload: there is no picture,
+   and the UI plus its WebProcess and NetworkProcess keep running in the
+   background (about 300 MB each) until the console runs out of memory and
+   swaps. There is no reliable way to stop them other than a reboot.
 
-       echo "file:${INSTALL_DIR}/ps5browser.elf" | nc -q0 PS5_IP 9021
+   Reboot the console between attempts (and after any launch that showed
+   no picture), so no copy of the browser is left running.
 
-   - elfldr, sending the ELF over the network (slower, same result):
+   To quit, use Options -> Quit; this also saves the session.
 
-       nc -q0 PS5_IP 9021 < ps5browser/ps5browser.elf
-
-   elfldr reads a raw ELF, a file:/http(s): URI line, or an HTTP GET with
-   ?uri=...; it does not accept an HTTP POST body.
-
-Logs: ${INSTALL_DIR}/log.txt (UI process); stdout/stderr of all three
-processes go to the console's debug output (klogsrv, port 3232).
+Logs:
+  - ${INSTALL_DIR}/log.txt: one line per startup stage, from every role
+    (UI, WebProcess, NetworkProcess), each prefixed with the milliseconds
+    since that process started and the role, for example
+      [    812 UI] spawn: role=NetworkProcess pid=1120 fds=[25->3] ok in 41ms, budget_set(0) ok
+    The file is appended to on every launch and written through to disk
+    line by line, so it survives a crash or a power-off; fetch it over FTP.
+    The last line shows where startup stopped.
+  - klog: the same lines (prefixed "[ps5browser]") plus the kernel's and
+    the loader's messages. Start klogsrv and connect BEFORE launching:
+      nc PS5_IP 3232 > klog.txt
+    Look for "[ps5browser]", "spawn:" and "exit_value" lines.
 
 Environment the browser sets for itself (unless already set):
   FONTCONFIG_FILE=${INSTALL_DIR}/fonts/fonts.conf
