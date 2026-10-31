@@ -44,9 +44,21 @@ inline std::uint32_t blend_over(std::uint32_t src, std::uint32_t dst) {
 }
 
 // Row kernels: dst[i] = swap_rb(src[i]) and dst[i] = swap_rb(blend_over(over[i], under[i])).
+// They use AVX2 when the CPU has it (always on the PS5's Zen 2) and match
+// the scalar reference bit for bit.
 void copy_swap_row(const std::uint32_t* src, std::uint32_t* dst, int n);
 void blend_swap_row(const std::uint32_t* over, const std::uint32_t* under, std::uint32_t* dst,
                     int n);
+
+// The variants behind the dispatch, for the tests. The _avx2 ones must only
+// be called when has_avx2().
+bool has_avx2();
+void copy_swap_row_scalar(const std::uint32_t* src, std::uint32_t* dst, int n);
+void blend_swap_row_scalar(const std::uint32_t* over, const std::uint32_t* under,
+                           std::uint32_t* dst, int n);
+void copy_swap_row_avx2(const std::uint32_t* src, std::uint32_t* dst, int n);
+void blend_swap_row_avx2(const std::uint32_t* over, const std::uint32_t* under,
+                         std::uint32_t* dst, int n);
 
 // The two caches, both width x height with a stride of width pixels.
 struct Layers {
