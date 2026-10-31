@@ -72,6 +72,7 @@ set(_frontend_sources
   ps5_config.cpp
   ps5_diagnostics.cpp
   ps5_engine_view.cpp
+  ps5_cpu_affinity.cpp
   ps5_cpu_monitor.cpp
   ps5_ime.cpp
   ps5_presenter.cpp
@@ -102,7 +103,7 @@ target_include_directories(prosperobrowser_frontend_ps5_objs SYSTEM PRIVATE
 # prosperobrowser::core / ::shell provide the public headers the frontend consumes.
 target_link_libraries(prosperobrowser_frontend_ps5_objs PRIVATE prosperobrowser::core prosperobrowser::shell
   prosperobrowser::spawn_util prosperobrowser::audio_server  # prosperobrowser/spawn/spawn.h (the broker role entry)
-  prosperobrowser::display prosperobrowser::video_server)
+  prosperobrowser::display prosperobrowser::video_server prosperobrowser::cpu)
 
 # The final executable. It cannot link until the WebKit archives exist, so it
 # is excluded from the default build: cmake --build <dir> --target prosperobrowser.
@@ -115,10 +116,14 @@ target_link_libraries(prosperobrowser PRIVATE
   prosperobrowser::audio_server
   prosperobrowser::display
   prosperobrowser::video_server
+  prosperobrowser::cpu
   ${PS5WEBKIT_LINK_LIBRARIES}
   ${SDL2_LIBRARIES}
   SceImeDialog SceUserService)  # ps5_ime.cpp (also on SDL2's own link line)
 target_link_directories(prosperobrowser PRIVATE ${SDL2_LIBRARY_DIRS})
 # libWebKitPS5.a holds every WebKit object; drop what the browser never reaches.
 target_link_options(prosperobrowser PRIVATE -Wl,--gc-sections)
+# Every thread passes through ps5_cpu_affinity.cpp (mask at start, registry
+# for the CPU monitor).
+target_link_options(prosperobrowser PRIVATE -Wl,--wrap=pthread_create -Wl,--wrap=pthread_exit)
 set_target_properties(prosperobrowser PROPERTIES OUTPUT_NAME "prosperobrowser" SUFFIX ".elf")

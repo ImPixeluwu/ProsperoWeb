@@ -31,6 +31,7 @@ add_subdirectory(src/ps5/spawn)
 add_subdirectory(src/ps5/audio)
 add_subdirectory(src/ps5/display)
 add_subdirectory(src/ps5/video)
+add_subdirectory(src/ps5/cpu)
 add_subdirectory(src/chrome-ui)
 
 if(PROSPEROBROWSER_FRONTEND STREQUAL "host-gtk")

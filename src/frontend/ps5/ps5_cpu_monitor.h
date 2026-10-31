@@ -5,12 +5,10 @@
 // affinity of the process and of its threads against the system's root set,
 // the live video decoders and their threads (from the media engine), the
 // process's user/system time over the interval and the busiest threads.
-//
-// When the process may run on fewer CPUs than the root set offers, start()
-// tries once to widen it to the whole root set (cpuset_setaffinity, the
-// FreeBSD API the payload SDK exposes; there is no sceKernelSetCpumask
-// stub) and logs the result; failure is harmless.
-// PROSPEROBROWSER_CPU_WIDEN=0 skips that, PROSPEROBROWSER_CPU_MONITOR=0 disables all.
+// The thread list comes from sysctl kern.proc when the kernel has it, else
+// from the threads created through pthread_create (ps5_cpu_affinity.h). The
+// masks themselves are widened by tune_process_cpus(), not here.
+// PROSPEROBROWSER_CPU_MONITOR=0 disables it.
 #pragma once
 
 namespace prosperobrowser::frontend {

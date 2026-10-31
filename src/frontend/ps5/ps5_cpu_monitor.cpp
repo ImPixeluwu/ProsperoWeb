@@ -19,6 +19,8 @@
 #include <sys/user.h>
 #include <unistd.h>
 
+#include "cpu_mask.h"
+#include "ps5_cpu_affinity.h"
 #include "ps5_log.h"
 
 // Defined by the media engine (FFmpegVideoDecoder.cpp) when it is linked.
@@ -36,36 +38,13 @@ bool env_off(const char* name) {
   return value && (!std::strcmp(value, "0") || !std::strcmp(value, "off"));
 }
 
-// "0-5,8" for a mask.
-std::string cpu_list(const cpuset_t& mask) {
-  std::string out;
-  for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
-    if (!CPU_ISSET(cpu, &mask)) {
-      continue;
-    }
-    int last = cpu;
-    while (last + 1 < CPU_SETSIZE && CPU_ISSET(last + 1, &mask)) {
-      last++;
-    }
-    if (!out.empty()) {
-      out += ',';
-    }
-    out += std::to_string(cpu);
-    if (last > cpu) {
-      out += '-' + std::to_string(last);
-    }
-    cpu = last;
+std::string mask_text(int level, int which, id_t id, cpu::CpuMask* out = nullptr) {
+  cpu::CpuMask mask;
+  const int error = get_cpu_mask(level, which, id, mask);
+  if (out) {
+    *out = mask;
   }
-  return out.empty() ? "none" : out;
-}
-
-bool get_mask(cpulevel_t level, cpuwhich_t which, id_t id, cpuset_t& mask, int& error) {
-  CPU_ZERO(&mask);
-  if (cpuset_getaffinity(level, which, id, sizeof(mask), &mask) != 0) {
-    error = errno;
-    return false;
-  }
-  return true;
+  return error ? "error " + cpu::errno_name(error) : cpu::to_list(mask);
 }
 
 double seconds_of(const timeval& tv) {
@@ -77,11 +56,13 @@ struct ThreadInfo {
   std::string name;
   double cpu_seconds = 0;
   int last_cpu = -1;
+  std::string mask;
 };
 
 // The process's threads (sysctl kern.proc.pid with threads). Empty when the
-// kernel's kinfo_proc does not look like the SDK's.
-std::vector<ThreadInfo> list_threads(std::string& why) {
+// kernel's kinfo_proc does not look like the SDK's, or the console has no
+// such sysctl (ENOENT on the PS5).
+std::vector<ThreadInfo> list_threads_sysctl(std::string& why) {
   int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID | KERN_PROC_INC_THREAD,
                 static_cast<int>(getpid())};
   size_t bytes = 0;
@@ -111,6 +92,7 @@ std::vector<ThreadInfo> list_threads(std::string& why) {
     t.name = info.ki_tdname;
     t.cpu_seconds = seconds_of(info.ki_rusage.ru_utime) + seconds_of(info.ki_rusage.ru_stime);
     t.last_cpu = info.ki_lastcpu;
+    t.mask = mask_text(CPU_LEVEL_WHICH, CPU_WHICH_TID, static_cast<id_t>(t.tid));
     threads.push_back(std::move(t));
     offset += sizeof(kinfo_proc);
   }
@@ -121,59 +103,49 @@ class Monitor {
  public:
   void report(bool first) {
     const auto now = std::chrono::steady_clock::now();
-    cpuset_t root, process;
-    int error = 0;
-    std::string root_text = "?";
-    std::string process_text = "?";
-    int root_count = 0;
-    int process_count = 0;
-    if (get_mask(CPU_LEVEL_ROOT, CPU_WHICH_PID, -1, root, error)) {
-      root_text = cpu_list(root);
-      root_count = CPU_COUNT(&root);
-    } else {
-      root_text = std::string("error ") + std::strerror(error);
-    }
-    if (get_mask(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1, process, error)) {
-      process_text = cpu_list(process);
-      process_count = CPU_COUNT(&process);
-    } else {
-      process_text = std::string("error ") + std::strerror(error);
-    }
-    if (first) {
-      const long online = sysconf(_SC_NPROCESSORS_ONLN);
-      log_printf("cpu: %ld cpus online, root set %s (%d), process may run on %s (%d)", online,
-                 root_text.c_str(), root_count, process_text.c_str(), process_count);
-      if (process_count > 0 && root_count > process_count &&
-          !env_off("PROSPEROBROWSER_CPU_WIDEN")) {
-        if (cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1, sizeof(root), &root) == 0) {
-          cpuset_t after;
-          get_mask(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1, after, error);
-          log_printf("cpu: widened the process affinity to %s (%d cpus)", cpu_list(after).c_str(),
-                     CPU_COUNT(&after));
-        } else {
-          log_printf("cpu: widening the affinity to %s failed: %s (kept %s)", root_text.c_str(),
-                     std::strerror(errno), process_text.c_str());
-        }
+    cpu::CpuMask root_mask, process_mask;
+    const std::string root_text = mask_text(CPU_LEVEL_ROOT, CPU_WHICH_PID, -1, &root_mask);
+    const std::string process_text = mask_text(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1, &process_mask);
+    const int root_count = root_mask.count();
+    const int process_count = process_mask.count();
+
+    // Threads: the kernel's list when it has one, else the threads this
+    // executable created (pthread_create is wrapped, ps5_cpu_affinity.h).
+    std::vector<ThreadInfo> threads;
+    std::string source = "kern.proc";
+    if (sysctl_works_) {
+      std::string why;
+      threads = list_threads_sysctl(why);
+      if (threads.empty()) {
+        sysctl_works_ = false;
+        log_printf("cpu: no kernel thread list (%s), using the threads created through "
+                   "pthread_create",
+                   why.c_str());
       }
     }
-
-    // Threads: affinity groups, and the busiest ones over the interval.
-    std::string why;
-    std::vector<ThreadInfo> threads = list_threads(why);
+    if (!sysctl_works_) {
+      source = "pthread_create";
+      for (const ThreadSample& s : sample_registered_threads()) {
+        ThreadInfo t;
+        t.tid = s.tid;
+        t.name = s.name;
+        t.cpu_seconds = s.cpu_seconds < 0 ? 0 : s.cpu_seconds;
+        t.mask = s.mask;
+        threads.push_back(std::move(t));
+      }
+    }
     std::map<std::string, int> masks;  // cpu list -> threads
     for (const ThreadInfo& t : threads) {
-      cpuset_t mask;
-      masks[get_mask(CPU_LEVEL_WHICH, CPU_WHICH_TID, static_cast<id_t>(t.tid), mask, error)
-                ? cpu_list(mask)
-                : std::string("error")]++;
+      masks[t.mask]++;
     }
-    std::string mask_text;
+    std::string mask_summary;
     for (const auto& [list, count] : masks) {
-      mask_text += (mask_text.empty() ? "" : ", ") + list + " x" + std::to_string(count);
+      mask_summary += (mask_summary.empty() ? "" : ", ") + list + " x" + std::to_string(count);
     }
     if (threads.empty()) {
-      mask_text = "unavailable (" + why + ")";
+      mask_summary = "-";
     }
+    const ThreadCounters counters = registered_thread_counters();
 
     unsigned decoders = 0;
     unsigned decoder_threads = 0;
@@ -203,17 +175,24 @@ class Monitor {
       if (deltas[i].first < 0.05) {
         break;
       }
-      char item[96];
-      std::snprintf(item, sizeof(item), "%s%s %.1fs@cpu%d", top.empty() ? "" : ", ",
-                    deltas[i].second->name.c_str(), deltas[i].first, deltas[i].second->last_cpu);
+      char item[112];
+      if (deltas[i].second->last_cpu >= 0) {
+        std::snprintf(item, sizeof(item), "%s%s %.1fs@cpu%d", top.empty() ? "" : ", ",
+                      deltas[i].second->name.c_str(), deltas[i].first, deltas[i].second->last_cpu);
+      } else {
+        std::snprintf(item, sizeof(item), "%s%s %.1fs", top.empty() ? "" : ", ",
+                      deltas[i].second->name.c_str(), deltas[i].first);
+      }
       top += item;
     }
 
-    log_printf("cpu: affinity %s (%d of %d) | threads %zu: %s | video decoders %u, %u codec threads "
-               "| user %.1fs sys %.1fs over %.0fs = %.2f cpus busy | top %s",
-               process_text.c_str(), process_count, root_count, threads.size(), mask_text.c_str(),
-               decoders, decoder_threads, user - last_user_, sys - last_sys_, wall, busy,
-               top.empty() ? "-" : top.c_str());
+    log_printf("cpu: affinity %s (%d of %d, root %s) | threads %zu (%s; started %u, re-widened "
+               "%u, failed %u): %s | video decoders %u, %u codec threads | user %.1fs sys %.1fs "
+               "over %.0fs = %.2f cpus busy | top %s",
+               process_text.c_str(), process_count, root_count, root_text.c_str(), threads.size(),
+               source.c_str(), counters.started, counters.widened, counters.widen_failed,
+               mask_summary.c_str(), decoders, decoder_threads, user - last_user_,
+               sys - last_sys_, wall, busy, top.empty() ? "-" : top.c_str());
 
     last_time_ = now;
     last_user_ = user;
@@ -229,6 +208,7 @@ class Monitor {
   double last_user_ = 0;
   double last_sys_ = 0;
   std::map<long, double> last_thread_cpu_;
+  bool sysctl_works_ = true;
 };
 
 }  // namespace
