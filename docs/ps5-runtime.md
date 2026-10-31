@@ -353,6 +353,9 @@ endless relaunches hammer websrv.
 | `PROSPEROWEB_VIDEO_TRANSPORT` | auto | `shm`, `file` or `tcp`: force the overlay's pixel transport (auto tries them in that order) |
 | `PROSPEROWEB_VIDEO_SHM_DIR` | `/data/prosperoweb/tmp` | directory of the overlay's `file` transport segments (unlinked once mapped) |
 | `PROSPEROWEB_VIDEO_SCALE` | `bilinear` | `nearest`: cheaper overlay scaling in the UI |
+| `PROSPEROWEB_VIDEO_DECODE` | `ui` | who decodes H.264/HEVC: `ui` (the UI's hardware decoder, falling back to the WebProcess) or `webprocess` (software only; the UI then does not load the decoder either); see [Hardware video decoding](#hardware-video-decoding) |
+| `PROSPEROWEB_HWDEC` | on | `0`: the UI does not load `libSceVideodec2` (every stream is refused) |
+| `PROSPEROWEB_HWDEC_HEVC` | on | `0`: the UI refuses HEVC streams (H.264 only) |
 | `PROSPEROWEB_CPU_MONITOR` | on | `0`: no `cpu:` lines |
 | `PROSPEROWEB_CPU_WIDEN` | on | `0`: never try to widen a restricted CPU affinity |
 
@@ -609,6 +612,54 @@ painted into the page as before; CSS opacity and filters on the video do
 not apply to the overlay (the hole is transparent whatever the opacity);
 page snapshots show the hole.
 
+### Hardware video decoding
+
+Implemented, **not yet run on a console**. The console's video decoder
+(`libSceVideodec2`) needs the big app, so the UI process decodes and the
+WebProcess keeps demuxing, MSE and the A/V clock; details, the API as far as
+open-source PS5 homebrew documents it, and what is uncertain are in
+[webkit-port/media/README.md](../webkit-port/media/README.md#hardware-decoding-in-the-ui-process).
+
+```
+WebProcess decoder thread        overlay connection        UI HwStream threads                   UI main thread
+-------------------------        ------------------        ----------------------------------    --------------
+stream-open, packets       --->  (credit-bounded)   --->   decode: Annex-B, sceVideodec2Decode
+pixel-less frames queued   <---  decoded {pts}      <---   picture slots (NV12, direct memory)
+presenter: show {pts}      --->                     --->   present: NV12 -> ARGB (AVX2), scale,
+                                                           swap into the player's frame     --->  compose under the page
+```
+
+- At startup `main()` calls `hwdec_prepare()` before anything else of the
+  UI: `sceSysmoduleLoadModule(207)`, `dlopen("libSceVideodec2.sprx")`, one
+  compute queue for the process, and the decoder memory for 1080p/4K H.264
+  and HEVC (other homebrew saw these refused after the process got full
+  access; hbldr may already give it, which only a console run will show).
+- Each accepted stream has a decode thread and a present thread in the UI;
+  the overlay server's poll thread only queues. At most two streams decode at
+  once. Everything refused or failed decodes in the WebProcess as before.
+
+Expected log lines (UI, then WebProcess):
+
+```
+[UI] hwdec: libSceVideodec2 loaded (sysmodule 207: 0), functions resolved
+[UI] hwdec: compute queue ready (0, N KiB)
+[UI] video overlay: remote decoding on (sceVideodec2: h264, hevc)
+[WebProcess] media: video decoder h264: 1920x1080, asking the UI to decode it (stream 1)
+[UI] hwdec: open h264 1920x1080 -> hw ok (decoder mem N MiB: ...)
+[WebProcess] media: video decoder: stream 1 decoded by the UI (hardware, 16 frames held there)
+[UI] hwdec: stats 5.0s: decoded 30.0 fps (1920x1080, decode call N ms), convert N/N ms -> 1920x1080, queue N, held N, in decoder N, presented N, shows N, late N, dropped N, evicted N
+```
+
+Fallbacks: `hwdec: unavailable: ...` or `hwdec: compute queue FAILED (0x...)`
+at startup (then `video overlay: remote decoding off`), `hwdec: player key N:
+reject vp9 ... (unsupported)` per stream, `hwdec: stream N ...: <why>; the
+WebProcess decodes in software` at run time.
+`PROSPEROWEB_VIDEO_DECODE=webprocess` restores software decoding.
+
+Limits: no pixels in the WebProcess for hardware-decoded video, so canvas
+`drawImage(video)`, snapshots and a video box the overlay cannot show (rotated,
+skewed) stay empty; 8-bit 4:2:0 H.264 and HEVC Main only.
+
 ### CPU allocation (WebProcess and UI)
 
 `src/frontend/ps5/ps5_cpu_monitor.cpp` logs at start and every 30 s:
@@ -817,6 +868,11 @@ reports `fw 0x13420000`):
   with H.264.
 
 ## Still to verify on a console
+
+- Hardware video decoding ([Hardware video decoding](#hardware-video-decoding)):
+  that `libSceVideodec2` loads and its compute queue is created in the UI
+  started by hbldr, the structure layouts, NV12 output and pts matching, the
+  conversion cost, and the fallback to software.
 
 - `WKPagePaint` output alpha/premultiplication composites correctly against
   the chrome overlay in every state (closed overlays leaving no ghosts).

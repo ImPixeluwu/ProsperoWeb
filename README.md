@@ -22,7 +22,7 @@ It is early software (version 0.1.0): expect rough edges, and launch it only the
 - DualSense: a virtual pointer on the left stick or the touchpad (trackpad-style: slide, tap, two-finger scroll, press and slide to drag), trusted clicks and scrolling, tab switching, menu; USB keyboard.
 - Text entry through the console's own keyboard dialog, pre-filled with the URL or the field's value; a built-in on-screen keyboard (Latin, Cyrillic, symbols) as the fallback.
 - HTML5 Fullscreen API and a chrome-hiding fullscreen mode.
-- HTML5 `<video>`/`<audio>` through an ffmpeg engine: Media Source Extensions (YouTube-style players; H.264 up to 1080p by default), progressive MP4/WebM and native HLS; software decoding (H.264, HEVC, VP8, VP9; AAC, MP3, Opus and others). Video is composed by the UI process under the page, audio is mixed and played by the UI process.
+- HTML5 `<video>`/`<audio>` through an ffmpeg engine: Media Source Extensions (YouTube-style players; H.264 up to 1080p by default), progressive MP4/WebM and native HLS; software decoding (H.264, HEVC, VP8, VP9; AAC, MP3, Opus and others). Video is composed by the UI process under the page, audio is mixed and played by the UI process. Hardware decoding of 8-bit H.264 and HEVC with the console's `sceVideodec2` in the UI process, with automatic fallback to software (implemented, **not yet tested on hardware**; `PROSPEROWEB_VIDEO_DECODE=webprocess` turns it off).
 - Bundled fonts with Latin, Cyrillic, CJK and colour emoji coverage (Noto, Noto CJK, Noto Color Emoji, Liberation, DejaVu).
 - JavaScript JIT (baseline + DFG; FTL off) and WebAssembly, ~1.7x faster than the interpreter on a micro-benchmark; `config.json` `"env"` can turn them off ([docs/ps5-runtime.md](docs/ps5-runtime.md#javascript-jit-and-webassembly)).
 - English and Russian UI.
@@ -30,7 +30,7 @@ It is early software (version 0.1.0): expect rough edges, and launch it only the
 
 ## Known limitations
 
-- **Video decoding is software only** and limited by the CPU cores the web process gets: high resolutions and frame rates drop frames. Players are steered to H.264 at up to 1080p by default.
+- **Video decoding is software only on verified builds** and limited by the CPU cores the web process gets: high resolutions and frame rates drop frames. Players are steered to H.264 at up to 1080p by default. Hardware decoding in the UI process is implemented but has not run on a console yet; VP8, VP9 and AV1 always decode in software.
 - **No DRM sites** (Netflix, Disney+, Kinopoisk, Okko, ...): there is no CDM, by design.
 - **No GPU acceleration**: software rendering only; no WebGL, no CSS 3D, no GPU compositing.
 - **No WebAudio.**
