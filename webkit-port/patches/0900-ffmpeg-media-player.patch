@@ -4718,10 +4718,10 @@ index 000000000..4b6fe252f
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp
 new file mode 100644
-index 000000000..5f5f03655
+index 000000000..2e3e1ffda
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp
-@@ -0,0 +1,459 @@
+@@ -0,0 +1,737 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -4731,6 +4731,8 @@ index 000000000..5f5f03655
 +
 +#include "FFmpegDemuxer.h"
 +#include "FFmpegLog.h"
++#include "FFmpegVideoOverlay.h"
++#include "FFmpegVideoOverlayClient.h"
 +#include "Logging.h"
 +#include <cstdlib>
 +#include <cstring>
@@ -4810,13 +4812,81 @@ index 000000000..5f5f03655
 +    }
 +}
 +
++namespace Wire = FFmpegMedia::VideoWire;
++
++// Who decodes when the player has a video overlay: "ui" asks the UI process
++// first (hardware), "webprocess" never does.
++bool remoteDecodingRequested()
++{
++    const char* value = getenv("PROSPEROWEB_VIDEO_DECODE");
++    if (value && *value)
++        return !strcmp(value, "ui");
++#if PLATFORM(PLAYSTATION)
++    return true;
++#else
++    return false;
++#endif
++}
++
++// The UI answers once its decoder exists (memory allocation included).
++constexpr double remoteAnswerTimeoutSeconds = 3;
++constexpr double remoteEventWaitSeconds = 0.005;
++constexpr Seconds remotePacketWait = 5_ms;
++
++std::optional<Wire::StreamOpen> remoteStreamOpen(const FFmpegStreamInfo& stream)
++{
++    const AVCodecParameters* parameters = stream.parameters.get();
++    Wire::StreamOpen open;
++    switch (parameters->codec_id) {
++    case AV_CODEC_ID_H264:
++        open.codec = Wire::Codec::H264;
++        break;
++    case AV_CODEC_ID_HEVC:
++        open.codec = Wire::Codec::Hevc;
++        break;
++    case AV_CODEC_ID_VP9:
++        open.codec = Wire::Codec::Vp9;
++        break;
++    case AV_CODEC_ID_AV1:
++        open.codec = Wire::Codec::Av1;
++        break;
++    default:
++        return std::nullopt;
++    }
++    switch (parameters->color_space) {
++    case AVCOL_SPC_BT709:
++        open.matrix = Wire::Matrix::Bt709;
++        break;
++    case AVCOL_SPC_BT2020_NCL:
++    case AVCOL_SPC_BT2020_CL:
++        open.matrix = Wire::Matrix::Bt2020;
++        break;
++    case AVCOL_SPC_SMPTE170M:
++    case AVCOL_SPC_BT470BG:
++        open.matrix = Wire::Matrix::Bt601;
++        break;
++    default:
++        break;
++    }
++    open.fullRange = parameters->color_range == AVCOL_RANGE_JPEG;
++    open.profile = parameters->profile;
++    open.level = parameters->level;
++    open.width = static_cast<uint32_t>(std::max(0, parameters->width));
++    open.height = static_cast<uint32_t>(std::max(0, parameters->height));
++    open.timeBaseNum = stream.timeBase.num > 0 ? stream.timeBase.num : 1;
++    open.timeBaseDen = stream.timeBase.den > 0 ? stream.timeBase.den : 1000000;
++    if (parameters->extradata && parameters->extradata_size > 0)
++        open.extradata.assign(parameters->extradata, parameters->extradata + parameters->extradata_size);
++    return open;
++}
++
 +// Process-wide totals for ps5_media_video_decoder_stats().
 +std::atomic<unsigned> liveDecoders { 0 };
 +std::atomic<unsigned> liveDecoderThreads { 0 };
 +
 +} // namespace
 +
-+RefPtr<FFmpegVideoDecoder> FFmpegVideoDecoder::create(const FFmpegStreamInfo& stream, FFmpegPacketQueue& queue)
++RefPtr<FFmpegVideoDecoder> FFmpegVideoDecoder::create(const FFmpegStreamInfo& stream, FFmpegPacketQueue& queue, FFmpegVideoOverlay* overlay)
 +{
 +    if (!stream.parameters)
 +        return nullptr;
@@ -4829,6 +4899,24 @@ index 000000000..5f5f03655
 +    context->pkt_timebase = stream.timeBase;
 +    context->thread_count = decoderThreads();
 +    context->thread_type = frameThreadsEnabled() ? (FF_THREAD_FRAME | FF_THREAD_SLICE) : FF_THREAD_SLICE;
++
++    // Remote decoding: the UI is asked now (the answer arrives while the
++    // player sets up); libavcodec opens only if it refuses.
++    std::shared_ptr<Wire::RemoteVideoStream> remote;
++    std::optional<Wire::StreamOpen> open;
++    if (overlay && remoteDecodingRequested()) {
++        open = remoteStreamOpen(stream);
++        if (open)
++            remote = overlay->openRemoteStream(*open);
++    }
++    if (remote) {
++        ffmpegMediaLog("video decoder %s: %dx%d, asking the UI to decode it (stream %u)", codec->name, context->width, context->height, remote->id());
++        Ref decoder = adoptRef(*new FFmpegVideoDecoder(stream, queue, WTF::move(context), false));
++        decoder->m_remote = WTF::move(remote);
++        decoder->m_remoteOpen = std::make_unique<Wire::StreamOpen>(WTF::move(*open));
++        return decoder;
++    }
++
 +    int result = avcodec_open2(context.get(), codec, nullptr);
 +    if (result < 0) {
 +        ffmpegMediaLog("video decoder %s: open failed: %s", codec->name, ffmpegErrorString(result).utf8().legacyCStringPointer());
@@ -4837,11 +4925,30 @@ index 000000000..5f5f03655
 +    ffmpegMediaLog("video decoder %s: %dx%d %s, %d threads (%s)", codec->name, context->width, context->height,
 +        av_get_pix_fmt_name(context->pix_fmt) ? av_get_pix_fmt_name(context->pix_fmt) : "?", context->thread_count,
 +        (context->active_thread_type & FF_THREAD_FRAME) ? "frame+slice" : (context->active_thread_type & FF_THREAD_SLICE) ? "slice" : "none");
-+    return adoptRef(*new FFmpegVideoDecoder(stream, queue, WTF::move(context)));
++    return adoptRef(*new FFmpegVideoDecoder(stream, queue, WTF::move(context), true));
 +}
 +
-+FFmpegVideoDecoder::FFmpegVideoDecoder(const FFmpegStreamInfo& stream, FFmpegPacketQueue& queue, AVCodecContextPtr&& context)
++bool FFmpegVideoDecoder::openSoftwareDecoder()
++{
++    if (m_codecOpen)
++        return true;
++    const AVCodec* codec = m_codec->codec;
++    int result = avcodec_open2(m_codec.get(), codec, nullptr);
++    if (result < 0) {
++        ffmpegMediaLog("video decoder %s: open failed: %s", codec ? codec->name : "?", ffmpegErrorString(result).utf8().legacyCStringPointer());
++        m_fatalError = true;
++        return false;
++    }
++    m_codecOpen = true;
++    ffmpegMediaLog("video decoder %s: decoding here: %dx%d %s, %d threads (%s)", codec ? codec->name : "?", m_codec->width, m_codec->height,
++        av_get_pix_fmt_name(m_codec->pix_fmt) ? av_get_pix_fmt_name(m_codec->pix_fmt) : "?", m_codec->thread_count,
++        (m_codec->active_thread_type & FF_THREAD_FRAME) ? "frame+slice" : (m_codec->active_thread_type & FF_THREAD_SLICE) ? "slice" : "none");
++    return true;
++}
++
++FFmpegVideoDecoder::FFmpegVideoDecoder(const FFmpegStreamInfo& stream, FFmpegPacketQueue& queue, AVCodecContextPtr&& context, bool codecOpen)
 +    : m_timeBase(stream.timeBase)
++    , m_codecOpen(codecOpen)
 +    , m_startTime(stream.startTime)
 +    , m_queue(queue)
 +    , m_codec(WTF::move(context))
@@ -4879,6 +4986,12 @@ index 000000000..5f5f03655
 +    }
 +    if (RefPtr thread = std::exchange(m_thread, nullptr))
 +        thread->waitForCompletion();
++    // The UI's decoder and its pictures go now (MSE removes a SourceBuffer
++    // while the overlay stays).
++    if (m_remote) {
++        m_remoteActive = false;
++        m_remote->close("the player stopped");
++    }
 +}
 +
 +void FFmpegVideoDecoder::updateOutputSize(int width, int height)
@@ -4899,6 +5012,11 @@ index 000000000..5f5f03655
 +
 +void FFmpegVideoDecoder::run()
 +{
++    if (m_remote) {
++        runRemote();
++        if (m_stopping || !openSoftwareDecoder())
++            return;
++    }
 +    while (!m_stopping) {
 +        auto entry = m_queue.pop(packetWaitTimeout);
 +        if (!entry) {
@@ -4926,8 +5044,13 @@ index 000000000..5f5f03655
 +
 +void FFmpegVideoDecoder::flushForSerial(unsigned serial)
 +{
-+    avcodec_flush_buffers(m_codec.get());
++    if (m_codecOpen)
++        avcodec_flush_buffers(m_codec.get());
 +    m_serial = serial;
++    if (m_remoteActive) {
++        m_remote->flush(serial);
++        m_remoteDurations.clear();
++    }
 +    m_waitingForKeyframe = false;
 +    m_lateFrames = 0;
 +    if (m_skippingLoopFilter) {
@@ -4940,6 +5063,161 @@ index 000000000..5f5f03655
 +    });
 +    m_endSerial = std::numeric_limits<unsigned>::max();
 +    m_condition.notifyAll();
++}
++
++void FFmpegVideoDecoder::runRemote()
++{
++    auto remote = m_remote;
++    auto state = remote->waitForAnswer(remoteAnswerTimeoutSeconds, m_stopping);
++    if (state != Wire::RemoteVideoStream::State::Hardware) {
++        ffmpegMediaLog("video decoder: the UI does not decode stream %u (%s: %s), decoding in the WebProcess", remote->id(),
++            Wire::RemoteVideoStream::stateName(state), remote->reason().c_str());
++        return;
++    }
++    ffmpegMediaLog("video decoder: stream %u decoded by the UI (hardware, %u frames held there)", remote->id(), remote->maxFrames());
++    m_remoteActive = true;
++    std::optional<FFmpegPacketQueue::Entry> pending;
++    while (!m_stopping) {
++        processRemoteNotices();
++        if (!remote->usable()) {
++            endRemote(remote->reason().c_str());
++            // Software from the next keyframe; this packet may be one.
++            m_waitingForKeyframe = true;
++            if (!openSoftwareDecoder())
++                return;
++            if (pending && pending->serial == m_serial && !pending->isEndOfStream())
++                handlePacket(pending->packet.get());
++            return;
++        }
++        if (!pending) {
++            pending = m_queue.pop(remotePacketWait);
++            if (!pending) {
++                if (m_queue.isAborted())
++                    return;
++                continue;
++            }
++        }
++        if (pending->serial != m_serial)
++            flushForSerial(pending->serial);
++        if (pending->isEndOfStream()) {
++            remote->drain(m_serial);
++            pending.reset();
++            continue;
++        }
++        AVPacket* packet = pending->packet.get();
++        if (m_suspended) {
++            m_waitingForKeyframe = true;
++            pending.reset();
++            continue;
++        }
++        if (m_waitingForKeyframe) {
++            if (!(packet->flags & AV_PKT_FLAG_KEY)) {
++                pending.reset();
++                continue;
++            }
++            // Resuming after a hidden page: the UI's decoder starts over.
++            remote->flush(m_serial);
++            m_remoteDurations.clear();
++            m_waitingForKeyframe = false;
++        }
++        if (!remote->hasCredit(static_cast<size_t>(std::max(0, packet->size)))) {
++            remote->waitForEvent(remoteEventWaitSeconds);
++            continue;
++        }
++        sendRemotePacket(packet);
++        pending.reset();
++    }
++}
++
++void FFmpegVideoDecoder::endRemote(const char* why)
++{
++    if (!m_remoteActive.exchange(false))
++        return;
++    ffmpegMediaLog("video decoder: the UI stopped decoding stream %u (%s), decoding in the WebProcess from the next keyframe", m_remote->id(), why);
++    m_remote->close(why);
++    m_remoteDurations.clear();
++    // Frames the UI holds cannot be shown any more.
++    Locker locker { m_lock };
++    m_output.removeAllMatching([](auto& frame) {
++        return frame->isRemote();
++    });
++    m_condition.notifyAll();
++}
++
++void FFmpegVideoDecoder::sendRemotePacket(AVPacket* packet)
++{
++    size_t newExtradataSize = 0;
++    if (const uint8_t* extradata = av_packet_get_side_data(packet, AV_PKT_DATA_NEW_EXTRADATA, &newExtradataSize); extradata && newExtradataSize) {
++        m_remoteOpen->extradata.assign(extradata, extradata + newExtradataSize);
++        m_remote->reconfigure(*m_remoteOpen);
++    }
++    int64_t pts = packet->pts != AV_NOPTS_VALUE ? packet->pts : packet->dts;
++    if (pts == AV_NOPTS_VALUE) {
++        ++m_droppedFrames;
++        return;
++    }
++    if (packet->duration > 0) {
++        m_remoteDurations[pts] = packet->duration;
++        while (m_remoteDurations.size() > 512)
++            m_remoteDurations.erase(m_remoteDurations.begin());
++    }
++    Wire::PacketHeader header;
++    header.serial = m_serial;
++    header.pts = pts;
++    header.dts = packet->dts != AV_NOPTS_VALUE ? packet->dts : pts;
++    header.keyframe = packet->flags & AV_PKT_FLAG_KEY;
++    m_remote->sendPacket(header, packet->data, static_cast<size_t>(std::max(0, packet->size)));
++}
++
++void FFmpegVideoDecoder::processRemoteNotices()
++{
++    for (auto& notice : m_remote->takeNotices()) {
++        if (notice.serial != m_serial)
++            continue;
++        if (notice.drained()) {
++            Locker locker { m_lock };
++            m_endSerial = m_serial;
++            m_condition.notifyAll();
++            continue;
++        }
++        ++m_decodedFrames;
++        emitRemoteFrame(notice.pts, static_cast<int>(notice.width), static_cast<int>(notice.height));
++    }
++}
++
++void FFmpegVideoDecoder::emitRemoteFrame(int64_t remotePts, int width, int height)
++{
++    double pts = remotePts * av_q2d(m_timeBase) - m_startTime;
++    double duration = 0;
++    if (auto it = m_remoteDurations.find(remotePts); it != m_remoteDurations.end())
++        duration = it->second * av_q2d(m_timeBase);
++    m_remoteDurations.erase(m_remoteDurations.begin(), m_remoteDurations.upper_bound(remotePts));
++    if (duration <= 0 && m_codec->framerate.num > 0 && m_codec->framerate.den > 0)
++        duration = av_q2d(av_inv_q(m_codec->framerate));
++    if (duration <= 0)
++        duration = 1.0 / 30;
++    {
++        Locker locker { m_lock };
++        if (m_seekTarget >= 0 && m_seekSerial == m_serial) {
++            if (pts + duration <= m_seekTarget) {
++                m_remote->discard(m_serial, remotePts);
++                return;
++            }
++            m_seekTarget = -1;
++        }
++    }
++    updateOutputSize(width, height);
++    Ref frame = FFmpegVideoFrame::createRemote(m_outputWidth, m_outputHeight, m_remote->id(), remotePts);
++    frame->pts = pts;
++    frame->duration = duration;
++    frame->serial = m_serial;
++
++    Locker locker { m_lock };
++    while (m_output.size() >= maxOutputFrames && !m_stopping && m_queue.serial() == m_serial)
++        m_condition.waitFor(m_lock, outputWaitTimeout);
++    if (m_stopping || m_queue.serial() != m_serial)
++        return;
++    m_output.append(WTF::move(frame));
 +}
 +
 +bool FFmpegVideoDecoder::handlePacket(AVPacket* packet)
@@ -5183,10 +5461,10 @@ index 000000000..5f5f03655
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.h
 new file mode 100644
-index 000000000..669e290a6
+index 000000000..b3496b54a
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.h
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,227 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Software video decoding for the ffmpeg media engine: a worker thread pulls
@@ -5198,6 +5476,17 @@ index 000000000..669e290a6
 +//
 +// The decoder only knows packets and frames, not WebCore players, so an MSE
 +// SourceBuffer-fed player can reuse it with its own packet queue.
++//
++// Remote mode (PROSPEROWEB_VIDEO_DECODE=ui, the default on PlayStation):
++// given the player's video overlay, the decoder first asks the UI process
++// to decode the stream in hardware (FFmpegVideoOverlayClient.h,
++// RemoteVideoStream). If the UI accepts, the worker thread sends it the
++// packets instead of running libavcodec, and every frame the UI reports
++// becomes a pixel-less FFmpegVideoFrame (pts, duration, size) in the same
++// output queue, so the presenter and the A/V clock work unchanged; showing
++// one names it to the UI by its pts. If the UI refuses (codec, profile,
++// no decoder) or fails later, libavcodec is opened and decoding continues
++// here from the next keyframe.
 +
 +#pragma once
 +
@@ -5206,6 +5495,9 @@ index 000000000..669e290a6
 +#include "FFmpegPlaybackPolicy.h"
 +#include "FFmpegUtilities.h"
 +#include <atomic>
++#include <map>
++#include <memory>
++#include <optional>
 +#include <wtf/Condition.h>
 +#include <wtf/Deque.h>
 +#include <wtf/Lock.h>
@@ -5218,6 +5510,14 @@ index 000000000..669e290a6
 +namespace WebCore {
 +
 +class FFmpegPacketQueue;
++class FFmpegVideoOverlay;
++
++namespace FFmpegMedia {
++namespace VideoWire {
++class RemoteVideoStream;
++struct StreamOpen;
++}
++}
 +
 +// Pixels live in an av_malloc() block (64-byte aligned) with rows padded to
 +// videoFrameStride(): libswscale's SIMD stores run past the row end (see
@@ -5237,7 +5537,19 @@ index 000000000..669e290a6
 +        return adoptRef(*new FFmpegVideoFrame(width, height, pixels, bytes));
 +    }
 +
++    // A frame the UI process decoded and keeps (remote decoding): no pixels
++    // here, `remotePts` names it to the UI.
++    static Ref<FFmpegVideoFrame> createRemote(int width, int height, uint32_t stream, int64_t remotePts)
++    {
++        Ref frame = adoptRef(*new FFmpegVideoFrame(width, height, nullptr, 0));
++        frame->remoteStream = stream;
++        frame->remotePts = remotePts;
++        return frame;
++    }
++
 +    ~FFmpegVideoFrame() { av_free(m_pixels); }
++
++    bool isRemote() const { return !m_pixels; }
 +
 +    int width() const { return m_width; }
 +    int height() const { return m_height; }
@@ -5249,6 +5561,8 @@ index 000000000..669e290a6
 +    double pts { 0 };
 +    double duration { 0 };
 +    unsigned serial { 0 };
++    uint32_t remoteStream { 0 };
++    int64_t remotePts { 0 };
 +
 +private:
 +    FFmpegVideoFrame(int width, int height, uint8_t* pixels, size_t bytes)
@@ -5267,8 +5581,9 @@ index 000000000..669e290a6
 +
 +class FFmpegVideoDecoder final : public ThreadSafeRefCounted<FFmpegVideoDecoder> {
 +public:
-+    // Returns nullptr when no decoder can be opened for the stream.
-+    static RefPtr<FFmpegVideoDecoder> create(const FFmpegStreamInfo&, FFmpegPacketQueue&);
++    // Returns nullptr when no decoder can be opened for the stream. With an
++    // overlay, the UI process is asked to decode it (remote mode, see above).
++    static RefPtr<FFmpegVideoDecoder> create(const FFmpegStreamInfo&, FFmpegPacketQueue&, FFmpegVideoOverlay* = nullptr);
 +    ~FFmpegVideoDecoder();
 +
 +    void start();
@@ -5298,7 +5613,9 @@ index 000000000..669e290a6
 +        double convertMilliseconds { 0 };
 +    };
 +    Timing takeTiming();
-+    int threadCount() const { return m_codec->thread_count; }
++    int threadCount() const { return m_remoteActive ? 0 : m_codec->thread_count; }
++    // "ui hw" while the UI decodes, "software" otherwise (logs).
++    const char* decodeMode() const { return m_remoteActive ? "ui hw" : "software"; }
 +
 +    unsigned decodedFrames() const { return m_decodedFrames; }
 +    unsigned droppedFrames() const { return m_droppedFrames; }
@@ -5306,9 +5623,18 @@ index 000000000..669e290a6
 +    int outputHeight() const { return m_outputHeight; }
 +
 +private:
-+    FFmpegVideoDecoder(const FFmpegStreamInfo&, FFmpegPacketQueue&, AVCodecContextPtr&&);
++    FFmpegVideoDecoder(const FFmpegStreamInfo&, FFmpegPacketQueue&, AVCodecContextPtr&&, bool codecOpen);
 +
 +    void run();
++    // libavcodec, opened late when remote decoding was tried first.
++    bool openSoftwareDecoder();
++    // Remote mode: returns when stopping, or after the UI refused or failed
++    // (libavcodec is open then and took the packet in hand).
++    void runRemote();
++    void processRemoteNotices();
++    void sendRemotePacket(AVPacket*);
++    void emitRemoteFrame(int64_t pts, int width, int height);
++    void endRemote(const char* why);
 +    void flushForSerial(unsigned serial);
 +    bool handlePacket(AVPacket*);
 +    void receiveFrames();
@@ -5317,6 +5643,10 @@ index 000000000..669e290a6
 +    void updateOutputSize(int width, int height);
 +
 +    const AVRational m_timeBase;
++    std::shared_ptr<FFmpegMedia::VideoWire::RemoteVideoStream> m_remote;
++    std::unique_ptr<FFmpegMedia::VideoWire::StreamOpen> m_remoteOpen;
++    std::atomic<bool> m_remoteActive { false };
++    bool m_codecOpen { false };
 +    const double m_startTime;
 +    FFmpegPacketQueue& m_queue;
 +    AVCodecContextPtr m_codec;
@@ -5348,6 +5678,8 @@ index 000000000..669e290a6
 +    int64_t m_pendingConvertMicros { 0 };
 +    unsigned m_sendErrors { 0 };
 +    Vector<Ref<FFmpegVideoFrame>> m_pool;
++    // Remote mode: packet durations by pts (the UI reports pts only).
++    std::map<int64_t, int64_t> m_remoteDurations;
 +
 +    mutable Lock m_lock;
 +    Condition m_condition;
@@ -5362,10 +5694,10 @@ index 000000000..669e290a6
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.cpp b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.cpp
 new file mode 100644
-index 000000000..4e0ac1e32
+index 000000000..14b2b2b70
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.cpp
-@@ -0,0 +1,239 @@
+@@ -0,0 +1,251 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -5558,6 +5890,11 @@ index 000000000..4e0ac1e32
 +
 +void FFmpegVideoOverlay::submit(FFmpegVideoFrame& frame)
 +{
++    if (frame.isRemote()) {
++        // Also while hidden: showing releases the older pictures in the UI.
++        m_client->showRemote(frame.remoteStream, frame.serial, frame.remotePts);
++        return;
++    }
 +    if (!m_client->usable() || !m_acceptsFrames)
 +        return;
 +    Ref protectedFrame = frame;
@@ -5572,6 +5909,13 @@ index 000000000..4e0ac1e32
 +        held->deref();
 +    };
 +    m_client->submit(WTF::move(wireFrame));
++}
++
++std::shared_ptr<Wire::RemoteVideoStream> FFmpegVideoOverlay::openRemoteStream(const Wire::StreamOpen& open)
++{
++    auto stream = m_client->openStream(open);
++    ffmpegMediaLog("video overlay: player %u: asking the UI to decode %s %ux%u (stream %u)", m_player, Wire::codecName(open.codec), open.width, open.height, stream->id());
++    return stream;
 +}
 +
 +void FFmpegVideoOverlay::clear()
@@ -5607,10 +5951,10 @@ index 000000000..4e0ac1e32
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.h
 new file mode 100644
-index 000000000..6915ee6c1
+index 000000000..34a8389e5
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.h
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,88 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Video overlay of the ffmpeg media engine ("hole punch"). Accelerated
@@ -5641,6 +5985,7 @@ index 000000000..6915ee6c1
 +#include "FFmpegVideoOverlayWire.h"
 +#include <atomic>
 +#include <memory>
++#include <string>
 +#include <optional>
 +#include <wtf/TZoneMalloc.h>
 +
@@ -5651,6 +5996,7 @@ index 000000000..6915ee6c1
 +
 +namespace FFmpegMedia {
 +namespace VideoWire {
++class RemoteVideoStream;
 +class VideoOverlayClient;
 +}
 +}
@@ -5669,7 +6015,11 @@ index 000000000..6915ee6c1
 +    // paint() clears the video box instead of drawing the frame.
 +    bool punchesHole() const { return m_punching; }
 +    // The frame to show now (the player's A/V clock decided). Any thread.
++    // A remotely decoded frame is named to the UI by its pts.
 +    void submit(FFmpegVideoFrame&);
++    // Asks the UI to decode a stream (FFmpegVideoDecoder's remote mode).
++    // Any thread.
++    std::shared_ptr<FFmpegMedia::VideoWire::RemoteVideoStream> openRemoteStream(const FFmpegMedia::VideoWire::StreamOpen&);
 +    // The picture is gone (new load, decoder reset).
 +    void clear();
 +    // One "video overlay: player N: <transport> sent N/s ..." line covering
@@ -8104,10 +8454,10 @@ index 000000000..08b72aa6d
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp
 new file mode 100644
-index 000000000..985692f04
+index 000000000..a1ec56cf0
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp
-@@ -0,0 +1,1090 @@
+@@ -0,0 +1,1101 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -8511,8 +8861,10 @@ index 000000000..985692f04
 +    if (!player || !demuxer)
 +        return;
 +
-+    if (auto* stream = demuxer->videoStream())
-+        m_videoDecoder = FFmpegVideoDecoder::create(*stream, demuxer->videoQueue());
++    if (auto* stream = demuxer->videoStream()) {
++        createOverlayIfNeeded();
++        m_videoDecoder = FFmpegVideoDecoder::create(*stream, demuxer->videoQueue(), m_overlay.get());
++    }
 +    if (auto* stream = demuxer->audioStream())
 +        m_audioDecoder = FFmpegAudioDecoder::create(*stream, demuxer->audioQueue(), AudioSink::sampleRate, AudioSink::channels);
 +    if (!m_videoDecoder && !m_audioDecoder) {
@@ -8912,17 +9264,22 @@ index 000000000..985692f04
 +        player->repaint();
 +}
 +
++void MediaPlayerPrivateFFmpeg::createOverlayIfNeeded()
++{
++    if (std::exchange(m_overlayCreated, true))
++        return;
++    m_overlay = FFmpegVideoOverlay::createIfEnabled();
++    if (RefPtr presenter = m_presenter)
++        presenter->setOverlay(m_overlay.get());
++    if (m_overlay)
++        m_overlayTimer.startOneShot(overlayGeometryTick);
++}
++
 +void MediaPlayerPrivateFFmpeg::updateOverlay()
 +{
 +    if (!m_hasVideo || !m_videoDecoder)
 +        return;
-+    if (!std::exchange(m_overlayCreated, true)) {
-+        m_overlay = FFmpegVideoOverlay::createIfEnabled();
-+        if (RefPtr presenter = m_presenter)
-+            presenter->setOverlay(m_overlay.get());
-+        if (m_overlay)
-+            m_overlayTimer.startOneShot(overlayGeometryTick);
-+    }
++    createOverlayIfNeeded();
 +    if (!m_overlay)
 +        return;
 +    RefPtr player = m_player.get();
@@ -9065,9 +9422,9 @@ index 000000000..985692f04
 +    std::optional<double> audioClock;
 +    if (audio && m_audioSink)
 +        audioClock = audio->clockTime(m_audioSink->latency());
-+    ffmpegMediaLog("stats: t=%.2f%s video %u decoded %u dropped (+%u presenter) %zu queued, pts %.2f | packets v %zu/%.1fs a %zu/%.1fs %zu KiB | audio %s clock %.2f buffered %.2fs | net %llu KiB%s%s",
++    ffmpegMediaLog("stats: t=%.2f%s video (%s) %u decoded %u dropped (+%u presenter) %zu queued, pts %.2f | packets v %zu/%.1fs a %zu/%.1fs %zu KiB | audio %s clock %.2f buffered %.2fs | net %llu KiB%s%s",
 +        position, m_seeking ? makeString(" SEEKING #"_s, m_serial, " for "_s, static_cast<int>((now - m_seekStartedAt) * 1000), "ms"_s).utf8().legacyCStringPointer() : "",
-+        video ? video->decodedFrames() : 0, video ? video->droppedFrames() : 0, presenterDroppedFrames(), video ? video->queuedFrames() : 0,
++        video ? video->decodeMode() : "none", video ? video->decodedFrames() : 0, video ? video->droppedFrames() : 0, presenterDroppedFrames(), video ? video->queuedFrames() : 0,
 +        currentFrame() ? currentFrame()->pts : -1.0,
 +        videoLevel.packets, videoLevel.seconds, audioLevel.packets, audioLevel.seconds,
 +        demuxer ? (demuxer->videoQueue().bytes() + demuxer->audioQueue().bytes()) >> 10 : 0,
@@ -9152,6 +9509,10 @@ index 000000000..985692f04
 +{
 +    // The SkImage wraps the frame's pixels without copying and keeps the
 +    // frame alive; the decoder's pool only reuses frames nobody references.
++    // The UI process holds a remotely decoded frame's pixels: nothing to
++    // paint here (the overlay shows it).
++    if (videoFrame.isRemote())
++        return nullptr;
 +    Ref frame = videoFrame;
 +    auto info = SkImageInfo::Make(frame->width(), frame->height(), kBGRA_8888_SkColorType, kOpaque_SkAlphaType, SkColorSpace::MakeSRGB());
 +    SkPixmap pixmap(info, frame->data(), frame->stride());
@@ -9200,10 +9561,10 @@ index 000000000..985692f04
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.h b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.h
 new file mode 100644
-index 000000000..46a30e7b7
+index 000000000..a2d9f797a
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.h
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,230 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// MediaPlayerPrivate backed by ffmpeg (libavformat/libavcodec/libswscale/
@@ -9359,6 +9720,9 @@ index 000000000..46a30e7b7
 +    void logStats(double now, double position, uint64_t bytesReceived, bool readerWaiting, bool endOfStream);
 +    void applyGain();
 +    void updateOverlay();
++    // Creates the video overlay once (before the video decoder, which may
++    // ask the UI to decode through it).
++    void createOverlayIfNeeded();
 +    void setAudioSink(std::unique_ptr<AudioSink>&&);
 +
 +    void setNetworkState(MediaPlayer::NetworkState);
@@ -10911,10 +11275,10 @@ index 000000000..ad6741365
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.cpp b/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.cpp
 new file mode 100644
-index 000000000..a7244f304
+index 000000000..2f44fbb97
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.cpp
-@@ -0,0 +1,1169 @@
+@@ -0,0 +1,1175 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -11204,7 +11568,8 @@ index 000000000..a7244f304
 +    double position = playbackPosition();
 +    auto codec = format.codecName().utf8();
 +    if (pipeline.isVideo) {
-+        m_videoDecoder = FFmpegVideoDecoder::create(stream, *pipeline.queue);
++        createOverlayIfNeeded();
++        m_videoDecoder = FFmpegVideoDecoder::create(stream, *pipeline.queue, m_overlay.get());
 +        if (!m_videoDecoder)
 +            pipeline.failed = true;
 +        else {
@@ -11841,17 +12206,22 @@ index 000000000..a7244f304
 +        player->repaint();
 +}
 +
++void MediaPlayerPrivateFFmpegMSE::createOverlayIfNeeded()
++{
++    if (std::exchange(m_overlayCreated, true))
++        return;
++    m_overlay = FFmpegVideoOverlay::createIfEnabled();
++    if (RefPtr presenter = m_presenter)
++        presenter->setOverlay(m_overlay.get());
++    if (m_overlay)
++        m_overlayTimer.startOneShot(MediaPlayerPrivateFFmpeg::overlayGeometryTick);
++}
++
 +void MediaPlayerPrivateFFmpegMSE::updateOverlay()
 +{
 +    if (!m_videoDecoder)
 +        return;
-+    if (!std::exchange(m_overlayCreated, true)) {
-+        m_overlay = FFmpegVideoOverlay::createIfEnabled();
-+        if (RefPtr presenter = m_presenter)
-+            presenter->setOverlay(m_overlay.get());
-+        if (m_overlay)
-+            m_overlayTimer.startOneShot(MediaPlayerPrivateFFmpeg::overlayGeometryTick);
-+    }
++    createOverlayIfNeeded();
 +    if (!m_overlay)
 +        return;
 +    RefPtr player = m_player.get();
@@ -11987,10 +12357,10 @@ index 000000000..a7244f304
 +        audioClock = audio->clockTime(m_audioSink->latency());
 +    double ahead = mediaSource ? toRangeSet(mediaSource->buffered()).bufferedAhead(position) : 0;
 +    auto timing = video ? video->takeTiming() : FFmpegVideoDecoder::Timing { };
-+    ffmpegMediaLog("mse stats: t=%.2f%s %s | video %u decoded %u dropped (+%u presenter) %zu queued, pts %.2f, decode %.1f ms convert %.1f ms per frame (%d threads) | queues v %zu/%.1fs a %zu/%.1fs | audio %s clock %.2f ring %.2fs | buffered ahead %.1fs, %llu KiB appended",
++    ffmpegMediaLog("mse stats: t=%.2f%s %s | video %u decoded %u dropped (+%u presenter) %zu queued, pts %.2f, decode %.1f ms convert %.1f ms per frame (%d threads, %s) | queues v %zu/%.1fs a %zu/%.1fs | audio %s clock %.2f ring %.2fs | buffered ahead %.1fs, %llu KiB appended",
 +        position, m_seeking ? " SEEKING" : "", readyStateName(m_readyState),
 +        video ? video->decodedFrames() : 0, video ? video->droppedFrames() : 0, presenterDroppedFrames(), video ? video->queuedFrames() : 0,
-+        currentFrame() ? currentFrame()->pts : -1.0, timing.decodeMilliseconds, timing.convertMilliseconds, video ? video->threadCount() : 0,
++        currentFrame() ? currentFrame()->pts : -1.0, timing.decodeMilliseconds, timing.convertMilliseconds, video ? video->threadCount() : 0, video ? video->decodeMode() : "none",
 +        videoLevel.packets, videoLevel.seconds, audioLevel.packets, audioLevel.seconds,
 +        m_audioSink ? m_audioSink->name() : "none", audioClock ? *audioClock : -1.0, audio ? audio->bufferedSeconds() : 0.0,
 +        ahead, static_cast<unsigned long long>(m_bytesAppended >> 10));
@@ -12086,10 +12456,10 @@ index 000000000..a7244f304
 +#endif // ENABLE(VIDEO) && USE(FFMPEG) && ENABLE(MEDIA_SOURCE)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.h b/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.h
 new file mode 100644
-index 000000000..e1ee29157
+index 000000000..f1e96568b
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.h
-@@ -0,0 +1,238 @@
+@@ -0,0 +1,241 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Media Source Extensions player of the ffmpeg media engine. Samples come
@@ -12247,6 +12617,9 @@ index 000000000..e1ee29157
 +    void createAudioSink(bool forceNull);
 +    void applyGain();
 +    void updateOverlay();
++    // Creates the video overlay once (before the video decoder, which may
++    // ask the UI to decode through it).
++    void createOverlayIfNeeded();
 +    void overlayTick();
 +    void setAudioSink(std::unique_ptr<AudioSink>&&);
 +    void startPresenter();
