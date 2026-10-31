@@ -111,8 +111,9 @@ The four roles:
   input. Started from the websrv tile through hbldr, so it is the big app
   (title `FAKE00000`), which is what gives it the screen and the controller.
 - **spawn-broker** — a plain payload that performs every spawn for the UI.
-  Started on demand by the UI through websrv (daemon launch). Exits when the
-  UI is gone and its children have exited.
+  Started on demand by the UI through websrv (daemon launch). Listens on an
+  AF_UNIX socket where the console allows one and on `127.0.0.1:17771`.
+  Exits when the UI is gone and its children have exited.
 - **WebProcess** — WebKit web content process. One per web process (the number
   is bounded by WebKit; see risks). Spawned by the broker for the UI.
 - **NetworkProcess** — WebKit networking process. Spawned the same way.
@@ -122,9 +123,9 @@ The four roles:
    |  tile click: GET /hbldr?path=...ps5browser.elf      (hbldr, big app)
    |  first spawn: GET /hbldr?...&daemon=1&args=spawn-broker ...  (elfldr_spawn)
    v                                   v
- UI (big app FAKE00000)  <-- AF_UNIX /data/ps5browser/tmp/spawn.sock -->  spawn-broker (plain payload)
-   |  WebKit IPC (SOCK_SEQPACKET pair;                                      |  rfork + ptrace + execve
-   |  the client end goes over the broker socket with SCM_RIGHTS)           v
+ UI (big app FAKE00000)  <-- AF_UNIX socket, else TCP 127.0.0.1:17771 -->  spawn-broker (plain payload)
+   |  WebKit IPC (SOCK_SEQPACKET pair; the client end goes                  |  rfork + ptrace + execve
+   |  as SCM_RIGHTS over AF_UNIX, or is rdup'ed from the UI over TCP)       v
    +------------------------------------------------------------------>  WebProcess, NetworkProcess
                                                                           (children of the broker)
 ```
@@ -149,14 +150,18 @@ where `sys_budget_set(0)` exists again.
 ### Launch sequence
 
 1. The websrv tile starts the UI through hbldr (`homebrew.js`).
-2. WebKit's first `ps5_spawn_self()` connects to the broker socket
-   (`PS5BROWSER_SPAWN_SOCK`, default `/data/ps5browser/tmp/spawn.sock`).
+2. WebKit's first `ps5_spawn_self()` tries the broker endpoints in order:
+   AF_UNIX `$PS5BROWSER_SPAWN_SOCK` (if set), `/tmp/ps5browser-spawn.sock`,
+   `/data/ps5browser/tmp/spawn.sock`, then TCP
+   `127.0.0.1:$PS5BROWSER_SPAWN_PORT` (default `17771`).
 3. Nobody listens: the UI sends websrv a plain HTTP/1.0 request
    (`PS5BROWSER_WEBSRV`, default `127.0.0.1:8080`):
 
    ```
-   GET /hbldr?path=/data/ps5browser/ps5browser.elf&cwd=/data/ps5browser&daemon=1&args=spawn-broker%20--role%3Dspawn-broker&env=PS5BROWSER_ROLE%3Dspawn-broker%20PS5BROWSER_SPAWN_SOCK%3D/data/ps5browser/tmp/spawn.sock%20PS5BROWSER_SELF_PATH%3D/data/ps5browser/ps5browser.elf HTTP/1.0
+   GET /hbldr?path=/data/ps5browser/ps5browser.elf&cwd=/data/ps5browser&daemon=1&args=spawn-broker%20--role%3Dspawn-broker&env=PS5BROWSER_ROLE%3Dspawn-broker%20PS5BROWSER_SPAWN_PORT%3D17771%20PS5BROWSER_SELF_PATH%3D/data/ps5browser/ps5browser.elf HTTP/1.0
    ```
+
+   (`PS5BROWSER_SPAWN_SOCK` is forwarded only when the UI has it set.)
 
    websrv (`src/ps5/sys.c`, `sys_launch_daemon`) reads a `path` starting
    with `/` (or `file:`) from disk, splits `args` and `env` on spaces
@@ -164,17 +169,25 @@ where `sys_budget_set(0)` exists again.
    ELF with `elfldr_spawn`: `argv[0]` is the first `args` token, which is
    also the process name, so the broker shows up as `spawn-broker`. websrv
    answers `200` once the payload runs, `503` if it could not start it.
-4. The UI polls the socket for up to 10 s, pings the broker, and sends the
+   The broker binds the first AF_UNIX path that works (console run 3:
+   `/data` gives `EOPNOTSUPP`) and also listens on loopback TCP; it exits
+   only if it can listen on nothing.
+4. The UI polls all endpoints for up to 5 s, pings the broker, and sends the
    spawn request. Every later spawn reuses the connection.
 5. The broker spawns the child with the UI's ELF path, `argv` and whole
    `environ` (so `FONTCONFIG_FILE`, `PS5BROWSER_CA_BUNDLE`, … reach the
-   WebProcess whatever the broker's own environment is), and the received
-   descriptors at child fd 3, 4, …. It replies with the pid, and reports
-   children that exit on their own back to the UI.
+   WebProcess whatever the broker's own environment is), and the
+   descriptors at child fd 3, 4, …: over AF_UNIX the ones it received as
+   `SCM_RIGHTS`; over TCP the UI names them (`src_pid`, `src_fds`) and the
+   loader copies them out of the UI process with `rdup`. It replies with
+   the pid, and reports children that exit on their own back to the UI.
 
 If the broker cannot be reached or started, the spawn fails (WebKit then
 shows no page) unless `PS5BROWSER_SPAWN_FALLBACK=direct` is set, which spawns
-in-process — and panics the console when the UI is the big app.
+in-process — and panics the console when the UI is the big app. Without the
+fallback, after two failures in a row the UI waits 30 s before the next
+attempt (logged as `backing off`), so a broken broker does not make WebKit's
+endless relaunches hammer websrv.
 
 ### Environment variables
 
@@ -182,7 +195,8 @@ in-process — and panics the console when the UI is the big app.
 |---|---|---|
 | `PS5BROWSER_SPAWN_MODE` | `broker` | `direct` spawns in-process (old behaviour); only for plain-payload (elfldr) launches |
 | `PS5BROWSER_SPAWN_FALLBACK` | unset | `direct`: spawn in-process when no broker can be reached |
-| `PS5BROWSER_SPAWN_SOCK` | `/data/ps5browser/tmp/spawn.sock` | broker socket (UI and broker) |
+| `PS5BROWSER_SPAWN_SOCK` | unset | extra AF_UNIX broker socket tried first (then `/tmp/ps5browser-spawn.sock`, `/data/ps5browser/tmp/spawn.sock`) |
+| `PS5BROWSER_SPAWN_PORT` | `17771` | loopback TCP port of the broker (UI and broker) |
 | `PS5BROWSER_WEBSRV` | `127.0.0.1:8080` | websrv address (IPv4 literal) used to start the broker |
 | `PS5BROWSER_SELF_PATH` | `/data/ps5browser/ps5browser.elf` | the ELF the broker runs as itself and spawns for the children |
 | `PS5BROWSER_ROLE` | — | role fallback (`spawn-broker` for the broker) |
@@ -218,8 +232,9 @@ the broker, which runs these steps; in direct mode the UI runs them itself):
    trampoline; the parent breakpoints to just before `main`, sets the libc
    heap size, the process name (`argv[0]`) and the environment, maps our ELF,
    then — because `RFCFDG` wiped the fd table — injects each extra descriptor
-   with `pt_rdup(child, self, fds[i].parent_fd)` + `pt_dup2(child, tmp, 3+i)`,
-   and detaches so `main()` runs our dispatcher.
+   with `pt_rdup(child, src_pid, fds[i].parent_fd)` + `pt_dup2(child, tmp, 3+i)`
+   (`src_pid` is the spawning process itself, or the UI when the broker
+   runs over TCP), and detaches so `main()` runs our dispatcher.
 
 Descriptor rules (from the contract):
 
@@ -227,7 +242,9 @@ Descriptor rules (from the contract):
   cleared.
 - The child inherits only 0/1/2 (the `deci_std*` devices, so stderr logging is
   forwarded to the launcher) plus the injected extras.
-- The caller keeps ownership of `fds[]` and closes its copies after the call;
+- The caller keeps ownership of `fds[]` and closes its copies after the call
+  (which is synchronous: it returns after the broker's reply, so a
+  descriptor the broker rdups from the UI is still open while it does);
   the child holds independent duplicates.
 - The UI's environment (at least the `PS5BROWSER_*` variables) is copied
   into the child.
@@ -287,9 +304,18 @@ Phase 1 uses the non-accelerated raster path (no EGL/GLES at runtime):
   while copying it into the child. websrv also reads the whole ELF into
   memory once to start the broker.
 - **Broker launch**: depends on websrv still running on `127.0.0.1:8080`
-  and on the big app being allowed to connect to it and to an AF_UNIX
-  socket under `/data` created by another process, and to pass descriptors
-  to it with `SCM_RIGHTS`. Not yet verified on a console.
+  (verified, run 3) and on the broker being reachable: AF_UNIX bind under
+  `/data` is refused (`EOPNOTSUPP`, run 3), so on the console it is expected
+  to run over loopback TCP.
+- **Cross-process rdup**: over TCP the loader rdups the IPC socket from the
+  UI (a big app) into a child of the broker (a plain payload). The syscall
+  runs in the child while its credentials are raised (root, all caps, no
+  jail), but the kernel may still refuse a source process in another
+  jail/sandbox; the log then shows `spawn: rdup(src_pid=..., fd=...) FAILED:
+  errno N` and the spawn fails at stage `rdup`. Not yet verified.
+- **Broker port**: `127.0.0.1:17771` accepts any local process, which can
+  then ask the broker to spawn an ELF or to copy a descriptor out of any
+  pid. Loopback only, same trust level as websrv's own HTTP API.
 - **Relocations**: the loader applies `R_X86_64_RELATIVE` only (~311k).
   The ELF also has 334 `GLOB_DAT`, 27 `R_X86_64_64` and one `JUMP_SLOT`
   relocation, left to the SDK crt at startup, the same as for every

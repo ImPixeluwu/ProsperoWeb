@@ -17,21 +17,44 @@ spawn (`GET /hbldr?...&daemon=1`, see `docs/ps5-runtime.md`, "Launch
 sequence").
 
 Protocol (`broker_proto.{h,cpp}`): length-prefixed JSON frames (4-byte
-big-endian length, then a JSON object) over an AF_UNIX stream socket,
-`/data/ps5browser/tmp/spawn.sock` (`PS5BROWSER_SPAWN_SOCK`, mode `0666`).
-Descriptors are `SCM_RIGHTS` ancillary data on the frame that announces
-them.
+big-endian length, then a JSON object) over a stream socket.
+
+Transport selection. The console refuses to bind an AF_UNIX socket under
+`/data` (`bind: Operation not supported`, console run 3 of 2026-10-31), so
+both sides walk the same list:
+
+1. AF_UNIX `$PS5BROWSER_SPAWN_SOCK` (if set),
+2. AF_UNIX `/tmp/ps5browser-spawn.sock`,
+3. AF_UNIX `/data/ps5browser/tmp/spawn.sock`,
+4. TCP `127.0.0.1:$PS5BROWSER_SPAWN_PORT` (default `17771`).
+
+The broker binds the first AF_UNIX path that works (mode `0666`; every
+failed bind is logged with its errno) and **also** listens on loopback TCP,
+because the UI, a big app, may not see the broker's filesystem the same way;
+it exits only if it can listen on nothing. The UI connects to the first
+endpoint that answers, in the same order.
+
+Descriptors. Over AF_UNIX they are `SCM_RIGHTS` ancillary data on the frame
+that announces them (`nfds`); the broker then owns copies and the loader
+rdups them from the broker itself. Over TCP that is impossible, so the
+frame names them instead: `"src_pid":<UI pid>,"src_fds":[13]`, `nfds` 0.
+The loader rdups them straight out of the UI process into the stopped
+child (`pt_rdup(child, src_pid, fd)` + `pt_dup2(child, tmp, 3+i)`, see
+`elfldr_inject_fds`). The UI keeps the descriptors open until the broker's
+reply arrives: `ps5_spawn_self()` is synchronous and WebKit's launcher
+(patch 0005) closes the client end only after it returns.
 
 | Direction | Frame | Reply |
 |---|---|---|
-| UI → broker | `{"op":"spawn","elf":"/data/ps5browser/ps5browser.elf","argv":[...],"env":[...],"nfds":1}` + fds | `{"ok":true,"pid":N}` or `{"ok":false,"stage":"...","errno":N,"error":"..."}` |
+| UI → broker (AF_UNIX) | `{"op":"spawn","elf":"/data/ps5browser/ps5browser.elf","argv":[...],"env":[...],"nfds":1}` + fds | `{"ok":true,"pid":N}` or `{"ok":false,"stage":"...","errno":N,"error":"..."}` |
+| UI → broker (TCP) | `{"op":"spawn","elf":...,"argv":[...],"env":[...],"nfds":0,"src_pid":93,"src_fds":[13]}` | same; a refused rdup is `"stage":"rdup"` with its errno |
 | UI → broker | `{"op":"terminate","pid":N}` | `{"ok":true}` (also for an already reaped pid) |
 | UI → broker | `{"op":"ping"}` | `{"ok":true,"pid":<broker pid>}` |
 | broker → UI | `{"ev":"exited","pid":N,"status":<wait status>}` | — |
 
 `env` is the UI's whole `environ`, so the children see the UI's
-environment, not the broker's. Received descriptors land at child fd 3, 4,
-… in order.
+environment, not the broker's. The descriptors (received or named) land at
+child fd 3, 4, … in order.
 
 Broker (`broker_server.{h,cpp}`, run by `ps5_spawn_broker_main()` in
 `spawn_glue.cpp`): a single-threaded accept/request loop plus a reaper
@@ -45,28 +68,48 @@ actual spawn is a hook (`broker_set_spawn_hook`): `ps5_spawn_elfldr()` from
 Client (`broker_client.{h,cpp}`, used by `spawn_glue.cpp`): one connection
 with a reader thread that hands replies to the waiting request and logs
 `exited` events; the raw HTTP/1.0 GET that asks websrv to start the broker
-(`PS5BROWSER_WEBSRV`, default `127.0.0.1:8080`). If the broker cannot be
-reached the spawn fails, unless `PS5BROWSER_SPAWN_FALLBACK=direct`.
+(`PS5BROWSER_WEBSRV`, default `127.0.0.1:8080`; it forwards
+`PS5BROWSER_SPAWN_SOCK` if set and `PS5BROWSER_SPAWN_PORT`). After asking
+websrv the UI polls every endpoint for up to 5 s. If the broker cannot be
+reached the spawn fails, unless `PS5BROWSER_SPAWN_FALLBACK=direct`. After two
+such failures in a row the UI waits 30 s before the next attempt (WebKit
+relaunches a failed process immediately and forever, and each attempt would
+ask websrv for another broker); a success clears the back-off.
 
 `PS5BROWSER_SPAWN_MODE=direct` keeps the in-process spawner
 (`ps5_spawn_direct()` in `spawn.c`, with its own reaper thread). Use it only
 when the UI itself is a plain payload (an elfldr launch).
 
-Expected `log.txt` lines on the first spawn:
+Expected `log.txt` lines on the first spawn when no AF_UNIX path binds
+(the console as of run 3; UI pid 92):
 
     [ 95 UI] spawn: mode broker
-    [ 95 UI] spawn: broker connecting to /data/ps5browser/tmp/spawn.sock
-    [ 96 UI] spawn: broker not running (No such file or directory), asking websrv
-    [ 12 broker] main: pid=101 ppid=53 argv0=spawn-broker
-    [ 14 broker] broker: listening on /data/ps5browser/tmp/spawn.sock, pid 101
+    [ 95 UI] spawn: broker connecting, trying unix /tmp/ps5browser-spawn.sock, unix /data/ps5browser/tmp/spawn.sock, tcp 127.0.0.1:17771
+    [ 96 UI] spawn: broker not running (unix /tmp/ps5browser-spawn.sock: No such file or directory; unix /data/ps5browser/tmp/spawn.sock: No such file or directory; tcp 127.0.0.1:17771: Connection refused), asking websrv
+    [ 12 broker] main: pid=101 ppid=93 argv0=spawn-broker
+    [ 14 broker] broker: bind unix /tmp/ps5browser-spawn.sock: errno 45 (Operation not supported)
+    [ 15 broker] broker: bind unix /data/ps5browser/tmp/spawn.sock: errno 45 (Operation not supported)
+    [ 16 broker] broker: listening on tcp 127.0.0.1:17771
+    [ 16 broker] broker: ready, pid 101
     [900 UI] websrv: GET http://127.0.0.1:8080/hbldr?path=... -> HTTP 200 in 800ms
-    [905 UI] spawn: broker ready pid=101 in 810ms
-    [ 20 broker] broker: client connected, 0 children alive
+    [905 UI] spawn: broker connected via tcp 127.0.0.1:17771 (descriptors passed by rdup from this pid)
+    [ 20 broker] broker: client connected over tcp, 0 children alive
+    [906 UI] spawn: broker ready pid=101 in 810ms
+    [ 21 broker] broker: role=WebProcess takes fds [13] from pid 92 (rdup)
     [ 21 broker] spawn: self ELF /data/ps5browser/ps5browser.elf (... bytes, mapped), fw 0x..., pid 101
-    [ 22 broker] spawn: role=WebProcess starting, fds=[5->3]
-    [ 60 broker] spawn: role=WebProcess pid=102 fds=[5->3] ok in 38ms, budget_set(0) ok
+    [ 22 broker] spawn: role=WebProcess starting, fds=[92:13->3]
+    [ 58 broker] spawn: rdup(src_pid=92, fd=13) -> child fd 3
+    [ 60 broker] spawn: role=WebProcess pid=102 fds=[92:13->3] ok in 38ms, budget_set(0) ok
     [ 60 broker] broker: role=WebProcess pid=102 spawned in 39ms
-    [950 UI] spawn: role=WebProcess pid=102 via broker in 45ms
+    [950 UI] spawn: role=WebProcess pid=102 via broker (tcp, rdup) in 45ms
+
+If the kernel refuses the cross-process rdup, the broker logs
+`spawn: rdup(src_pid=92, fd=13) FAILED: errno N (...)` and
+`spawn: role=WebProcess FAILED at rdup: ...`, and the UI
+`spawn: role=WebProcess FAILED via broker at rdup: errno N (...)`.
+With a working AF_UNIX path the broker logs `listening on unix <path>`, the
+UI `connected via unix <path>`, the fd table reads `fds=[5->3]` and the
+rdup source is the broker's own pid.
 
 ## Origin and NOTICE
 
@@ -83,7 +126,10 @@ Changes made for ps5-browser (also noted in each file's header):
   `elfldr_spawn()` became `elfldr_spawn_fds()`: instead of duplicating a single
   `stdio` descriptor onto 0/1/2, the loader keeps the `deci_std*` descriptors
   the rfork entry opens as stdio and injects a caller-supplied table of extra
-  descriptors at child fd `3+i` (`pt_rdup` + `pt_dup2`). The child's
+  descriptors at child fd `3+i` (`pt_rdup` + `pt_dup2`), each copied from
+  the process named in its table entry (`src_pid`: the broker itself, or
+  the UI when the broker runs over TCP); every rdup/dup2 is logged with
+  its errno and a failed one is reported as stage `rdup`/`dup2`. The child's
   environment is an `envp` argument (`elfldr_set_environ`, taken from the
   shsrv variant of elfldr): the UI's environment, forwarded by the broker,
   so the role process sees the `PS5BROWSER_*` variables. `elfldr_read()` and `elfldr_find_pid()` were dropped as unused.

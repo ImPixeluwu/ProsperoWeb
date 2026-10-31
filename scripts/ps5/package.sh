@@ -231,7 +231,8 @@ optionally klogsrv (port 3232) to read the debug output.
    websrv (http://127.0.0.1:8080) to start its spawn broker, a background
    helper ("spawn-broker") that starts the WebProcess and NetworkProcess.
    Starting them from the browser itself panics the console. The broker
-   exits on its own after the browser quits.
+   listens on 127.0.0.1:17771 (loopback only; PS5BROWSER_SPAWN_PORT
+   changes it) and exits on its own after the browser quits.
 
    PS5BROWSER_SPAWN_MODE=direct (spawn without the broker) is only for a
    plain-payload launch through elfldr, used for debugging; never set it
