@@ -20,9 +20,10 @@ class Ps5ChromeUi final : public shell::ChromeUi {
   using EventHandler = std::function<void(const nlohmann::json&)>;
 
   // context/data_store are shared with the content views. chrome_url is the
-  // file:// URL of chrome.html. The chrome view spans the whole window
-  // (width x height) and paints over a transparent background. on_event
-  // receives decoded chrome events.
+  // file:// URL of chrome.html; when it is empty or fails to load, a small
+  // built-in fallback chrome is shown instead. The chrome view spans the
+  // whole window (width x height) and paints over a transparent background.
+  // on_event receives decoded chrome events.
   Ps5ChromeUi(WKContextRef context, WKWebsiteDataStoreRef data_store,
               const std::string& chrome_url, int width, int height,
               EventHandler on_event);
@@ -35,8 +36,11 @@ class Ps5ChromeUi final : public shell::ChromeUi {
   WkWebView& web() { return *web_; }
 
  private:
+  void load_fallback();
+
   EventHandler on_event_;
   std::unique_ptr<WkWebView> web_;
+  bool fallback_loaded_ = false;
 };
 
 }  // namespace ps5browser::frontend

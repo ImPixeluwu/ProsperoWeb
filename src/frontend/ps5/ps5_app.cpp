@@ -2,8 +2,11 @@
 #include "ps5_app.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
 #include <optional>
+
+#include <unistd.h>
 
 #include <WebKit/WKRunLoop.h>
 
@@ -163,7 +166,13 @@ int Ps5App::run() {
   factory_ = std::make_unique<Ps5EngineFactory>(kBaseDir, user_scripts,
                                                 config_.user_agent);
 
-  std::string chrome_url = "file://" + config_.chrome_dir + "/chrome.html";
+  const std::string chrome_path = config_.chrome_dir + "/chrome.html";
+  std::string chrome_url = "file://" + chrome_path;
+  if (access(chrome_path.c_str(), R_OK) != 0) {
+    log_printf("chrome: %s is missing (%s); reinstall the chrome/ directory",
+               chrome_path.c_str(), std::strerror(errno));
+    chrome_url.clear();  // Ps5ChromeUi shows its built-in fallback
+  }
   chrome_ = std::make_unique<Ps5ChromeUi>(
       factory_->context(), factory_->data_store(), chrome_url, width_, height_,
       [this](const nlohmann::json& e) {
