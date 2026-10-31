@@ -1,0 +1,487 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "config.h"
+#include "FFmpegResourceIO.h"
+
+#if ENABLE(VIDEO) && USE(FFMPEG)
+
+#include "HTTPHeaderNames.h"
+#include "HTTPStatusCodes.h"
+#include "PlatformMediaResourceLoader.h"
+#include "ResourceError.h"
+#include "ResourceRequest.h"
+#include "ResourceResponse.h"
+#include "SharedBuffer.h"
+#include <wtf/MainThread.h>
+#include <wtf/text/MakeString.h>
+#include <wtf/text/StringToIntegerConversion.h>
+
+extern "C" {
+#include <libavformat/avio.h>
+#include <libavutil/error.h>
+#include <libavutil/mem.h>
+}
+
+namespace WebCore {
+
+namespace {
+
+// Network read-ahead per stream: the request is cancelled above the high
+// water mark and resumed with a Range request below the low one. Servers
+// without range support are never suspended (they cannot be resumed).
+constexpr uint64_t highWaterBytes = 16u << 20;
+constexpr uint64_t lowWaterBytes = 4u << 20;
+// Already-read data kept for the short backward seeks demuxers do.
+constexpr uint64_t historyBytes = 512u << 10;
+// A forward seek this close to the received data waits for it instead of
+// issuing a new request.
+constexpr uint64_t forwardWaitBytes = 512u << 10;
+// Received data is coalesced into chunks of about this size.
+constexpr size_t chunkCoalesceBytes = 256u << 10;
+constexpr Seconds pollInterval = 50_ms;
+constexpr int avioBufferSize = 64 * 1024;
+
+class StreamClient final : public PlatformMediaResourceClient {
+public:
+    static Ref<StreamClient> create(Ref<FFmpegResourceStream>&& stream, unsigned requestId)
+    {
+        return adoptRef(*new StreamClient(WTF::move(stream), requestId));
+    }
+
+private:
+    StreamClient(Ref<FFmpegResourceStream>&& stream, unsigned requestId)
+        : m_stream(WTF::move(stream))
+        , m_requestId(requestId)
+    {
+    }
+
+    void responseReceived(PlatformMediaResource& resource, const ResourceResponse& response, CompletionHandler<void(ShouldContinuePolicyCheck)>&& completionHandler) final
+    {
+        bool shouldContinue = true;
+        m_stream->didReceiveResponse(m_requestId, response, resource.didPassAccessControlCheck(), shouldContinue);
+        completionHandler(shouldContinue ? ShouldContinuePolicyCheck::Yes : ShouldContinuePolicyCheck::No);
+    }
+
+    bool shouldCacheResponse(PlatformMediaResource&, const ResourceResponse&) final { return false; }
+    void dataReceived(PlatformMediaResource&, const SharedBuffer& buffer) final { m_stream->didReceiveData(m_requestId, buffer.span()); }
+    void accessControlCheckFailed(PlatformMediaResource&, const ResourceError&) final { m_stream->didFail(m_requestId, true); }
+    void loadFailed(PlatformMediaResource&, const ResourceError&) final { m_stream->didFail(m_requestId, false); }
+    void loadFinished(PlatformMediaResource&, const NetworkLoadMetrics&) final { m_stream->didFinish(m_requestId); }
+
+    const Ref<FFmpegResourceStream> m_stream;
+    const unsigned m_requestId;
+};
+
+// "bytes 0-99/1234" -> 1234; -1 when absent or "*".
+int64_t totalFromContentRange(const String& contentRange)
+{
+    size_t slash = contentRange.find('/');
+    if (slash == notFound)
+        return -1;
+    auto total = parseIntegerAllowingTrailingJunk<uint64_t>(StringView(contentRange).substring(slash + 1));
+    return total ? static_cast<int64_t>(*total) : -1;
+}
+
+int readPacketCallback(void* opaque, uint8_t* buffer, int size)
+{
+    return static_cast<FFmpegResourceStream*>(opaque)->read(buffer, size);
+}
+
+int64_t seekCallback(void* opaque, int64_t offset, int whence)
+{
+    return static_cast<FFmpegResourceStream*>(opaque)->seek(offset, whence);
+}
+
+} // namespace
+
+Ref<FFmpegResourceStream> FFmpegResourceStream::create(Ref<PlatformMediaResourceLoader>&& loader, const URL& url, Ref<FFmpegIOShared>&& shared)
+{
+    return adoptRef(*new FFmpegResourceStream(WTF::move(loader), url, WTF::move(shared)));
+}
+
+FFmpegResourceStream::FFmpegResourceStream(Ref<PlatformMediaResourceLoader>&& loader, const URL& url, Ref<FFmpegIOShared>&& shared)
+    : m_loader(WTF::move(loader))
+    , m_url(url.isolatedCopy())
+    , m_shared(WTF::move(shared))
+{
+}
+
+FFmpegResourceStream::~FFmpegResourceStream()
+{
+    Locker locker { m_lock };
+    stopResourceLocked();
+}
+
+AVIOContext* FFmpegResourceStream::createAVIOContext(Ref<FFmpegResourceStream>&& stream)
+{
+    auto* buffer = static_cast<unsigned char*>(av_malloc(avioBufferSize));
+    if (!buffer)
+        return nullptr;
+    bool seekable;
+    {
+        Locker locker { stream->m_lock };
+        seekable = stream->m_size > 0;
+    }
+    auto* rawStream = &stream.leakRef();
+    AVIOContext* context = avio_alloc_context(buffer, avioBufferSize, 0, rawStream, readPacketCallback, nullptr, seekCallback);
+    if (!context) {
+        av_free(buffer);
+        rawStream->close();
+        rawStream->deref();
+        return nullptr;
+    }
+    // Servers without Range support stay seekable: a seek restarts the
+    // download and skips to the target, which is slow but correct (an MP4
+    // with the moov atom at the end needs it).
+    context->seekable = seekable ? AVIO_SEEKABLE_NORMAL : 0;
+    return context;
+}
+
+bool FFmpegResourceStream::isOurAVIOContext(const AVIOContext* context)
+{
+    return context && context->read_packet == readPacketCallback;
+}
+
+void FFmpegResourceStream::destroyAVIOContext(AVIOContext* context)
+{
+    if (!context)
+        return;
+    if (auto* stream = static_cast<FFmpegResourceStream*>(context->opaque)) {
+        stream->close();
+        stream->deref();
+    }
+    av_freep(&context->buffer);
+    avio_context_free(&context);
+}
+
+int FFmpegResourceStream::open()
+{
+    Locker locker { m_lock };
+    startRequestLocked(0, false);
+    while (m_state == RequestState::Pending) {
+        if (m_shared->aborted || m_closed)
+            return AVERROR_EXIT;
+        m_condition.waitFor(m_lock, pollInterval);
+    }
+    if (m_state == RequestState::Failed)
+        return AVERROR(EIO);
+    return 0;
+}
+
+uint64_t FFmpegResourceStream::bufferStartLocked() const
+{
+    return m_chunks.isEmpty() ? m_requestPosition : m_chunks.first().position;
+}
+
+uint64_t FFmpegResourceStream::bufferEndLocked() const
+{
+    return m_chunks.isEmpty() ? m_requestPosition : m_chunks.last().end();
+}
+
+size_t FFmpegResourceStream::copyOutLocked(uint8_t* out, size_t size)
+{
+    size_t copied = 0;
+    for (auto& chunk : m_chunks) {
+        if (copied == size)
+            break;
+        if (m_readPosition < chunk.position || m_readPosition >= chunk.end())
+            continue;
+        size_t offset = static_cast<size_t>(m_readPosition - chunk.position);
+        size_t count = std::min(size - copied, chunk.data.size() - offset);
+        memcpy(out + copied, chunk.data.span().subspan(offset, count).data(), count);
+        copied += count;
+        m_readPosition += count;
+    }
+    return copied;
+}
+
+void FFmpegResourceStream::trimHistoryLocked()
+{
+    while (m_chunks.size() > 1 && m_chunks.first().end() + historyBytes <= m_readPosition)
+        m_chunks.removeFirst();
+}
+
+bool FFmpegResourceStream::waitLocked()
+{
+    if (m_shared->aborted || m_closed)
+        return false;
+    m_condition.waitFor(m_lock, pollInterval);
+    return !(m_shared->aborted || m_closed);
+}
+
+int FFmpegResourceStream::read(uint8_t* buffer, int size)
+{
+    if (size <= 0)
+        return 0;
+    Locker locker { m_lock };
+    while (true) {
+        if (m_shared->aborted || m_closed)
+            return AVERROR_EXIT;
+
+        uint64_t start = bufferStartLocked();
+        uint64_t end = bufferEndLocked();
+        if (m_readPosition >= start && m_readPosition < end) {
+            size_t copied = copyOutLocked(buffer, static_cast<size_t>(size));
+            trimHistoryLocked();
+            if (m_state == RequestState::Suspended && bufferEndLocked() - m_readPosition < lowWaterBytes)
+                startRequestLocked(bufferEndLocked(), true);
+            return static_cast<int>(copied);
+        }
+
+        if (m_size >= 0 && m_readPosition >= static_cast<uint64_t>(m_size))
+            return AVERROR_EOF;
+
+        bool inReach = m_readPosition >= start && m_readPosition <= end + forwardWaitBytes;
+        switch (m_state) {
+        case RequestState::None:
+            startRequestLocked(m_readPosition, false);
+            break;
+        case RequestState::Pending:
+        case RequestState::Receiving:
+            if (!inReach)
+                startRequestLocked(m_readPosition, false);
+            break;
+        case RequestState::Finished:
+            if (inReach)
+                return AVERROR_EOF;
+            startRequestLocked(m_readPosition, false);
+            break;
+        case RequestState::Failed:
+            return AVERROR(EIO);
+        case RequestState::Suspended:
+            startRequestLocked(m_readPosition, m_readPosition == end);
+            break;
+        }
+        if (!waitLocked())
+            return AVERROR_EXIT;
+    }
+}
+
+int64_t FFmpegResourceStream::seek(int64_t offset, int whence)
+{
+    Locker locker { m_lock };
+    if (whence & AVSEEK_SIZE) {
+        while (m_state == RequestState::Pending || m_state == RequestState::None) {
+            if (m_state == RequestState::None)
+                startRequestLocked(m_readPosition, false);
+            if (!waitLocked())
+                return AVERROR_EXIT;
+        }
+        return m_size >= 0 ? m_size : AVERROR(ENOSYS);
+    }
+
+    int64_t target;
+    switch (whence & ~AVSEEK_FORCE) {
+    case SEEK_SET:
+        target = offset;
+        break;
+    case SEEK_CUR:
+        target = static_cast<int64_t>(m_readPosition) + offset;
+        break;
+    case SEEK_END:
+        if (m_size < 0)
+            return AVERROR(ENOSYS);
+        target = m_size + offset;
+        break;
+    default:
+        return AVERROR(EINVAL);
+    }
+    if (target < 0)
+        return AVERROR(EINVAL);
+    // The request (if one is needed) is issued lazily by the next read().
+    m_readPosition = static_cast<uint64_t>(target);
+    return target;
+}
+
+void FFmpegResourceStream::close()
+{
+    Locker locker { m_lock };
+    m_closed = true;
+    ++m_requestId;
+    stopResourceLocked();
+    m_chunks.clear();
+    m_condition.notifyAll();
+}
+
+void FFmpegResourceStream::startRequestLocked(uint64_t position, bool keepBuffer)
+{
+    stopResourceLocked();
+    if (!keepBuffer)
+        m_chunks.clear();
+    m_requestPosition = position;
+    m_receivedInRequest = 0;
+    m_skipBytes = 0;
+    m_state = RequestState::Pending;
+    unsigned requestId = ++m_requestId;
+    callOnMainThread([protectedThis = Ref { *this }, requestId, position] {
+        protectedThis->dispatchRequest(requestId, position);
+    });
+}
+
+void FFmpegResourceStream::dispatchRequest(unsigned requestId, uint64_t position)
+{
+    ASSERT(isMainThread());
+    {
+        Locker locker { m_lock };
+        if (m_closed || requestId != m_requestId)
+            return;
+    }
+
+    ResourceRequest request { URL { m_url } };
+    request.setAllowCookies(true);
+    if (position)
+        request.setHTTPHeaderField(HTTPHeaderName::Range, makeString("bytes="_s, position, '-'));
+
+    // Never call into the resource while holding m_lock: shutdown() and the
+    // loader may call the client synchronously, which takes m_lock.
+    RefPtr resource = m_loader->requestResource(WTF::move(request), PlatformMediaResourceLoader::LoadOption::DisallowCaching);
+    if (!resource) {
+        Locker locker { m_lock };
+        if (requestId == m_requestId) {
+            m_state = RequestState::Failed;
+            m_shared->networkError = true;
+            m_condition.notifyAll();
+        }
+        return;
+    }
+    resource->setClient(StreamClient::create(Ref { *this }, requestId));
+
+    bool stale;
+    {
+        Locker locker { m_lock };
+        stale = m_closed || requestId != m_requestId;
+        if (!stale)
+            m_resource = resource;
+    }
+    if (stale) {
+        resource->shutdown();
+        resource->setClient(nullptr);
+    }
+}
+
+void FFmpegResourceStream::stopResourceLocked()
+{
+    RefPtr resource = WTF::move(m_resource);
+    if (!resource)
+        return;
+    // Always asynchronous: this runs on the demuxer thread or inside a
+    // resource client callback.
+    callOnMainThread([resource = WTF::move(resource)] {
+        resource->shutdown();
+        resource->setClient(nullptr);
+    });
+}
+
+void FFmpegResourceStream::suspendLocked()
+{
+    ++m_requestId;
+    m_state = RequestState::Suspended;
+    stopResourceLocked();
+}
+
+void FFmpegResourceStream::didReceiveResponse(unsigned requestId, const ResourceResponse& response, bool passedAccessControlCheck, bool& shouldContinue)
+{
+    Locker locker { m_lock };
+    if (m_closed || requestId != m_requestId) {
+        shouldContinue = false;
+        return;
+    }
+
+    bool isHTTP = response.url().protocolIsInHTTPFamily() || m_url.protocolIsInHTTPFamily();
+    int status = response.httpStatusCode();
+    if (isHTTP && status >= httpStatus400BadRequest) {
+        m_state = RequestState::Failed;
+        m_shared->networkError = true;
+        m_condition.notifyAll();
+        shouldContinue = false;
+        return;
+    }
+
+    m_shared->sawResponse = true;
+    if (isHTTP && !passedAccessControlCheck)
+        m_shared->didPassAccessControlCheck = false;
+
+    bool isPartial = isHTTP && status == httpStatus206PartialContent;
+    if (m_requestPosition && !isPartial) {
+        // The server ignored Range and sends the whole body: skip to the
+        // requested position and stop issuing range requests.
+        m_skipBytes = m_requestPosition;
+        m_rangesSupported = false;
+    }
+
+    int64_t length = response.httpHeaderFields().contains(HTTPHeaderName::ContentEncoding) ? -1 : response.expectedContentLength();
+    if (isPartial) {
+        int64_t total = totalFromContentRange(response.httpHeaderField(HTTPHeaderName::ContentRange));
+        if (total > 0)
+            m_size = total;
+        else if (length > 0)
+            m_size = static_cast<int64_t>(m_requestPosition) + length;
+    } else if (length > 0)
+        m_size = length;
+
+    if (isHTTP && equalLettersIgnoringASCIICase(response.httpHeaderField(HTTPHeaderName::AcceptRanges), "none"_s))
+        m_rangesSupported = false;
+
+    m_state = RequestState::Receiving;
+    m_condition.notifyAll();
+}
+
+void FFmpegResourceStream::didReceiveData(unsigned requestId, std::span<const uint8_t> data)
+{
+    Locker locker { m_lock };
+    if (m_closed || requestId != m_requestId)
+        return;
+
+    m_shared->bytesReceived += data.size();
+    if (m_skipBytes) {
+        size_t skipped = static_cast<size_t>(std::min<uint64_t>(m_skipBytes, data.size()));
+        m_skipBytes -= skipped;
+        data = data.subspan(skipped);
+    }
+    if (data.empty())
+        return;
+
+    uint64_t position = m_requestPosition + m_receivedInRequest;
+    m_receivedInRequest += data.size();
+    if (!m_chunks.isEmpty() && m_chunks.last().end() == position && m_chunks.last().data.size() < chunkCoalesceBytes)
+        m_chunks.last().data.append(data);
+    else {
+        Chunk chunk;
+        chunk.position = position;
+        chunk.data.append(data);
+        m_chunks.append(WTF::move(chunk));
+    }
+
+    uint64_t end = bufferEndLocked();
+    if (m_rangesSupported && m_size > 0 && end > m_readPosition && end - m_readPosition > highWaterBytes && end < static_cast<uint64_t>(m_size))
+        suspendLocked();
+    m_condition.notifyAll();
+}
+
+void FFmpegResourceStream::didFinish(unsigned requestId)
+{
+    Locker locker { m_lock };
+    if (m_closed || requestId != m_requestId)
+        return;
+    m_state = RequestState::Finished;
+    // Without Content-Length the size is known once the body is complete.
+    if (m_size < 0 && !m_skipBytes)
+        m_size = static_cast<int64_t>(m_requestPosition + m_receivedInRequest);
+    m_condition.notifyAll();
+}
+
+void FFmpegResourceStream::didFail(unsigned requestId, bool isAccessControlFailure)
+{
+    Locker locker { m_lock };
+    if (m_closed || requestId != m_requestId)
+        return;
+    m_state = RequestState::Failed;
+    m_shared->networkError = true;
+    if (isAccessControlFailure)
+        m_shared->didPassAccessControlCheck = false;
+    m_condition.notifyAll();
+}
+
+} // namespace WebCore
+
+#endif // ENABLE(VIDEO) && USE(FFMPEG)
