@@ -13,7 +13,8 @@
 | `FFmpegResourceIO.{h,cpp}` | `AVIOContext` over WebCore's `PlatformMediaResourceLoader` (also installed as `AVFormatContext::io_open` for HLS playlists, keys and segments) |
 | `FFmpegVideoDecoder.{h,cpp}` | video decoder thread: libavcodec, libswscale to BGRA, frame pool, output queue |
 | `FFmpegAudioDecoder.{h,cpp}` | audio decoder thread: libavcodec, libswresample to float32 stereo 48 kHz, ring buffer, audio clock |
-| `AudioSink.{h,cpp}` | output: `SDL_OpenAudioDevice` (SDL's PS5 driver is sceAudioOut) or `NullAudioSink` |
+| `AudioSink.{h,cpp}` | output: `RemoteAudioSink` (forwards to the UI process), `SDL_OpenAudioDevice` (SDL's PS5 driver is sceAudioOut) or `NullAudioSink` |
+| `FFmpegAudioWire.h`, `FFmpegRemoteAudioClient.h` | audio forwarding protocol, client clock and socket client (no WebCore/WTF; also used by the UI's server in `src/ps5/audio` and by `tests/ps5`) |
 | `FFmpegUtilities.h` | ffmpeg RAII types, `FFmpegStreamInfo`, `findSoftwareDecoder()` |
 | `FFmpegSupportTable.h`, `FFmpegTimeRanges.h`, `FFmpegAVClock.h`, `FFmpegRingBuffer.h`, `FFmpegPlaybackPolicy.h` | engine-independent logic (no WebCore/WTF/ffmpeg), unit-tested on the host by `tests/media/` |
 | `../FFmpeg.cmake` | becomes `Source/WebCore/platform/FFmpeg.cmake`: sources, include dirs, libraries |
@@ -28,7 +29,7 @@
 | `FFmpegDemuxer` | opens the input, then loops `av_read_frame` into the queues; handles seek requests; waits when the queues are full |
 | `FFmpegVideoDecoder` | packets → frames → BGRA |
 | `FFmpegAudioDecoder` | packets → float samples → ring buffer |
-| audio sink | SDL's audio callback thread, or the null sink's 10 ms timer thread |
+| audio sink | the remote sink's writer thread (5 ms pump), SDL's audio callback thread, or the null sink's 10 ms timer thread |
 
 The main thread never blocks on a worker, except to join threads on teardown, and every worker wait polls an abort flag (at most 50 ms). Teardown order: sink, then demuxer (which aborts the packet queues), then decoders.
 
@@ -38,9 +39,19 @@ The demuxer keeps one `FFmpegPacketQueue` each for the selected video and audio 
 
 Demuxer read-ahead stops at 24 MiB in total, or when every enabled stream has at least 10 s and 25 packets queued (`FFmpegPlaybackPolicy.h`). Separately, each network stream suspends its request above 8 MiB of unread data and resumes it with a `Range` request below 2 MiB, also when the size is unknown. A server without `Range` support is suspended above 32 MiB and resumed by restarting the download and skipping to the position (`networkShouldSuspend` in `FFmpegPlaybackPolicy.h`).
 
+### Audio output
+
+Only the foreground application is heard on the PS5, and the WebProcess is a plain payload: SDL opens sceAudioOut there and drains it, silently. `AudioSink::create()` therefore tries, in order:
+
+1. **`remote`**: `RemoteAudioSink` connects to the UI process's audio server on `127.0.0.1:$PS5BROWSER_AUDIO_PORT` (17772; the UI exports the variable, and it is also the default on PlayStation) within 300 ms. Its writer thread pulls 10 ms chunks from the decoder's ring whenever less than 100 ms (`PS5BROWSER_AUDIO_AHEAD_MS`) is queued on the server, and sends them with pause/resume, flush (on seek) and close messages. The server mixes every stream into one SDL device and reports, every 20 ms, how many frames of the stream it retired (played, or dropped by a flush or an overflow) and how many are queued. Between reports the position extrapolates in real time for at most 100 ms, so a stalled server stalls the clock and the watchdog below switches to the null sink. If the connection drops, the sink keeps pulling in real time without sound.
+2. **`sdl`**: `SDLAudioSink`, an output in the WebProcess itself (audible on desktop builds, not on the console).
+3. **`null`**: `NullAudioSink`.
+
+`PS5BROWSER_MEDIA_AUDIO=remote|sdl|null` picks the first one tried; failures fall through in the same order. The protocol is in `FFmpegAudioWire.h`; the server is `src/ps5/audio` plus `src/frontend/ps5/ps5_audio_server.cpp`; see `docs/ps5-runtime.md` ("Audio path").
+
 ### Clock
 
-`FFmpegAVClock.h`. Audio is the master when there is an audio stream, the sink is running and the rate is 1. The clock is the base pts of the first sample written since the last flush, plus the frames the sink consumed, divided by 48000, minus the sink latency (two SDL buffers). The audio decoder keeps that timeline linear: it fills timestamp gaps with silence and trims to the seek target. In every other case the clock extrapolates monotonic time times the rate from the last anchor: no audio, audio ended before video, playback rate other than 1, or the silent sink after a failure. The extrapolated clock stalls while less than 0.1 s of data is demuxed ahead (buffering). The clock never goes backwards except across a seek.
+`FFmpegAVClock.h`. Audio is the master when there is an audio stream, the sink is running and the rate is 1. The clock is the base pts of the first sample written since the last flush, plus the frames the sink consumed, divided by 48000, minus the sink latency: two SDL buffers for the local sink; for the remote sink, the frames sent but not yet retired by the server plus the server's two SDL buffers. The audio decoder keeps that timeline linear: it fills timestamp gaps with silence and trims to the seek target. In every other case the clock extrapolates monotonic time times the rate from the last anchor: no audio, audio ended before video, playback rate other than 1, or the silent sink after a failure. The extrapolated clock stalls while less than 0.1 s of data is demuxed ahead (buffering). The clock never goes backwards except across a seek.
 
 Each video frame waits until its pts is reached and is dropped if the next frame is also due. While paused or seeking, the first frame at the new position is shown at once. The decoder drops frames that are already 80 ms behind the clock before running swscale, still showing one in eight. After four consecutive late frames it turns on `skip_loop_filter` (no deblocking) until it catches up.
 
@@ -78,7 +89,7 @@ Not supported: MSE (`supportsType` rejects `MediaSource`; the decoders, queues, 
 
 ## Risks
 
-- **Audio from the WebProcess.** WebKit decodes in the WebProcess, a separate payload process spawned by the shell. It is unverified on hardware whether sceAudioOut, behind SDL's PS5 driver, can be opened from that process, and whether it can share the audio ports with the UI process. `AudioSink::create()` falls back to `NullAudioSink` when SDL fails, and so does a watchdog: an output that stops pulling samples for 2 s while audio is buffered. `PS5BROWSER_MEDIA_AUDIO=null` forces the null sink. In every case video still plays in sync, without sound. If the WebProcess cannot output audio at all, the fix is to forward PCM to the UI process over IPC.
+- **Audio from the WebProcess.** Verified on hardware: sceAudioOut opens in the WebProcess and is drained in real time, but nothing is heard, because only the foreground application (the UI) is mixed to the output. Audio is therefore forwarded to the UI (see "Audio output"). Costs and limits: about 100 ms of queued audio plus 43 ms of SDL buffering between decoding and hearing (the clock compensates, so A/V sync holds, but a seek or play takes that long to become audible); each media element is one connection and one mixer stream, so several playing elements are mixed, not ducked; and anything that stalls the UI's server thread for more than the queued 100 ms causes an underrun. A watchdog still switches to `NullAudioSink` when an output stops advancing for 2 s while audio is buffered. In every case video still plays in sync.
 - **HTTP path.** Media goes through WebCore's loader, which handles cookies, the referrer, CORS (`didPassCORSAccessCheck` for canvas tainting), CSP, `blob:` and the shared NetworkProcess. Byte ranges map to `Range` requests. Servers that ignore `Range` still work but restart the download for every seek and for every resume after the 32 MiB read-ahead cap, which re-downloads everything before the position. Exceptions:
   - HLS AES-128 segments are opened as `crypto+https://…`. They go through ffmpeg's own http/tls (OpenSSL from the SDK), which sends the engine's user agent and **no cookies**. The key URI itself goes through WebCore.
   - Relative URLs in a playlist resolve against the playlist's original URL, not its redirected URL.
@@ -124,11 +135,11 @@ That is libavformat, libavcodec, libswscale, libswresample and libavutil, plus b
 
 ## Console log
 
-On the PS5 the engine writes `media: ...` lines to `/data/ps5browser/log.txt` through the shell's `ps5_log_line()` (declared weak in `FFmpegLog.h`, so other builds link without it): `supportsType` answers (each distinct query once), `load` with scheme and host, the demuxer's format, duration and every stream (the selected ones marked `[VIDEO]`/`[AUDIO]`), decoder and audio sink results (SDL driver, requested and obtained spec, or the failure and the null-sink fallback), the first video frame, `readyState`/`networkState` transitions, seeks (start, demuxer seek and flush, first frame after the seek, finish), `Range` requests and HTTP errors, `cancelLoad`, and a `stats:` line every 5 s while playing or seeking (decoded/dropped frames, queue depths, audio clock against the video pts).
+On the PS5 the engine writes `media: ...` lines to `/data/ps5browser/log.txt` through the shell's `ps5_log_line()` (declared weak in `FFmpegLog.h`, so other builds link without it): `supportsType` answers (each distinct query once), `load` with scheme and host, the demuxer's format, duration and every stream (the selected ones marked `[VIDEO]`/`[AUDIO]`), decoder and audio sink results (the remote connection and its stream id, SDL driver, requested and obtained spec, or the failure and the fallback), the first video frame, `readyState`/`networkState` transitions, seeks (start, demuxer seek and flush, first frame after the seek, finish), `Range` requests and HTTP errors, `cancelLoad`, and a `stats:` line every 5 s while playing or seeking (decoded/dropped frames, queue depths, audio clock against the video pts).
 
 ## Tests
 
-`tests/media/` (doctest, host build) covers the engine-independent headers: the MIME/codec table, time-range merging, clock maths and frame decisions, the ring buffer, and the read-ahead/`readyState`/`networkState` policies.
+`tests/media/` (doctest, host build) covers the engine-independent headers: the MIME/codec table, time-range merging, clock maths and frame decisions, the ring buffer, and the read-ahead/`readyState`/`networkState` policies. `tests/ps5/test_audio_server.cpp` covers the audio forwarding: wire framing, the client clock, the UI mixer, and a loopback run of `RemoteAudioClient` against the server (`ctest --test-dir build-host -R audio`).
 
 ```sh
 cmake -S . -B build-host && cmake --build build-host -j2 --target ps5browser_media_tests

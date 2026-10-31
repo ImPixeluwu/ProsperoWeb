@@ -134,6 +134,48 @@ WebKit's `ProcessLauncherPlayStation.cpp` (patched for the homebrew port)
 creates a `SOCK_SEQPACKET` socketpair, keeps the server end, and calls our
 spawn contract.
 
+### Audio path
+
+The console mixes only the foreground application's audio. The WebProcess
+is a plain payload: SDL's PS5 driver opens a sceAudioOut port there and the
+port is drained at the real rate, but nothing is heard (verified on hardware).
+Media audio is therefore forwarded to the UI process:
+
+```
+ WebProcess: FFmpegAudioDecoder -> RemoteAudioSink (writer thread)
+     |  loopback TCP 127.0.0.1:$PS5BROWSER_AUDIO_PORT (17772), one connection per media element
+     v
+ UI: audio server thread (src/ps5/audio) -> Mixer (ring per stream, gain, clip) -> SDL device -> sceAudioOut
+```
+
+- The UI opens one SDL device (48 kHz, float32, stereo, 1024-sample buffers)
+  and starts the server before WebKit is initialised
+  (`src/frontend/ps5/ps5_audio_server.cpp`). AF_UNIX bind is refused under
+  `/data`, hence TCP, like the broker.
+- Protocol: `webkit-port/media/ffmpeg/FFmpegAudioWire.h` (hello `PS5A` v1,
+  then pcm/flush/pause/volume/close frames; the server sends a played report
+  every 20 ms). The WebProcess keeps about 100 ms queued on the server and
+  derives its audio clock from the reports, so A/V sync follows what is
+  actually heard (queued audio plus two SDL buffers).
+- Fallbacks in the WebProcess: remote, then the local SDL sink (inaudible on
+  the console), then the null sink. A server that goes away mid-stream turns
+  the remote sink into a silent real-time pacer; video keeps playing.
+- `PS5BROWSER_AUDIO_TEST=1` plays a 1 s 440 Hz tone through the server at UI
+  startup, which checks UI-process audio without any page.
+
+Expected log lines:
+
+```
+[UI] audio server: device opened: SDL driver ps5, device 2, 48000 Hz format 0x8120 2 ch 1024 samples
+[UI] audio server: listening on tcp 127.0.0.1:17772
+[UI] audio server: test tone played                                   (PS5BROWSER_AUDIO_TEST=1)
+[WebProcess] media: audio sink: remote 127.0.0.1:17772 connected (stream 1, output latency 2048 frames, 100 ms ahead)
+[WebProcess] media: audio sink: using remote, latency 43 ms
+[UI] audio server: stream 1 connected (48000 Hz 2 ch)
+[UI] audio server: stream 1: underrun (...)                           (at most once per stream)
+[UI] audio server: stream 1 closed (N frames, U underruns, D dropped)
+```
+
 ### Why a broker
 
 On the console (firmware reporting `0x13420000`), launched from the websrv
@@ -206,7 +248,10 @@ endless relaunches hammer websrv.
 | `PS5BROWSER_ROLE` | — | role fallback (`spawn-broker` for the broker) |
 | `JSC_useJIT` | `false` | JavaScriptCore baseline/DFG JIT (see [JavaScript JIT and WebAssembly](#javascript-jit-and-webassembly)) |
 | `JSC_useWasm` | `false` | WebAssembly (IPInt interpreter, plus the JIT's entry thunks when `JSC_useJIT` is on) |
-| `PS5BROWSER_MEDIA_AUDIO` | unset | `null`: media audio goes to the silent sink |
+| `PS5BROWSER_MEDIA_AUDIO` | unset | first media audio sink tried: `remote` (default when `PS5BROWSER_AUDIO_PORT` is set), `sdl` (output in the WebProcess, inaudible on the console) or `null` (silent) |
+| `PS5BROWSER_AUDIO_PORT` | `17772` | loopback TCP port of the UI's audio server (UI and WebProcess); `off` disables the server and the forwarding |
+| `PS5BROWSER_AUDIO_AHEAD_MS` | `100` | audio the WebProcess keeps queued in the UI's server (20-900 ms): lower is less latency, higher survives longer stalls |
+| `PS5BROWSER_AUDIO_TEST` | unset | `1`: the UI plays a 1 s 440 Hz test tone at startup |
 | `PS5BROWSER_MEDIA_FRAME_THREADS` | unset | `1`: frame-threaded video decoding (default: slice threads only) |
 
 Any variable can also be set from `config.json` as `"env": {"NAME": "value"}`
@@ -460,6 +505,8 @@ JIT enables, as the cause.
 - **Broker port**: `127.0.0.1:17771` accepts any local process, which can
   then ask the broker to spawn an ELF or to copy a descriptor out of any
   pid. Loopback only, same trust level as websrv's own HTTP API.
+- **Audio port**: `127.0.0.1:17772` accepts PCM from any local process,
+  which can then play sound through the browser. Loopback only.
 - **Relocations**: the loader applies `R_X86_64_RELATIVE` only (~311k).
   The ELF also has 334 `GLOB_DAT`, 27 `R_X86_64_64` and one `JUMP_SLOT`
   relocation, left to the SDK crt at startup, the same as for every
