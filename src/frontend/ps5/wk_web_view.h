@@ -19,6 +19,7 @@
 
 #include <WebKit/WKBase.h>
 #include <WebKit/WKGeometry.h>
+#include <WebKit/WKViewClient.h>
 
 #include "damage_region.h"
 #include "frame_stats.h"
@@ -51,6 +52,9 @@ class WkWebView {
     // (a string body is passed as is). Delivered natively when WebKit has
     // user message handlers, otherwise through the bridge (poll_all()).
     std::function<void(const std::string& json)> script_message;
+    // WKViewClient setCursor: a WKCursorType (kWKCursorTypePointer, Hand,
+    // None; the PlayStation port maps every other cursor to Pointer).
+    std::function<void(std::uint32_t cursor_type)> cursor_changed;
   };
 
   // context/data_store are shared and owned by the caller (the factory).
@@ -143,6 +147,7 @@ class WkWebView {
   static void s_exit_fullscreen(WKViewRef, const void*);
   static void s_began_enter_fullscreen(WKViewRef, WKRect, WKRect, const void*);
   static void s_began_exit_fullscreen(WKViewRef, WKRect, WKRect, const void*);
+  static void s_set_cursor(WKViewRef, WKCursorType, const void*);
   void notify_fullscreen_exited(const char* how);
   void poll_script_messages(std::uint64_t now_ms);
   void deliver_bridged(const std::string& batch);

@@ -643,6 +643,22 @@ else 1920x1080, and grows if a finger reports a larger coordinate.
 resolution WxH (controller info|default)`, or `source sdl` should SDL ever
 report a touchpad.
 
+## Pointer visibility
+
+The UI draws the pointer ring itself, over the composed frame. It is hidden
+when the active page asks for `cursor: none`: the PlayStation port reports
+the cursor through `WKViewClient.setCursor` (`kWKCursorTypePointer`, `Hand`
+or `None`; every other CSS cursor arrives as `Pointer`), and the shell
+keeps the last one per tab (`ShellController::page_cursor()`). As in a
+desktop browser the page decides; moving the stick or the touchpad sends it
+mouse moves, and pages that hide the cursor while idle (video players) show
+it again on such a move. `log.txt` notes the changes: `view: page cursor
+none (pointer hidden)` and `view: page cursor shown`.
+
+In element fullscreen (the page called `requestFullscreen()`) the pointer
+also hides after 3 s without pointer input (stick, touchpad or any button)
+and comes back with the next one (`kFullscreenPointerHideSeconds`).
+
 ## Text input
 
 Text entry goes through `shell::TextInputProvider`

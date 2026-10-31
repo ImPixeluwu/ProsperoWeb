@@ -385,6 +385,13 @@ void WkWebView::notify_fullscreen_exited(const char* how) {
   log_printf("fullscreen: exited (%s, content %dx%d)", how, width_, height_);
 }
 
+void WkWebView::s_set_cursor(WKViewRef, WKCursorType cursor, const void* ci) {
+  auto* self = self_of(ci);
+  if (self->cb_.cursor_changed) {
+    self->cb_.cursor_changed(cursor);
+  }
+}
+
 void WkWebView::s_exit_fullscreen(WKViewRef, const void* ci) {
   self_of(ci)->notify_fullscreen_exited("exitFullScreen");
 }
@@ -466,6 +473,7 @@ WkWebView::WkWebView(WKContextRef context, WKWebsiteDataStoreRef data_store,
   view_client.closeFullScreen = &WkWebView::s_exit_fullscreen;
   view_client.beganEnterFullScreen = &WkWebView::s_began_enter_fullscreen;
   view_client.beganExitFullScreen = &WkWebView::s_began_exit_fullscreen;
+  view_client.setCursor = &WkWebView::s_set_cursor;
   WKViewSetViewClient(view_, &view_client.base);
 
   WKPageNavigationClientV0 nav_client{};

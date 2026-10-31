@@ -52,6 +52,9 @@ class ShellController {
   // Auto-repeat of held OSK buttons (D-pad key moves, Square, L1/R1).
   static constexpr std::uint32_t kOskRepeatDelayMs = 350;
   static constexpr std::uint32_t kOskRepeatIntervalMs = 50;
+  // In element fullscreen the pointer hides after this long without
+  // pointer input (stick, touchpad, buttons) and shows on the next one.
+  static constexpr float kFullscreenPointerHideSeconds = 3.0f;
 
   struct Config {
     int width = 1920;
@@ -161,9 +164,13 @@ class ShellController {
   const core::FullscreenController& fullscreen() const { return fullscreen_; }
   const core::OnScreenKeyboard& osk() const { return osk_; }
   core::Vec2 pointer() const { return pointer_.position(); }
-  // True while the gamepad pointer is shown (page focus, not hidden by mouse
-  // use); frontends with Config::native_pointer draw it at pointer().
+  // True while the gamepad pointer is shown: page focus, not hidden by mouse
+  // use, the active page's cursor is not `none`, and not idle for
+  // kFullscreenPointerHideSeconds in element fullscreen. Frontends with
+  // Config::native_pointer draw it at pointer().
   bool pointer_visible() const;
+  // The cursor the active page last asked for.
+  PageCursor page_cursor() const;
   // Window y of the content view's top edge: the chrome band height while
   // the chrome is visible, else 0. The content view is width x (height -
   // content_top()) and page coordinates are window coordinates minus this.
@@ -186,6 +193,7 @@ class ShellController {
     std::unique_ptr<TabClient> client;
     std::unique_ptr<EngineView> view;
     bool loaded = false;  // a URL was sent to the view
+    PageCursor cursor = PageCursor::Pointer;
   };
 
   struct Notice {
@@ -233,6 +241,7 @@ class ShellController {
   void on_script_message(std::uint64_t id, const std::string& json);
   void on_new_window(std::uint64_t id, const std::string& url);
   void on_text_input_focused(std::uint64_t id, bool focused);
+  void on_cursor_changed(std::uint64_t id, PageCursor cursor);
 
   // Actions.
   void run_action(core::Action action);
@@ -343,6 +352,8 @@ class ShellController {
   core::Vec2 scroll_carry_;
   bool pointer_hidden_by_mouse_ = false;
   bool pointer_moved_ = false;  // the pointer moved during this tick
+  // Seconds since the last pointer input (fullscreen auto-hide).
+  float pointer_idle_seconds_ = 0.0f;
   // The last pointer_move() sent to a page (coalescing, see tick()).
   struct PagePointer {
     std::uint64_t tab_id = 0;

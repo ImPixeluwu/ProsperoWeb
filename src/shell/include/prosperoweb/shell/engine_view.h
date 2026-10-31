@@ -7,6 +7,10 @@
 
 namespace prosperoweb::shell {
 
+// The mouse cursor the page asks for (CSS `cursor`), as far as the engine
+// reports it. None hides the pointer.
+enum class PageCursor : std::uint8_t { Pointer, Hand, None };
+
 // Callbacks from a web engine view to the shell. All calls are made on the
 // shell's thread (the frontend's main loop).
 class EngineViewClient {
@@ -29,6 +33,8 @@ class EngineViewClient {
   virtual void new_window_requested(const std::string& url) = 0;
   // An editable element gained (true) or lost (false) focus.
   virtual void text_input_focused(bool focused) = 0;
+  // The page changed the cursor under the pointer (engines that report it).
+  virtual void cursor_changed(PageCursor) {}
 };
 
 // Mouse buttons as used by pointer_button().

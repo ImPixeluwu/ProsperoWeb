@@ -7,6 +7,7 @@
 #include <WebKit/WKContextPrivate.h>
 #include <WebKit/WKEvent.h>
 #include <WebKit/WKString.h>
+#include <WebKit/WKViewClient.h>
 #include <WebKit/WKWebsiteDataStoreConfigurationRef.h>
 #include <WebKit/WKWebsiteDataStoreRef.h>
 #include <wpe/wpe.h>  // WPE_KEY_* keysyms
@@ -117,6 +118,16 @@ Ps5EngineView::Ps5EngineView(shell::EngineViewClient& client, WKContextRef conte
   cb.nav_state_changed = [this](bool b, bool f) { client_.nav_state_changed(b, f); };
   cb.enter_fullscreen = [this]() { client_.fullscreen_entered(); };
   cb.exit_fullscreen = [this]() { client_.fullscreen_exited(); };
+  cb.cursor_changed = [this](std::uint32_t type) {
+    const shell::PageCursor cursor = type == kWKCursorTypeNone   ? shell::PageCursor::None
+                                     : type == kWKCursorTypeHand ? shell::PageCursor::Hand
+                                                                 : shell::PageCursor::Pointer;
+    if ((cursor == shell::PageCursor::None) != (cursor_ == shell::PageCursor::None)) {
+      log_printf("view: page cursor %s", cursor == shell::PageCursor::None ? "none (pointer hidden)" : "shown");
+    }
+    cursor_ = cursor;
+    client_.cursor_changed(cursor);
+  };
   cb.create_new_page = [this](const std::string& url) {
     client_.new_window_requested(url);
   };

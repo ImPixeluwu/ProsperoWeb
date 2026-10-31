@@ -120,6 +120,7 @@ class ShellController::TabClient final : public EngineViewClient {
   }
   void new_window_requested(const std::string& url) override { owner_.on_new_window(id_, url); }
   void text_input_focused(bool focused) override { owner_.on_text_input_focused(id_, focused); }
+  void cursor_changed(PageCursor cursor) override { owner_.on_cursor_changed(id_, cursor); }
 
  private:
   ShellController& owner_;
@@ -434,6 +435,17 @@ void ShellController::on_fullscreen_exited(std::uint64_t id) {
   mark_dirty();
 }
 
+void ShellController::on_cursor_changed(std::uint64_t id, PageCursor cursor) {
+  auto it = entries_.find(id);
+  if (it == entries_.end() || it->second.cursor == cursor) {
+    return;
+  }
+  // The page decides (like a desktop browser hiding the mouse cursor over
+  // `cursor: none`); pages that hide it usually show it again on the next
+  // mouse move, which the stick and touchpad send.
+  it->second.cursor = cursor;
+}
+
 void ShellController::on_script_message(std::uint64_t id, const std::string& text) {
   const json msg = json::parse(text, nullptr, /*allow_exceptions=*/false);
   if (!msg.is_object()) {
@@ -503,6 +515,9 @@ core::Mode ShellController::mode() const {
 void ShellController::on_button(Button button, bool pressed) {
   if (text_request_) {
     return;  // the text input provider owns the gamepad meanwhile
+  }
+  if (pressed) {
+    pointer_idle_seconds_ = 0.0f;
   }
   if (button == Button::Touchpad) {
     touchpad_.set_pressed(pressed);
@@ -629,6 +644,11 @@ void ShellController::tick(float dt_seconds) {
     }
   }
 
+  if (pointer_moved_) {
+    pointer_idle_seconds_ = 0.0f;
+  } else if (pointer_idle_seconds_ < kFullscreenPointerHideSeconds) {
+    pointer_idle_seconds_ += dt_seconds;
+  }
   pointer_moved_ = false;
 
   save_session_if_due(dt_seconds);
@@ -640,7 +660,20 @@ void ShellController::tick(float dt_seconds) {
 }
 
 bool ShellController::pointer_visible() const {
-  return focus_ == Focus::Page && !pointer_hidden_by_mouse_;
+  if (focus_ != Focus::Page || pointer_hidden_by_mouse_ || page_cursor() == PageCursor::None) {
+    return false;
+  }
+  return fullscreen_.state() != core::FullscreenController::State::ElementFullscreen ||
+         pointer_idle_seconds_ < kFullscreenPointerHideSeconds;
+}
+
+PageCursor ShellController::page_cursor() const {
+  const auto id = tabs_.active_id();
+  if (!id) {
+    return PageCursor::Pointer;
+  }
+  auto it = entries_.find(*id);
+  return it == entries_.end() ? PageCursor::Pointer : it->second.cursor;
 }
 
 void ShellController::note_page_pointer(std::uint64_t tab_id, int x, int y) {

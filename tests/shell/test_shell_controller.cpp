@@ -1085,3 +1085,96 @@ TEST_SUITE("shell.chrome_events") {
     CHECK(f.shell->quit_requested());
   }
 }
+
+TEST_SUITE("shell.cursor") {
+  using shell::PageCursor;
+
+  void stick(Fixture& f, float lx, int frames) {
+    f.shell->on_sticks(lx, 0.0f, 0.0f, 0.0f);
+    for (int i = 0; i < frames; ++i) {
+      f.frame();
+    }
+    f.shell->on_sticks(0.0f, 0.0f, 0.0f, 0.0f);
+  }
+
+  void idle(Fixture& f, float seconds) {
+    for (float t = 0.0f; t < seconds; t += 0.1f) {
+      f.frame(0.1f);
+    }
+  }
+
+  TEST_CASE("cursor: none from the page hides the pointer, any other shows it") {
+    Fixture f;
+    f.make();
+    f.frame();
+    CHECK(f.shell->pointer_visible());
+    f.view(0).client().cursor_changed(PageCursor::None);
+    f.frame();
+    CHECK(f.shell->page_cursor() == PageCursor::None);
+    CHECK_FALSE(f.shell->pointer_visible());
+    CHECK(f.chrome.pointer_calls.back().visible == false);
+    // Moving alone does not bring it back: the page decides.
+    stick(f, 1.0f, 5);
+    CHECK_FALSE(f.shell->pointer_visible());
+    f.view(0).client().cursor_changed(PageCursor::Hand);
+    f.frame();
+    CHECK(f.shell->pointer_visible());
+    CHECK(f.chrome.pointer_calls.back().visible == true);
+  }
+
+  TEST_CASE("the cursor is per tab") {
+    Fixture f;
+    f.make();
+    f.view(0).client().cursor_changed(PageCursor::None);
+    CHECK_FALSE(f.shell->pointer_visible());
+    f.press(Button::Options);
+    f.shell->on_chrome_event(json{{"type", "menu_close"}});
+    REQUIRE(f.shell->open_url_in_new_tab("https://b.example/"));
+    f.frame();
+    CHECK(f.shell->page_cursor() == PageCursor::Pointer);
+    CHECK(f.shell->pointer_visible());
+    // A background tab's cursor changes do not affect the active one.
+    f.view(0).client().cursor_changed(PageCursor::Hand);
+    f.view(1).client().cursor_changed(PageCursor::None);
+    CHECK_FALSE(f.shell->pointer_visible());
+  }
+
+  TEST_CASE("element fullscreen hides an idle pointer after 3 s") {
+    Fixture f;
+    f.make();
+    f.view(0).client().fullscreen_entered();
+    f.frame();
+    CHECK(f.shell->pointer_visible());
+    idle(f, ShellController::kFullscreenPointerHideSeconds - 0.5f);
+    CHECK(f.shell->pointer_visible());
+    idle(f, 1.0f);
+    CHECK_FALSE(f.shell->pointer_visible());
+    // The next stick input shows it at once.
+    stick(f, 1.0f, 1);
+    CHECK(f.shell->pointer_visible());
+    idle(f, ShellController::kFullscreenPointerHideSeconds + 0.5f);
+    CHECK_FALSE(f.shell->pointer_visible());
+    // So does a button (D-pad scroll).
+    f.shell->on_button(Button::Up, true);
+    f.shell->on_button(Button::Up, false);
+    f.frame();
+    CHECK(f.shell->pointer_visible());
+  }
+
+  TEST_CASE("outside element fullscreen an idle pointer stays") {
+    Fixture f;
+    f.make();
+    idle(f, 10.0f);
+    CHECK(f.shell->pointer_visible());
+    f.press(Button::R3);  // chrome hidden, not element fullscreen
+    idle(f, 10.0f);
+    CHECK(f.shell->pointer_visible());
+    // Leaving element fullscreen shows a pointer hidden by idling.
+    f.view(0).client().fullscreen_entered();
+    idle(f, 5.0f);
+    CHECK_FALSE(f.shell->pointer_visible());
+    f.view(0).client().fullscreen_exited();
+    f.frame();
+    CHECK(f.shell->pointer_visible());
+  }
+}

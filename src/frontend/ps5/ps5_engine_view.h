@@ -46,6 +46,7 @@ class Ps5EngineView final : public shell::EngineView {
 
  private:
   shell::EngineViewClient& client_;
+  shell::PageCursor cursor_ = shell::PageCursor::Pointer;
   std::unique_ptr<WkWebView> web_;
   int buttons_logged_ = 0;  // console diagnostics: the first presses/releases
 };
