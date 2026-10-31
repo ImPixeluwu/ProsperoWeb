@@ -354,9 +354,20 @@ void WkWebView::s_enter_fullscreen(WKViewRef, const void* ci) {
   log_printf("fullscreen: entered (content %dx%d)", self->width_, self->height_);
 }
 
+// The final frame is the fullscreen element's rect as the WebProcess laid it
+// out. The view was resized (enterFullScreen above) before WebKit got the
+// client's answer, and the resize reaches the WebProcess first (patch 0011:
+// WKViewSetSize updates the drawing area), so it should match the view.
 void WkWebView::s_began_enter_fullscreen(WKViewRef, WKRect, WKRect final_frame, const void* ci) {
-  log_printf("fullscreen: %s began entering (final frame %dx%d)", self_of(ci)->name_.c_str(),
-             static_cast<int>(final_frame.size.width), static_cast<int>(final_frame.size.height));
+  auto* self = self_of(ci);
+  const int x = static_cast<int>(final_frame.origin.x);
+  const int y = static_cast<int>(final_frame.origin.y);
+  const int w = static_cast<int>(final_frame.size.width);
+  const int h = static_cast<int>(final_frame.size.height);
+  const bool fills = x == 0 && y == 0 && w == self->width_ && h == self->height_;
+  log_printf("fullscreen: %s began entering (final frame %d,%d %dx%d, view %dx%d%s)",
+             self->name_.c_str(), x, y, w, h, self->width_, self->height_,
+             fills ? "" : ", does not fill the view");
 }
 
 void WkWebView::notify_fullscreen_exited(const char* how) {

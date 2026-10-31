@@ -26,6 +26,11 @@ PlayStationWebView::enterFullScreen() records the fullscreen state when
 the client accepts: nothing called willEnterFullScreen(), so
 m_isFullScreen stayed false, exitFullScreen() never reached the client
 and WKViewRequestExitFullScreen() did nothing.
+
+PlayStationWebView::setViewSize() passes the size to the drawing area.
+It only stored it, so the WebProcess kept the size the view had when it
+attached: hiding the shell's band for element fullscreen left the page
+laid out (and the fullscreen element framed) at the windowed height.
 diff --git a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp b/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
 index 8a0972133..23ccee89a 100644
 --- a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
@@ -215,10 +220,25 @@ index 674924662..96fc98abe 100644
  }
  #endif
 diff --git a/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp b/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp
-index f5ba02041..c3894f524 100644
+index f5ba02041..3f69a66ac 100644
 --- a/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp
 +++ b/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp
-@@ -139,10 +139,25 @@ bool PlayStationWebView::isFullScreen()
+@@ -95,6 +95,14 @@ void PlayStationWebView::setClient(std::unique_ptr<API::ViewClient>&& client)
+ void PlayStationWebView::setViewSize(WebCore::IntSize viewSize)
+ {
+     m_viewSize = viewSize;
++#if defined(PS5_HOMEBREW)
++    // The port only stored the size: the drawing area took it once, when the
++    // WebProcess attached, so the page never relaid out at a later size (an
++    // element entering fullscreen kept the windowed height). Tell it, as the
++    // WPE and GTK views do.
++    if (RefPtr drawingArea = m_page->drawingArea())
++        drawingArea->setSize(viewSize);
++#endif
+ }
+ 
+ void PlayStationWebView::setViewState(OptionSet<WebCore::ActivityState> flags)
+@@ -139,10 +147,25 @@ bool PlayStationWebView::isFullScreen()
  
  void PlayStationWebView::enterFullScreen(CompletionHandler<void(bool)>&& completionHandler)
  {
