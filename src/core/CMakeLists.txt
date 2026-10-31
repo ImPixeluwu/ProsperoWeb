@@ -14,6 +14,7 @@ add_library(ps5browser_core STATIC
   tab_manager.cpp
   text_utils.cpp
   url_normalizer.cpp
+  utf16.cpp
 )
 add_library(ps5browser::core ALIAS ps5browser_core)
 
