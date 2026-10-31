@@ -48,3 +48,17 @@ W=https://en.wikipedia.org/wiki/PlayStation_5
 - `video.html?src=URL` plays a media URL muted and prints `canPlayType()`, `readyState`, `currentTime`, errors and media events under the video.
 - `form.html` has an autofocused text field and counts `input` events.
 - `eme.html` asks for `com.widevine.alpha` through `navigator.requestMediaKeySystemAccess()`. On this host's WebKitGTK build the API does not exist at all (also on `http://localhost`), so the EME detector script has nothing to hook and the script-message DRM path cannot be shown here; it is covered by the shell unit tests.
+
+## PS5 loading screen
+
+`ps5-splash.png` is the UI process's loading screen as the console draws it into the SDL window surface before the first WebKit frame (half the startup stages done). It is rendered on the host by `tests/ps5/splash_shot.cpp`, which runs the same drawing (`src/ps5/display/splash.cpp`) and FreeType text (`src/frontend/ps5/ps5_splash_text.cpp`) code:
+
+```sh
+g++ -std=c++20 -O2 -Isrc/ps5/display -Isrc/frontend/ps5 $(pkg-config --cflags freetype2) \
+  tests/ps5/splash_shot.cpp src/frontend/ps5/ps5_splash_text.cpp \
+  src/ps5/display/splash.cpp src/ps5/display/damage_region.cpp \
+  $(pkg-config --libs freetype2) -o /tmp/splash_shot
+/tmp/splash_shot dist/prosperobrowser/fonts/NotoSans-Regular.ttf /tmp/ps5-splash.ppm 0.5
+convert /tmp/ps5-splash.ppm -resize 1280x720 -strip -dither None -colors 256 \
+  PNG8:docs/screenshots/ps5-splash.png
+```

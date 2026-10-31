@@ -2,6 +2,7 @@
 #include "ps5_app.h"
 
 #include <algorithm>
+#include <bit>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -11,12 +12,15 @@
 
 #include <WebKit/WKRunLoop.h>
 
+#include "prosperobrowser/spawn/spawn.h"
+
 #include "compose.h"
 #include "prosperobrowser/core/gamepad.h"
 #include "prosperobrowser/core/page_scripts.h"
 #include "ps5_diagnostics.h"
 #include "ps5_log.h"
 #include "ps5_runtime_env.h"
+#include "ps5_splash_text.h"
 
 namespace prosperobrowser::frontend {
 
@@ -133,6 +137,7 @@ std::uint32_t dom_modifiers(SDL_Keymod m) {
 Ps5App::Ps5App() = default;
 
 Ps5App::~Ps5App() {
+  ps5_spawn_set_progress(nullptr, nullptr);
   WkWebView::set_damage_hook(nullptr, nullptr);
   video_overlay_.reset();  // its thread calls request_frame()
   presenter_.reset();     // before the window goes
@@ -149,6 +154,7 @@ Ps5App::~Ps5App() {
 int Ps5App::run() {
   log_open(std::string(kBaseDir) + "/log.txt");  // no-op: main() opened it
   log_line("ProsperoBrowser UI starting");
+  main_thread_ = std::this_thread::get_id();
 
   log_line("SDL_Init: calling");
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
@@ -182,6 +188,9 @@ int Ps5App::run() {
   // Before any WebKit work: proves the display path independently of
   // WebKit painting (a WKPagePaint without a WebProcess leaves zeros).
   draw_splash();
+  mark_splash_stage(kSplashWindow);
+  // The broker and the WebKit processes report from WebKit's launcher.
+  ps5_spawn_set_progress(&Ps5App::splash_spawn_progress, this);
   // Printable keyboard input arrives as SDL_TEXTINPUT (see pump_sdl_events).
   // Without the hint SDL_StartTextInput() would also open the system
   // keyboard dialog (SDL's PS5 driver implements the screen keyboard with
@@ -209,6 +218,7 @@ int Ps5App::run() {
   factory_ = std::make_unique<Ps5EngineFactory>(kBaseDir, user_scripts,
                                                 config_.user_agent);
   log_line("WebKit: context and data store created");
+  mark_splash_stage(kSplashWebKit);
 
   const std::string chrome_path = config_.chrome_dir + "/chrome.html";
   std::string chrome_url = "file://" + chrome_path;
@@ -257,6 +267,7 @@ int Ps5App::run() {
   }
   WkWebView::set_damage_hook(
       [](void* self) { static_cast<Ps5App*>(self)->request_frame(); }, this);
+  frame_loop_ready_.store(true, std::memory_order_release);
   request_frame();
   log_line("WKRunLoopRunMain: entering");
   WKRunLoopRunMain();
@@ -273,19 +284,38 @@ void Ps5App::draw_splash() {
     log_printf("splash: SDL_GetWindowSurface failed: %s", SDL_GetError());
     return;
   }
-  // Opaque dark blue, an orange top band and a white centre square: three
-  // colours that cannot be mistaken for an empty (black) buffer.
-  const SDL_Rect band{0, 0, surface->w, std::min(96, surface->h)};
-  const int side = std::min({200, surface->w, surface->h});
-  const SDL_Rect square{(surface->w - side) / 2, (surface->h - side) / 2, side, side};
-  SDL_FillRect(surface, nullptr, SDL_MapRGBA(surface->format, 0x1A, 0x2B, 0x4C, 0xFF));
-  SDL_FillRect(surface, &band, SDL_MapRGBA(surface->format, 0xFF, 0x8C, 0x00, 0xFF));
-  SDL_FillRect(surface, &square, SDL_MapRGBA(surface->format, 0xFF, 0xFF, 0xFF, 0xFF));
+  // Text first (FreeType, no WebKit or fontconfig yet); without it the
+  // screen still shows the background and the progress bar.
+  const std::string font = std::string(kBaseDir) + "/fonts/NotoSans-Regular.ttf";
+  std::string error;
+  const int title_px = std::max(24, surface->h * 96 / 1080);
+  const int subtitle_px = std::max(12, surface->h * 30 / 1080);
+  const bool text = render_splash_text(font, "ProsperoBrowser", title_px, splash_title_, error) &&
+                    render_splash_text(font, "Loading…", subtitle_px, splash_subtitle_, error);
+  if (!text) {
+    splash_title_ = {};
+    splash_subtitle_ = {};
+  }
+  splash_layout_ = display::layout_splash(surface->w, surface->h, &splash_title_,
+                                          &splash_subtitle_);
+  if (SDL_MUSTLOCK(surface)) {
+    SDL_LockSurface(surface);
+  }
+  // The PS5 surface is ABGR8888; anything else is drawn as ARGB.
+  const display::SplashTarget target{static_cast<std::uint32_t*>(surface->pixels), surface->w,
+                                     surface->h, surface->pitch / 4,
+                                     surface->format->format == SDL_PIXELFORMAT_ABGR8888};
+  display::paint_splash(target, splash_layout_, &splash_title_, &splash_subtitle_, 0.0);
+  if (SDL_MUSTLOCK(surface)) {
+    SDL_UnlockSurface(surface);
+  }
   if (SDL_UpdateWindowSurface(window_) != 0) {
     log_printf("splash: SDL_UpdateWindowSurface failed: %s", SDL_GetError());
     return;
   }
-  log_printf("splash: filled and flipped (%llu ms)",
+  splash_drawn_ = true;
+  log_printf("splash: drawn and flipped, %s (%llu ms)",
+             text ? "title and progress bar" : ("progress bar only: " + error).c_str(),
              static_cast<unsigned long long>(SDL_GetTicks64() - t0));
 
   const char* hold = std::getenv("PROSPEROBROWSER_SPLASH_HOLD_MS");
@@ -295,6 +325,68 @@ void Ps5App::draw_splash() {
     SDL_Delay(static_cast<std::uint32_t>(hold_ms));
     log_line("splash: hold done");
   }
+}
+
+void Ps5App::splash_spawn_progress(const char* event, void* data) {
+  auto* self = static_cast<Ps5App*>(data);
+  const std::string name = event ? event : "";
+  unsigned stage = 0;
+  if (name == "broker") {
+    stage = kSplashBroker;
+  } else if (name.find("NetworkProcess") != std::string::npos) {
+    stage = kSplashBroker | kSplashNetworkProcess;  // direct spawns have no broker
+  } else if (name.find("WebProcess") != std::string::npos) {
+    stage = kSplashBroker | kSplashWebProcess;
+  }
+  if (stage) {
+    self->mark_splash_stage(stage);
+  }
+}
+
+// Any thread. Once the frame loop runs, the next frame draws the bar; before
+// that the main thread draws it at once (nothing else touches the surface
+// yet) and other threads leave it to the first frame.
+void Ps5App::mark_splash_stage(unsigned stage) {
+  const unsigned before = splash_stages_.fetch_or(stage, std::memory_order_acq_rel);
+  if ((before | stage) == before) {
+    return;
+  }
+  if (frame_loop_ready_.load(std::memory_order_acquire)) {
+    request_frame();
+  } else if (std::this_thread::get_id() == main_thread_) {
+    if (SDL_Surface* surface = SDL_GetWindowSurface(window_)) {
+      update_splash_progress(surface);
+    }
+  }
+}
+
+// Main thread, only while the splash is up and the surface is not being
+// presented.
+void Ps5App::update_splash_progress(SDL_Surface* surface) {
+  const unsigned stages = splash_stages_.load(std::memory_order_acquire);
+  if (!splash_drawn_ || stages == splash_shown_stages_) {
+    return;
+  }
+  splash_shown_stages_ = stages;
+  const int done = std::popcount(stages);
+  if (SDL_MUSTLOCK(surface)) {
+    SDL_LockSurface(surface);
+  }
+  const display::SplashTarget target{static_cast<std::uint32_t*>(surface->pixels), surface->w,
+                                     surface->h, surface->pitch / 4,
+                                     surface->format->format == SDL_PIXELFORMAT_ABGR8888};
+  const display::Rect r = display::paint_splash_progress(
+      target, splash_layout_, static_cast<double>(done) / kSplashStages);
+  if (SDL_MUSTLOCK(surface)) {
+    SDL_UnlockSurface(surface);
+  }
+  const SDL_Rect rect{r.x, r.y, r.w, r.h};
+  if (presenter_) {
+    presenter_->submit({rect});
+  } else {
+    SDL_UpdateWindowSurfaceRects(window_, &rect, 1);
+  }
+  log_printf("splash: stage %d of %d (0x%x)", done, kSplashStages, stages);
 }
 
 void Ps5App::frame_trampoline(void* self) {
@@ -729,6 +821,9 @@ void Ps5App::composite_and_present() {
   // still empty caches would replace it with black.
   if (!splash_replaced_) {
     if (!webkit_painted_) {
+      if (!presenter_->busy()) {
+        update_splash_progress(surface);
+      }
       return;
     }
     splash_replaced_ = true;

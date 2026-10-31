@@ -33,6 +33,13 @@ int ps5_terminate_process(int pid);
 // dispatches the "spawn-broker" role here. Returns the exit code.
 int ps5_spawn_broker_main(void);
 
+// Startup progress for the UI's loading screen: `event` is "broker" when
+// the broker answered, or the role name ("WebProcess", "NetworkProcess")
+// when a child was spawned. Called on the spawning thread (a WebKit work
+// queue); the observer must be thread-safe. NULL removes it.
+typedef void (*ps5_spawn_progress_fn)(const char* event, void* data);
+void ps5_spawn_set_progress(ps5_spawn_progress_fn fn, void* data);
+
 // --- Logging, provided by the executable (src/frontend/ps5/ps5_log.cpp). ---
 //
 // The spawner reports every spawn and every child-side failure through these,

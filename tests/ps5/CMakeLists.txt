@@ -21,7 +21,7 @@ add_test(NAME ps5.audio_server
                  --test-suite=audio_wire,audio_clock,audio_mixer,audio_ring,audio_e2e --no-version)
 add_test(NAME ps5.display
          COMMAND prosperobrowser_ps5_tests
-                 --test-suite=display_region,display_pixels,display_stats --no-version)
+                 --test-suite=display_region,display_pixels,display_stats,display_splash --no-version)
 add_test(NAME ps5.video_overlay
          COMMAND prosperobrowser_ps5_tests
                  --test-suite=video_wire,video_geometry,video_scale,video_compose,video_e2e --no-version)

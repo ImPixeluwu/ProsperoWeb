@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include <SDL.h>
@@ -15,6 +16,7 @@
 #include "prosperobrowser/core/file_storage.h"
 #include "damage_region.h"
 #include "frame_stats.h"
+#include "splash.h"
 #include "prosperobrowser/shell/shell_controller.h"
 #include "ps5_audio_server.h"
 #include "ps5_chrome_ui.h"
@@ -47,7 +49,13 @@ class Ps5App {
   // Takes the accumulated page damage plus the chrome changes visible in
   // chrome_rects, in window pixels.
   display::Region take_frame_damage(const std::vector<display::Rect>& chrome_rects);
+  // Loading screen (splash.h): drawn once the window exists, its progress
+  // bar advanced per startup stage (kSplash* bits) until the first WebKit
+  // frame replaces it.
   void draw_splash();
+  void mark_splash_stage(unsigned stage);
+  void update_splash_progress(SDL_Surface* surface);
+  static void splash_spawn_progress(const char* event, void* self);
   // Frame-pipeline statistics: one log line every kStatsWindowMs while
   // anything is painted or presented.
   void collect_and_log_stats(std::uint64_t now);
@@ -130,6 +138,20 @@ class Ps5App {
   // (page or chrome); until then the frame loop does not flip.
   bool webkit_painted_ = false;
   bool splash_replaced_ = false;
+  static constexpr unsigned kSplashWindow = 1u << 0;
+  static constexpr unsigned kSplashWebKit = 1u << 1;
+  static constexpr unsigned kSplashBroker = 1u << 2;
+  static constexpr unsigned kSplashNetworkProcess = 1u << 3;
+  static constexpr unsigned kSplashWebProcess = 1u << 4;
+  static constexpr int kSplashStages = 6;  // the five above, then the first WebKit frame
+  display::GrayImage splash_title_;
+  display::GrayImage splash_subtitle_;
+  display::SplashLayout splash_layout_;
+  bool splash_drawn_ = false;
+  std::atomic<unsigned> splash_stages_{0};  // set from the spawning thread too
+  unsigned splash_shown_stages_ = 0;
+  std::atomic<bool> frame_loop_ready_{false};
+  std::thread::id main_thread_;
 };
 
 }  // namespace prosperobrowser::frontend

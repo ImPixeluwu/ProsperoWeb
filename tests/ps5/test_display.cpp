@@ -2,8 +2,8 @@
 //
 // The UI compositor's pure parts (src/ps5/display): damage regions, the
 // R/B-swapping copy and premultiplied blend kernels (AVX2 against the
-// scalar reference), rect composition with chrome overlap, and the frame
-// statistics line.
+// scalar reference), rect composition with chrome overlap, the frame
+// statistics line and the loading screen.
 #include <cstdint>
 #include <random>
 #include <string>
@@ -14,6 +14,7 @@
 #include "compose.h"
 #include "damage_region.h"
 #include "frame_stats.h"
+#include "splash.h"
 
 using namespace prosperobrowser::display;
 
@@ -262,5 +263,89 @@ TEST_SUITE("display_stats") {
     CHECK(line.find("perf 5.0s: ui 60.0 fps") == 0);
     CHECK(line.find("ndisp page 0.2/s 230kpx") != std::string::npos);
     CHECK(line.find("present 0.2/s 8.00/8.00ms 1.0 rects 230kpx") != std::string::npos);
+  }
+}
+
+// --- Loading screen (splash.h) ---------------------------------------------
+
+namespace {
+
+GrayImage solid_image(int w, int h, std::uint8_t a) {
+  GrayImage img;
+  img.width = w;
+  img.height = h;
+  img.coverage.assign(static_cast<std::size_t>(w) * h, a);
+  return img;
+}
+
+}  // namespace
+
+TEST_SUITE("display_splash") {
+  TEST_CASE("layout centres the text block and puts the bar under it") {
+    const GrayImage title = solid_image(600, 130, 255);
+    const GrayImage subtitle = solid_image(120, 40, 255);
+    const SplashLayout l = layout_splash(1920, 1080, &title, &subtitle);
+    CHECK(l.title == Rect{660, l.title.y, 600, 130});
+    CHECK(l.subtitle.x == 900);
+    CHECK(l.subtitle.y > l.title.bottom());
+    CHECK(l.track.y > l.subtitle.bottom());
+    CHECK(l.track.w == 480);
+    CHECK(l.track.x == 720);
+    // Above the middle of the screen.
+    CHECK(l.title.y + (l.track.bottom() - l.title.y) / 2 < 540);
+    // No text: only the bar, no text rects.
+    const SplashLayout bare = layout_splash(1920, 1080, nullptr, nullptr);
+    CHECK(bare.title.empty());
+    CHECK(bare.subtitle.empty());
+    CHECK(bare.track.w == 480);
+  }
+
+  TEST_CASE("paints background, text and progress in the surface format") {
+    const int w = 640, h = 360;
+    std::vector<std::uint32_t> px(static_cast<std::size_t>(w) * h, 0xDEADBEEFu);
+    const GrayImage title = solid_image(100, 20, 255);
+    GrayImage subtitle = solid_image(40, 10, 0);
+    subtitle.coverage[0] = 128;  // one half-covered pixel
+    const SplashLayout l = layout_splash(w, h, &title, &subtitle);
+    const SplashColors c;
+    paint_splash(SplashTarget{px.data(), w, h, w, false}, l, &title, &subtitle, 0.5);
+    auto at = [&](int x, int y) { return px[static_cast<std::size_t>(y) * w + x]; };
+    CHECK(at(0, 0) == c.background);
+    CHECK(at(w - 1, h - 1) == c.background);
+    CHECK(at(l.title.x + 5, l.title.y + 5) == c.title);
+    // Half coverage: halfway between --bg and --fg-dim.
+    const std::uint32_t half = at(l.subtitle.x, l.subtitle.y);
+    CHECK(((half >> 16) & 0xFF) == (0x12 + 0x9A + 1) / 2);
+    CHECK(at(l.subtitle.x + 1, l.subtitle.y) == c.background);
+    // Half the bar done (track is 480 wide but clipped to 640: 480).
+    CHECK(at(l.track.x, l.track.y) == c.bar);
+    CHECK(at(l.track.x + l.track.w / 2 - 1, l.track.y) == c.bar);
+    CHECK(at(l.track.x + l.track.w / 2, l.track.y) == c.track);
+    CHECK(at(l.track.right() - 1, l.track.bottom() - 1) == c.track);
+
+    // ABGR8888 surface: R and B swapped.
+    paint_splash(SplashTarget{px.data(), w, h, w, true}, l, nullptr, nullptr, 1.0);
+    CHECK(at(0, 0) == swap_rb(c.background));
+    CHECK(at(l.track.right() - 1, l.track.y) == swap_rb(c.bar));
+    CHECK(at(l.title.x + 5, l.title.y + 5) == swap_rb(c.background));  // no text this time
+  }
+
+  TEST_CASE("progress repaints only the bar, clamped") {
+    const int w = 640, h = 360;
+    std::vector<std::uint32_t> px(static_cast<std::size_t>(w) * h, 0u);
+    const SplashLayout l = layout_splash(w, h, nullptr, nullptr);
+    const SplashColors c;
+    const SplashTarget t{px.data(), w, h, w, false};
+    const Rect r = paint_splash_progress(t, l, 2.0);
+    CHECK(r == l.track);
+    CHECK(px[static_cast<std::size_t>(l.track.y) * w + l.track.right() - 1] == c.bar);
+    CHECK(px[0] == 0u);  // untouched outside the bar
+    paint_splash_progress(t, l, -1.0);
+    CHECK(px[static_cast<std::size_t>(l.track.y) * w + l.track.x] == c.track);
+    // A target smaller than the bar: clipped, no write outside.
+    std::vector<std::uint32_t> tiny(100 * 50, 0u);
+    const SplashLayout tl = layout_splash(100, 50, nullptr, nullptr);
+    const Rect tr = paint_splash_progress(SplashTarget{tiny.data(), 100, 50, 100, false}, tl, 1.0);
+    CHECK(tr.w == 100);
   }
 }

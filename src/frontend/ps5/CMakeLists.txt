@@ -78,6 +78,7 @@ set(_frontend_sources
   ps5_presenter.cpp
   ps5_log.cpp
   ps5_runtime_env.cpp
+  ps5_splash_text.cpp
   ps5_video_overlay.cpp
   wk_web_view.cpp
   wpe_loader.cpp
@@ -98,6 +99,7 @@ target_include_directories(prosperobrowser_frontend_ps5_objs SYSTEM PRIVATE
   ${PS5WEBKIT_INCLUDE_DIRS}
   "${_wk_fwd}"
   "${PS5_WEBKIT_PREFIX}/include/wpe-1.0"
+  "${PS5_WEBKIT_PREFIX}/include/freetype2"  # ps5_splash_text.cpp; libfreetype.a is on WebKit's link line
   "${SDL2_INCLUDE_DIRS}"
   "${PROSPEROBROWSER_THIRD_PARTY_DIR}")
 # prosperobrowser::core / ::shell provide the public headers the frontend consumes.

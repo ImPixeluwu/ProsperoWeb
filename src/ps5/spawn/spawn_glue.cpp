@@ -9,6 +9,7 @@
 // spawn for it; PROSPEROBROWSER_SPAWN_MODE=direct keeps the in-process spawner
 // (spawn.c) for plain-payload (elfldr) launches. See README.md.
 
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
@@ -147,6 +148,15 @@ bool start_broker_via_websrv(const std::string& self_path) {
   return code == 200;
 }
 
+std::atomic<ps5_spawn_progress_fn> g_progress{nullptr};
+std::atomic<void*> g_progress_data{nullptr};
+
+void report_progress(const char* event) {
+  if (const ps5_spawn_progress_fn fn = g_progress.load(std::memory_order_acquire)) {
+    fn(event, g_progress_data.load(std::memory_order_acquire));
+  }
+}
+
 // Caller holds g_mu. Connects to the broker, starting it if needed.
 bool ensure_broker(const std::string& self_path, bool may_start) {
   if (g_client && g_client->connected()) {
@@ -185,6 +195,7 @@ bool ensure_broker(const std::string& self_path, bool may_start) {
   }
   ps5_log_printf("spawn: broker ready pid=%lld in %lldms", broker_get_int(reply, "pid", -1),
                  ms_since(t0));
+  report_progress("broker");
   return true;
 }
 
@@ -370,7 +381,17 @@ extern "C" int ps5_spawn_self(const char* const* argv, const int* fds, int nfds)
     ps5_log_line("spawn: called without a role");
     return -1;
   }
-  return direct_mode() ? ps5_spawn_direct(argv, fds, nfds) : spawn_via_broker(argv, fds, nfds);
+  const int pid =
+      direct_mode() ? ps5_spawn_direct(argv, fds, nfds) : spawn_via_broker(argv, fds, nfds);
+  if (pid > 0) {
+    report_progress(argv[0]);
+  }
+  return pid;
+}
+
+extern "C" void ps5_spawn_set_progress(ps5_spawn_progress_fn fn, void* data) {
+  g_progress_data.store(data, std::memory_order_release);
+  g_progress.store(fn, std::memory_order_release);
 }
 
 extern "C" int ps5_terminate_process(int pid) {
