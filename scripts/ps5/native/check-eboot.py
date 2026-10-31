@@ -13,7 +13,13 @@ usage: check-eboot.py [--imports-out FILE] <llvm-bin-dir> <pie.elf> <stub.so | s
    that), and is reported by module. Imports from modules a title does not
    get at start-up (the module list a native media app's crash log showed on
    11.60, after the Stremio port's native/check_imports.py) are an error
-   unless the UI loads that module itself before the first call.
+   unless the UI loads that module itself before the first call. So are
+   imports bound to libkernel_web or libkernel_sys (the working titles bind
+   libkernel; on the console the title's libkernel_web imports stayed at 0,
+   run 15) and imports the console is known to leave at 0 in a title
+   (__cxa_atexit from libSceLibcInternal, run 14). Imports from
+   libSceLibcInternal that the shipped sce_module/libc.prx does not export
+   are listed (NIDs from its api-surface manifest), for the record.
 
 3. Nothing the start-up code calls through can be 0 by construction: every
    init_array/fini_array entry is filled (by its content or a relocation),
@@ -43,7 +49,7 @@ KNOWN_WEAK_ZERO = {
 
 # Loaded for a native app at start-up (Stremio PS5 native/check_imports.py).
 STARTUP_MODULES = {
-    "libkernel", "libkernel_web", "libkernel_sys", "libSceLibcInternal", "libc_stub_weak",
+    "libkernel", "libSceLibcInternal",
     "libSceSysmodule", "libSceAmpr", "libSceNet", "libSceIpmi", "libSceMbus", "libSceRegMgr",
     "libSceRtc", "libSceRazorCpu", "libSceAvSetting", "libSceVideoOut", "libSceAgcDriver",
     "libSceAgc", "libSceAudioOut", "libSceAudioIn", "libSceAjm", "libScePad", "libSceNetCtl",
@@ -51,6 +57,24 @@ STARTUP_MODULES = {
     "libSceNpManager", "libSceNpGameIntent", "libSceNpWebApi2", "libSceSaveData",
     "libSceSystemService", "libSceUserService", "libSceCommonDialog", "libSceSysUtil",
 }
+# Bound to these, imports stay at 0 in a title (console runs 14 and 15).
+BAD_MODULES = {"libkernel_web", "libkernel_sys", "libkernel_stub_weak", "libc_stub_weak"}
+KNOWN_UNRESOLVED = {"__cxa_atexit"}
+LIBC_SURFACE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..",
+                            "third_party", "ps5-native-tool", "tooling", "native", "runtime",
+                            "api-surface.txt")
+NID_SALT = bytes.fromhex("518D64A635DED8C1E6B039B1C3E55230")
+NID_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+-"
+
+
+def nid(name):
+    """The PS5 symbol NID of a name (SHA-1 with the fixed salt, base64-like)."""
+    import hashlib
+    value = int.from_bytes(hashlib.sha1(name.encode() + NID_SALT).digest()[:8][::-1], "big")
+    return ("".join(NID_ALPHABET[(value >> (58 - 6 * i)) & 63] for i in range(10)) +
+            NID_ALPHABET[(value & 0xF) << 2])
+
+
 # Loaded by the UI with sceSysmoduleLoadModule before the first call
 # (native/native_title.c, ps5_hwdec.cpp).
 LOADED_BY_UI = {"libSceImeDialog", "libSceVideodec2"}
@@ -185,12 +209,24 @@ def main():
         by_module.setdefault(module, []).append(name)
     print(f"imports: {len(owner)} functions from {len(by_module)} modules")
     for module in sorted(by_module):
-        state = ("start-up" if module in STARTUP_MODULES else
+        state = ("BOUND TO A MODULE TITLES CANNOT USE" if module in BAD_MODULES else
+                 "start-up" if module in STARTUP_MODULES else
                  "loaded by the UI" if module in LOADED_BY_UI else "NOT LOADED")
         print(f"  {module}: {len(by_module[module])} ({state})")
-        if state == "NOT LOADED":
+        if state not in ("start-up", "loaded by the UI"):
             ok = False
             print("    " + " ".join(sorted(by_module[module])))
+    known = sorted(set(owner) & KNOWN_UNRESOLVED)
+    if known:
+        ok = False
+        print("ERROR: imports the console leaves at 0 in a title: " + " ".join(known))
+    if os.path.exists(LIBC_SURFACE):
+        surface = {line.split("|")[0] for line in open(LIBC_SURFACE)
+                   if "|" in line and not line.startswith("#")}
+        outside = sorted(name for name in by_module.get("libSceLibcInternal", [])
+                         if nid(name) not in surface)
+        print(f"libSceLibcInternal imports not exported by sce_module/libc.prx: {len(outside)}"
+              + (": " + " ".join(outside) if outside else ""))
     if unresolved:
         ok = False
         print("ERROR: imports no stub exports: " + " ".join(unresolved))
