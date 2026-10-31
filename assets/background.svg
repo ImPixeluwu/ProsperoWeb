@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-<!-- ProsperoBrowser home screen background (sce_sys/pic0.png and pic1.png).
+<!-- ProsperoWeb home screen background (sce_sys/pic0.png and pic1.png).
      Original artwork: the icon's globe and orbit, large and faint, over a dark
      gradient and a dot grid, with the wordmark at the right. The left half and
      the bottom stay calm for the console's own UI. The wordmark is set in
@@ -64,7 +64,7 @@
 
   <!-- Wordmark. -->
   <text x="1840" y="900" text-anchor="end" font-family="Noto Sans" font-weight="700"
-        font-size="96" letter-spacing="-1" fill="#eef0f4">Prospero<tspan fill="#7cb3ff">Browser</tspan></text>
+        font-size="96" letter-spacing="-1" fill="#eef0f4">Prospero<tspan fill="#7cb3ff">Web</tspan></text>
   <text x="1840" y="956" text-anchor="end" font-family="Noto Sans" font-weight="400"
         font-size="34" fill="#9aa2b1">A WebKit web browser for the living room</text>
 </svg>

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-<!-- ProsperoBrowser launch icon (sce_sys/icon0.png, 512x512). Original artwork:
+<!-- ProsperoWeb launch icon (sce_sys/icon0.png, 512x512). Original artwork:
      a web globe with a moon on a tilted orbit (Prospero is a moon of Uranus),
      in the browser chrome palette (src/chrome-ui/chrome.css).
      Rendered by scripts/assets/render.sh. -->
