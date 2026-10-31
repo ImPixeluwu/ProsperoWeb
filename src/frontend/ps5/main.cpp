@@ -16,6 +16,7 @@
 
 #include "ps5webkit/entry.h"
 #include "ps5_app.h"
+#include "ps5_log.h"
 #include "ps5_runtime_env.h"
 
 namespace {
@@ -65,22 +66,43 @@ void export_self_path(int argc, char** argv) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  using namespace ps5browser::frontend;
   std::string role = resolve_role(argc, argv);
+  const bool child = role == "WebProcess" || role == "NetworkProcess";
+  const std::string log_path = std::string(kPs5DataDir) + "/log.txt";
+
+  // The UI logs from the first line on (its environment defaults included);
+  // the children only open the shared log after their (identical) environment
+  // setup, to keep it readable.
+  log_set_role(role);
+  if (!child) {
+    log_open(log_path);
+    log_printf("main: pid=%d ppid=%d argv0=%s", static_cast<int>(getpid()),
+               static_cast<int>(getppid()), argc > 0 && argv[0] ? argv[0] : "(none)");
+  }
 
   // Before any role starts: WebProcess and NetworkProcess read fontconfig,
   // TLS and temp-dir settings from their own environment.
-  ps5browser::frontend::setup_runtime_env(ps5browser::frontend::kPs5DataDir);
-  if (role != "WebProcess" && role != "NetworkProcess") {
+  setup_runtime_env(kPs5DataDir);
+  if (!child) {
     export_self_path(argc, argv);
+  } else {
+    log_open(log_path);
+    log_printf("main: pid=%d ppid=%d started", static_cast<int>(getpid()),
+               static_cast<int>(getppid()));
   }
 
   if (role == "WebProcess") {
-    return ps5_webkit_web_process_main(argc, argv);
+    const int rc = ps5_webkit_web_process_main(argc, argv);
+    log_printf("main: returned %d", rc);
+    return rc;
   }
   if (role == "NetworkProcess") {
-    return ps5_webkit_network_process_main(argc, argv);
+    const int rc = ps5_webkit_network_process_main(argc, argv);
+    log_printf("main: returned %d", rc);
+    return rc;
   }
 
-  ps5browser::frontend::Ps5App app;
+  Ps5App app;
   return app.run();
 }

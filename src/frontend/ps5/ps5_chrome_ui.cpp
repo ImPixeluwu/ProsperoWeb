@@ -62,6 +62,7 @@ Ps5ChromeUi::Ps5ChromeUi(WKContextRef context, WKWebsiteDataStoreRef data_store,
       on_event_(doc);
     }
   };
+  cb.load_finished = []() { log_line("chrome: navigation finished"); };
   cb.load_failed = [this](const std::string& url, const std::string& error) {
     log_printf("chrome: loading %s failed: %s", url.c_str(), error.c_str());
     load_fallback();
@@ -80,6 +81,7 @@ Ps5ChromeUi::Ps5ChromeUi(WKContextRef context, WKWebsiteDataStoreRef data_store,
   if (chrome_url.empty()) {
     load_fallback();
   } else {
+    log_printf("chrome: loading %s", chrome_url.c_str());
     web_->load_url(chrome_url);
   }
 }

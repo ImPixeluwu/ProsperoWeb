@@ -125,6 +125,10 @@ class WkWebView {
   DirtyRect dirty_;
   int width_ = 1920;
   int height_ = 1080;
+  // Diagnostics: the view's name in log.txt and one-shot "first" events.
+  std::string name_;
+  bool needs_display_logged_ = false;
+  bool paint_logged_ = false;
 };
 
 }  // namespace ps5browser::frontend

@@ -69,6 +69,11 @@ class Ps5App {
   bool r2_down_ = false;
   std::uint64_t last_frame_ticks_ = 0;
   bool running_ = false;
+  // One-shot startup diagnostics (log.txt).
+  std::uint64_t frames_ = 0;
+  bool surface_logged_ = false;
+  bool first_flip_logged_ = false;
+  bool flip_error_logged_ = false;
 };
 
 }  // namespace ps5browser::frontend

@@ -30,6 +30,7 @@
 #include <WebKit/WKView.h>
 #include <WebKit/WKViewClient.h>
 
+#include "ps5_log.h"
 #include "wk_helpers.h"
 
 namespace ps5browser::frontend {
@@ -205,6 +206,11 @@ void WkWebView::s_needs_display(WKViewRef, WKRect rect, const void* ci) {
   if (d.width <= 0 || d.height <= 0) {
     return;
   }
+  if (!self->needs_display_logged_) {
+    self->needs_display_logged_ = true;
+    log_printf("view %s: first setViewNeedsDisplay %d,%d %dx%d", self->name_.c_str(),
+               d.x, d.y, d.width, d.height);
+  }
   // Several invalidations can arrive between two frames; keep their union.
   self->dirty_ = union_of(self->dirty_, d);
   if (self->cb_.needs_display) {
@@ -232,7 +238,7 @@ WkWebView::WkWebView(WKContextRef context, WKWebsiteDataStoreRef data_store,
                      const std::string& message_handler_name,
                      const std::vector<std::string>& user_scripts,
                      bool fullscreen_enabled, Callbacks callbacks)
-    : cb_(std::move(callbacks)) {
+    : cb_(std::move(callbacks)), name_(message_handler_name) {
   content_controller_ = WKUserContentControllerCreate();
   for (const auto& src : user_scripts) {
     auto s = make_wk_string(src);
@@ -264,6 +270,8 @@ WkWebView::WkWebView(WKContextRef context, WKWebsiteDataStoreRef data_store,
   view_ = WKViewCreate(config);
   WKRelease(config);
   page_ = WKViewGetPage(view_);
+  log_printf("view %s: created (view %s, page %s)", name_.c_str(),
+             view_ ? "ok" : "NULL", page_ ? "ok" : "NULL");
 
   WKViewClientV0 view_client{};
   view_client.base.version = 0;
@@ -395,6 +403,12 @@ void WkWebView::paint(unsigned char* argb, int width, int height,
   WKRect r = rect.valid ? to_wk_rect(rect)
                         : WKRectMake(0, 0, width, height);
   WKPagePaint(page_, argb, WKSizeMake(width, height), r);
+  if (!paint_logged_) {
+    paint_logged_ = true;
+    log_printf("view %s: first WKPagePaint done (%dx%d, rect %d,%d %dx%d)", name_.c_str(),
+               width, height, static_cast<int>(r.origin.x), static_cast<int>(r.origin.y),
+               static_cast<int>(r.size.width), static_cast<int>(r.size.height));
+  }
 }
 
 DirtyRect WkWebView::take_dirty() {

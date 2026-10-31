@@ -127,25 +127,30 @@ Ps5App::~Ps5App() {
 }
 
 int Ps5App::run() {
-  log_open(std::string(kBaseDir) + "/log.txt");
+  log_open(std::string(kBaseDir) + "/log.txt");  // no-op: main() opened it
   log_line("ps5browser UI starting");
 
+  log_line("SDL_Init: calling");
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
     log_printf("SDL_Init failed: %s", SDL_GetError());
     return 1;
   }
+  log_printf("SDL_Init: ok, video driver %s",
+             SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "(none)");
 
   storage_ = std::make_unique<core::FileStorage>(kBaseDir);
   config_ = Ps5Config::load(*storage_);
   width_ = config_.width;
   height_ = config_.height;
 
+  log_printf("SDL_CreateWindow: calling %dx%d", width_, height_);
   window_ = SDL_CreateWindow("ps5browser", SDL_WINDOWPOS_UNDEFINED,
                              SDL_WINDOWPOS_UNDEFINED, width_, height_, 0);
   if (!window_) {
     log_printf("SDL_CreateWindow failed: %s", SDL_GetError());
     return 1;
   }
+  log_line("SDL_CreateWindow: ok");
   // Printable keyboard input arrives as SDL_TEXTINPUT (see pump_sdl_events).
   SDL_StartTextInput();
 
@@ -158,13 +163,16 @@ int Ps5App::run() {
   apply_language_env(config_.language);
 
   // WebKit main run loop (also initializes WebKit2).
+  log_line("WKRunLoopInitializeMain: calling");
   WKRunLoopInitializeMain();
+  log_line("WKRunLoopInitializeMain: ok");
 
   std::vector<std::string> user_scripts = {core::kEmeDetectorScript,
                                            core::kFocusReporterScript,
                                            core::kGamepadKeyBridgeScript};
   factory_ = std::make_unique<Ps5EngineFactory>(kBaseDir, user_scripts,
                                                 config_.user_agent);
+  log_line("WebKit: context and data store created");
 
   const std::string chrome_path = config_.chrome_dir + "/chrome.html";
   std::string chrome_url = "file://" + chrome_path;
@@ -189,11 +197,14 @@ int Ps5App::run() {
   cfg.language = config_.language;
   controller_ = std::make_unique<shell::ShellController>(*factory_, *chrome_, *storage_,
                                                          cfg);
+  log_line("shell: starting");
   controller_->start();
+  log_line("shell: started");
 
   running_ = true;
   last_frame_ticks_ = SDL_GetTicks64();
   WKRunLoopCallOnMainThread(&Ps5App::frame_trampoline, this);
+  log_line("WKRunLoopRunMain: entering");
   WKRunLoopRunMain();
 
   log_line("ps5browser UI stopped");
@@ -207,6 +218,10 @@ void Ps5App::frame_trampoline(void* self) {
 
 void Ps5App::frame() {
   std::uint64_t now = SDL_GetTicks64();
+  if (frames_ == 0) {
+    log_line("frame: first frame");
+  }
+  frames_++;
   float dt = static_cast<float>(now - last_frame_ticks_) / 1000.0f;
   last_frame_ticks_ = now;
 
@@ -390,6 +405,15 @@ void Ps5App::paint_content() {
 
 void Ps5App::composite_and_present() {
   SDL_Surface* surface = SDL_GetWindowSurface(window_);
+  if (!surface_logged_) {
+    surface_logged_ = true;
+    if (surface) {
+      log_printf("SDL_GetWindowSurface: %dx%d %s pitch %d", surface->w, surface->h,
+                 SDL_GetPixelFormatName(surface->format->format), surface->pitch);
+    } else {
+      log_printf("SDL_GetWindowSurface failed: %s", SDL_GetError());
+    }
+  }
   if (!surface) {
     return;
   }
@@ -447,7 +471,23 @@ void Ps5App::composite_and_present() {
   if (SDL_MUSTLOCK(surface)) {
     SDL_UnlockSurface(surface);
   }
-  SDL_UpdateWindowSurface(window_);
+  // Under the SDL PS5 driver this submits the frame (sceVideoOutSubmitFlip).
+  if (!first_flip_logged_) {
+    log_line("SDL_UpdateWindowSurface: first flip, calling");
+  }
+  const int rc = SDL_UpdateWindowSurface(window_);
+  if (!first_flip_logged_) {
+    first_flip_logged_ = true;
+    if (rc == 0) {
+      log_line("SDL_UpdateWindowSurface: first flip submitted");
+    } else {
+      log_printf("SDL_UpdateWindowSurface: first flip failed: %s", SDL_GetError());
+    }
+  } else if (rc != 0 && !flip_error_logged_) {
+    flip_error_logged_ = true;
+    log_printf("SDL_UpdateWindowSurface failed (frame %llu): %s",
+               static_cast<unsigned long long>(frames_), SDL_GetError());
+  }
 }
 
 }  // namespace ps5browser::frontend

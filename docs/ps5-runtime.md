@@ -28,7 +28,7 @@ installed under `/data/ps5browser/`:
   cache/                network cache (WKWebsiteDataStore)
   storage/ localstorage/ indexeddb/   web storage (WKWebsiteDataStore)
   tmp/                  TMPDIR (created at startup)
-  log.txt               UI-process log (also echoed to stderr)
+  log.txt               shared log of all roles, fsync'ed per line (also stderr + klog)
 ```
 
 `config.json` keys (all optional; defaults in `src/frontend/ps5/ps5_config.h`):
