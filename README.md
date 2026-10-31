@@ -1,50 +1,76 @@
-# ProsperoBrowser
+# ProsperoWeb
 
 [![CI](https://github.com/kvaps/ProsperoWeb/actions/workflows/ci.yml/badge.svg)](https://github.com/kvaps/ProsperoWeb/actions/workflows/ci.yml)
 
-A homebrew web browser for the PlayStation 5. It ports upstream WebKit's PlayStation port to the open [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk), adds an ffmpeg media engine and an elfldr-style process spawner, and runs a 10-foot browser shell (tabs, address bar, on-screen keyboard, gamepad pointer) that is shared with a WebKitGTK host frontend for development.
+A WebKit-based web browser for jailbroken PlayStation 5 consoles. It builds upstream WebKit's PlayStation port with the open [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk), adds an ffmpeg media engine (including Media Source Extensions) and an elfldr-derived process spawner, and runs a 10-foot browser shell (tabs, address bar, gamepad and touchpad pointer, system keyboard) that is shared with a WebKitGTK host frontend for development.
 
-Source: https://github.com/kvaps/ProsperoBrowser (formerly ps5-browser).
+Repository: https://github.com/kvaps/ProsperoWeb (earlier names: ps5-browser, ProsperoBrowser).
 
-ProsperoBrowser is an independent homebrew project and is not affiliated with or endorsed by Sony Interactive Entertainment.
+ProsperoWeb is an independent homebrew project and is not affiliated with or endorsed by Sony Interactive Entertainment.
+
+![Home screen background](docs/screenshots/store-background-preview.png)
 
 ## Status
 
-- The PS5 build compiles, links (`prosperobrowser.elf`, about 162 MB shipped) and packages.
-- **It has not been run on a PS5 yet.** Every console-side behaviour is unverified; the operator checklist is [docs/console-verification.md](docs/console-verification.md).
-- The shell, chrome and core run on the host with WebKitGTK and are covered by unit tests and [host screenshots](docs/screenshots/README.md).
+ProsperoWeb runs on real hardware. It has been tested on the developer's console, whose spawn log reports `fw 0x13420000`; other firmware versions are untested. On that console it loads and renders sites such as Google and rezka, plays YouTube through Media Source Extensions with H.264 video, and plays sound through the UI process. The console runs, what was checked and how to report problems are in [docs/console-verification.md](docs/console-verification.md).
+
+It is early software (version 0.1.0): expect rough edges, and launch it only the way described below.
 
 ## Features
 
 - Tabs, address bar with URL/search normalisation, back/forward/reload, bookmarks and history, session restore.
-- 10-foot HTML chrome with an on-screen keyboard (Latin, Cyrillic, symbols) for the address bar and page text fields; English and Russian UI.
-- DualSense: virtual pointer on the left stick or the touchpad (trackpad-style: slide, tap, two-finger scroll, press and slide to drag), trusted clicks and scrolling, tab switching, menu; USB keyboard.
+- DualSense: a virtual pointer on the left stick or the touchpad (trackpad-style: slide, tap, two-finger scroll, press and slide to drag), trusted clicks and scrolling, tab switching, menu; USB keyboard.
+- Text entry through the console's own keyboard dialog, pre-filled with the URL or the field's value; a built-in on-screen keyboard (Latin, Cyrillic, symbols) as the fallback.
 - HTML5 Fullscreen API and a chrome-hiding fullscreen mode.
-- HTML5 `<video>`/`<audio>` through an ffmpeg engine: progressive MP4/WebM and native HLS, software decoding (H.264, HEVC, VP8, VP9; AAC, MP3, Opus and others).
+- HTML5 `<video>`/`<audio>` through an ffmpeg engine: Media Source Extensions (YouTube-style players; H.264 up to 1080p by default), progressive MP4/WebM and native HLS; software decoding (H.264, HEVC, VP8, VP9; AAC, MP3, Opus and others). Video is composed by the UI process under the page, audio is mixed and played by the UI process.
+- Bundled fonts with Latin, Cyrillic, CJK and colour emoji coverage (Noto, Noto CJK, Noto Color Emoji, Liberation, DejaVu).
+- English and Russian UI.
 - DRM notice: known DRM-only sites and pages that request EME get a clear message instead of a broken player.
 
-## Not working yet
+## Known limitations
 
-- **YouTube, Twitch and other MSE players**: Media Source Extensions are not implemented; this is the next milestone.
-- **DRM sites** (Netflix, Disney+, Kinopoisk, Okko, ...): no CDM, by design.
-- **GPU acceleration**: software rendering only; no WebGL, no CSS 3D.
-- **WebAudio**, and **JIT/WebAssembly** by default (compiled in, but JavaScriptCore runs on its interpreter unless `config.json` `"env"` enables them; see `docs/ps5-runtime.md`).
+- **Video decoding is software only** and limited by the CPU cores the web process gets: high resolutions and frame rates drop frames. Players are steered to H.264 at up to 1080p by default.
+- **No DRM sites** (Netflix, Disney+, Kinopoisk, Okko, ...): there is no CDM, by design.
+- **No GPU acceleration**: software rendering only; no WebGL, no CSS 3D, no GPU compositing.
+- **No WebAudio.**
+- **JIT and WebAssembly** are compiled in but off by default; JavaScript runs on the interpreter unless `config.json` `"env"` enables them ([docs/ps5-runtime.md](docs/ps5-runtime.md#javascript-jit-and-webassembly)).
+- **The native home-screen title is not finished** (see below); today the browser starts from the websrv tile.
 
-See [docs/architecture.md](docs/architecture.md#non-goals).
+See also [docs/architecture.md](docs/architecture.md#non-goals).
 
-## Requirements
+## Install
 
-- Build host: Linux x86-64 (Ubuntu 24.04 used), 4+ cores, 15 GB RAM, at least 10 GB free disk (SDK 0.7 GB, WebKit checkout 1.3 GB, WebKit build tree 3.2 GB, dependencies 0.7 GB, plus the frontend build and dist). The WebKit build takes several hours on 4 cores.
-- Console: a jailbroken PS5 with ps5-payload-dev/elfldr (firmware coverage: [docs/research.md §2.2](docs/research.md#22-firmware-coverage-as-of-2026-10-30)), an FTP server, optionally websrv for a launcher tile.
+### Native title (in progress)
+
+The goal is a native title, `PRWB00001`: one folder installed from [ProsperoStore](https://github.com/darkxex/ProsperoStore) or from the `PRWB00001.zip` attached to a [GitHub release](https://github.com/kvaps/ProsperoWeb/releases), launched from the home screen like any other app, with the profile created automatically in `/data/prosperoweb/`. Prerequisites: a jailbroken PS5 with etaHEN or kstuff, ShadowMountPlus (registers the title) and elfldr listening on port 9021 (starts the helper that spawns the browser's processes).
+
+**This does not run the browser yet.** The packaging is done (`scripts/ps5/native/make-title.sh` builds the folder and the zip, and CI attaches the zip to releases), but `eboot.bin` is still a loader stub that only shows a notification until the browser is relinked as a native application. The title is not listed in ProsperoStore yet. The remaining work is in [docs/native-title.md](docs/native-title.md) and [docs/store-submission.md](docs/store-submission.md).
+
+### Current install: websrv tile
+
+What works today. You need a jailbroken PS5 running [ps5-payload-dev/websrv](https://github.com/ps5-payload-dev/websrv) (port 8080, launches the browser) and an FTP server such as ps5-payload-dev/ftpsrv (port 2121); klogsrv (port 3232) is useful for debug output. About 240 MB of free space in `/data`, plus the cache.
+
+1. Get `ProsperoWeb-<version>-data.zip` from a [release](https://github.com/kvaps/ProsperoWeb/releases) (or a CI run's artifacts), or build `dist/` yourself (below). It holds two folders, `prosperoweb/` and `homebrew/prosperoweb/`.
+2. Copy them over FTP: `prosperoweb/` to `/data/prosperoweb/` and `homebrew/prosperoweb/` to `/data/homebrew/prosperoweb/` (the websrv tile), for example `lftp -p 2121 PS5_IP -e "mirror -R prosperoweb /data/prosperoweb; mirror -R homebrew/prosperoweb /data/homebrew/prosperoweb; quit"`. The browser must live in `/data/prosperoweb/`; its profile (tabs, history, bookmarks, web data) is created there on the first start.
+3. Open `http://PS5_IP:8080/` (or the Homebrew Launcher) and select the "ProsperoWeb" tile.
+
+**Launch only through the websrv tile.** Started through elfldr or the Payload Manager, the browser runs as a background payload: no picture, and its processes keep running until the console runs out of memory. Reboot the console after a launch that showed no picture. Quit with Options → Quit to save the session.
+
+`prosperoweb/README-install.txt` has the full steps; `config.json.sample` lists the settings (home page, language, user agent).
+
+Upgrading from ProsperoBrowser (`/data/prosperobrowser/`) or ps5browser (`/data/ps5browser/`): install as above, remove the old tile (`/data/homebrew/prosperobrowser/` or `/data/homebrew/ps5browser/`) and leave the old data directory in place for the first start. The browser copies the profile once from the newest old directory that has one, and still accepts the old `PROSPEROBROWSER_*` and `PS5BROWSER_*` variables for this release ([details](docs/ps5-runtime.md#upgrading-from-prosperobrowser-or-ps5browser)).
 
 ## Build from scratch (PS5)
+
+Build host: Linux x86-64 (Ubuntu 24.04 used), 4+ cores, 15 GB RAM, at least 10 GB free disk (SDK 0.7 GB, WebKit checkout 1.3 GB, WebKit build tree 3.2 GB, dependencies 0.7 GB, plus the frontend build and `dist/`). The WebKit build takes several hours on 4 cores.
 
 Host packages:
 
 ```sh
 sudo apt-get install --assume-yes --no-install-recommends \
   clang-18 lld-18 llvm-18 cmake ninja-build ruby perl python3 gperf unifdef \
-  pkg-config autoconf automake libtool bison flex wget unzip python3-pyelftools
+  pkg-config autoconf automake libtool bison flex wget unzip python3-pyelftools \
+  python3-venv curl zip file zlib1g-dev g++ imagemagick librsvg2-bin
 ```
 
 The ps5-payload-sdk with the prebuilt pacbrew libraries (SDL2, curl, OpenSSL, FFmpeg, ...), bundle v0.41.1, into `/opt/ps5-payload-sdk`:
@@ -65,37 +91,34 @@ scripts/ps5/build-deps.sh          # third_party/ps5-prefix: ICU, HarfBuzz, Free
 scripts/ps5/fetch-webkit.sh        # third_party/webkit at the pinned commit + webkit-port/patches
 scripts/ps5/build-webkit.sh all    # build-wk-ps5/: libWebKitPS5.a + ps5webkit-link.cmake
 cmake -S . -B build-ps5 -DCMAKE_TOOLCHAIN_FILE=/opt/ps5-payload-sdk/toolchain/prospero.cmake \
-      -DPROSPEROBROWSER_FRONTEND=ps5 -DPROSPEROBROWSER_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
-cmake --build build-ps5 -j4 --target prosperobrowser
-scripts/ps5/package.sh             # dist/prosperobrowser/ + dist/homebrew/prosperobrowser/
+      -DPROSPEROWEB_FRONTEND=ps5 -DPROSPEROWEB_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build build-ps5 -j4 --target prosperoweb
+scripts/ps5/package.sh             # dist/prosperoweb/ + dist/homebrew/prosperoweb/
+scripts/ps5/native/make-title.sh   # optional: build-dist/native/PRWB00001/ + build-dist/PRWB00001.zip
 ```
 
-All scripts are idempotent and resumable; their headers list the environment variables (`JOBS`, `PS5_DEPS_PREFIX`, `WEBKIT_BUILD_DIR`, `USE_FFMPEG`, ...). `package.sh` also needs `curl` and ImageMagick (`convert`). Details: [webkit-port/README.md](webkit-port/README.md).
-
-## Install on the PS5
-
-Copy `dist/prosperobrowser/` to `/data/prosperobrowser/` (and optionally `dist/homebrew/prosperobrowser/` to `/data/homebrew/prosperobrowser/` for the websrv tile) over FTP, then launch from the websrv tile or with `echo file:/data/prosperobrowser/prosperobrowser.elf | nc -q0 PS5_IP 9021`. The full steps are in `dist/prosperobrowser/README-install.txt`; the first-run test plan, with what to capture on failure, is [docs/console-verification.md](docs/console-verification.md).
+All scripts are idempotent and resumable; their headers list the environment variables (`JOBS`, `PS5_DEPS_PREFIX`, `WEBKIT_BUILD_DIR`, `USE_FFMPEG`, ...). `package.sh` needs `curl` and ImageMagick (`convert`); `make-title.sh` builds its host tools with `clang++` and `g++` (OpenMP) and `zlib`; `scripts/assets/render.sh` re-renders the home screen artwork from `assets/*.svg` (needs `rsvg-convert`). Details: [webkit-port/README.md](webkit-port/README.md).
 
 ## Host build, tests and screenshots
 
 The host frontend runs the same shell and chrome on a desktop. It needs CMake 3.20+, a C++20 compiler, GTK 4, WebKitGTK 6.0 and, optionally, SDL2 for a game controller (on Ubuntu 24.04: `libgtk-4-dev libwebkitgtk-6.0-dev libsdl2-dev`, plus `gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav` for video).
 
 ```sh
-cmake -S . -B build-gtk -DPROSPEROBROWSER_FRONTEND=host-gtk
+cmake -S . -B build-gtk -DPROSPEROWEB_FRONTEND=host-gtk
 cmake --build build-gtk -j4
 ctest --test-dir build-gtk            # core, shell, spawn helper and media unit tests
-build-gtk/src/frontend/host-gtk/prosperobrowser-host --url https://en.wikipedia.org/wiki/PlayStation_5
+build-gtk/src/frontend/host-gtk/prosperoweb-host --url https://en.wikipedia.org/wiki/PlayStation_5
 ```
 
-Options: `--size WxH` (default 1920x1080), `--profile DIR` (default `$XDG_DATA_HOME/prosperobrowser`; session, history and bookmarks live in `DIR/state`), `--url URL`, `--screenshot PATH --after-ms N` (save a PNG and exit), `--demo[=KIND]` (chrome demo state over `about:blank`), `--lang en|ru`, `--user-agent UA`, `--chrome-dir DIR`, `--input LIST` (press gamepad buttons after start, for automation). `--help` lists them all.
+Options: `--size WxH` (default 1920x1080), `--profile DIR` (default `$XDG_DATA_HOME/prosperoweb`; session, history and bookmarks live in `DIR/state`), `--url URL`, `--screenshot PATH --after-ms N` (save a PNG and exit), `--demo[=KIND]` (chrome demo state over `about:blank`), `--lang en|ru`, `--user-agent UA`, `--chrome-dir DIR`, `--input LIST` (press gamepad buttons after start, for automation). `--help` lists them all.
 
-The chrome is loaded from `--chrome-dir`, `$PROSPEROBROWSER_CHROME_DIR`, the install location (`share/prosperobrowser/chrome-ui`) or the source tree, whichever has `chrome.html` first. `cmake --install` installs the binary and the chrome.
+The chrome is loaded from `--chrome-dir`, `$PROSPEROWEB_CHROME_DIR`, the install location (`share/prosperoweb/chrome-ui`) or the source tree, whichever has `chrome.html` first. `cmake --install` installs the binary and the chrome.
 
 Headless, for example in CI or a container (`WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` only where bubblewrap cannot create namespaces):
 
 ```sh
 WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 xvfb-run -a -s "-screen 0 1920x1080x24" \
-  build-gtk/src/frontend/host-gtk/prosperobrowser-host --demo --screenshot /tmp/chrome.png --after-ms 3000
+  build-gtk/src/frontend/host-gtk/prosperoweb-host --demo --screenshot /tmp/chrome.png --after-ms 3000
 ```
 
 See [docs/screenshots/](docs/screenshots/README.md) for screenshots and the commands that produced them.
@@ -126,7 +149,7 @@ New tab: Options menu → New tab, or `+` in the tab strip (the touchpad button 
 
 The touchpad works on the host only with a DualSense connected through SDL2; there is no keyboard or mouse emulation of it (the real mouse already goes to the page).
 
-On the PS5, Triangle, Square and a click into a text field open the console's own keyboard dialog, pre-filled with the URL or the field's value; confirming navigates or replaces the field's value, cancelling changes nothing. The built-in OSK below is the fallback when the dialog fails, and the only keyboard with `PROSPEROBROWSER_OSK=builtin` (or `"osk": "builtin"` in `config.json`) and on the host; see docs/ps5-runtime.md, "Text input".
+On the PS5, Triangle, Square and a click into a text field open the console's own keyboard dialog, pre-filled with the URL or the field's value; confirming navigates or replaces the field's value, cancelling changes nothing. The built-in OSK below is the fallback when the dialog fails, and the only keyboard with `PROSPEROWEB_OSK=builtin` (or `"osk": "builtin"` in `config.json`) and on the host; see docs/ps5-runtime.md, "Text input".
 
 In the OSK: D-pad moves between keys, Cross types the key at the caret, L1/R1 move the caret, Square deletes before the caret, Triangle inserts a space, L2 is Shift, Touchpad (or the on-screen layout key) switches the layout, Options commits, Circle cancels. Holding the D-pad, Square, L1 or R1 repeats; the on-screen Clear key empties the text. In the menu: D-pad up/down selects, Cross activates, Circle goes back.
 
@@ -146,23 +169,26 @@ GitHub Actions ([.github/workflows/](.github/workflows/)) runs on every push and
 - `host`: the core, shell, spawn helper, media and chrome UI unit tests (`ctest`, with node for the chrome test), and a compile of the GTK host frontend.
 - `ps5`: the full PS5 build from scratch as described above (SDK, dependencies, WebKit, frontend, `package.sh`, native title). The SDK tarball, the dependency prefix, downloads and a ccache of the WebKit build are cached; a cold WebKit build can exceed the runner's time limit, in which case the job fails after saving the ccache and a re-run finishes from it.
 
-The run's Summary page lists per-stage timings and the artifacts: `ProsperoWeb-<branch>-<sha>-data.zip` (the contents of `dist/`: unpack and copy both folders under `/data/` on the console) and, when built, the native title zip.
+The run's Summary page lists per-stage timings and the artifacts: `ProsperoWeb-<branch>-<sha>-data.zip` (the contents of `dist/`: unpack and copy both folders under `/data/` on the console) and `PRWB00001.zip` (the native title folder, still with the loader stub).
 
-To cut a release, push a `v*` tag (`git tag v0.1.0 && git push origin v0.1.0`). The release workflow runs the same build and creates a draft GitHub release with `ProsperoWeb-<tag>-data.zip` and the native title zip attached; the notes come from the tag's section of `CHANGELOG.md` if there is one. Review the draft and publish it by hand. Tags with a `-` (`v0.2.0-rc1`) are marked as pre-releases.
+To cut a release, push a `v*` tag (`git tag v0.1.0 && git push origin v0.1.0`). The release workflow runs the same build and creates a draft GitHub release with `ProsperoWeb-<tag>-data.zip` and `PRWB00001.zip` attached; the notes come from the tag's section of `CHANGELOG.md` if there is one. Review the draft and publish it by hand. Tags with a `-` (`v0.2.0-rc1`) are marked as pre-releases.
 
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md): processes, libraries, code layout, rendering/input/video paths, patch set, build pipeline, licensing, non-goals.
-- [docs/console-verification.md](docs/console-verification.md): first-run checklist for a real PS5.
-- [docs/ps5-runtime.md](docs/ps5-runtime.md): on-disk layout, configuration, environment, process model and spawn contract.
+- [docs/ps5-runtime.md](docs/ps5-runtime.md): on-disk layout, configuration, environment variables, process model, spawn contract, performance, text input, upgrades from earlier names.
+- [docs/console-verification.md](docs/console-verification.md): console test checklist, what to capture on a failure, console run notes.
+- [docs/native-title.md](docs/native-title.md): the native `PRWB00001` title: toolchain, `sce_sys` requirements, launch chain, remaining work.
+- [docs/store-submission.md](docs/store-submission.md): ProsperoStore catalog requirements, chosen identifiers, draft record.
 - [webkit-port/README.md](webkit-port/README.md): the WebKit port, patches, link contract.
-- [webkit-port/media/README.md](webkit-port/media/README.md): the ffmpeg media engine.
+- [webkit-port/media/README.md](webkit-port/media/README.md): the ffmpeg media engine and MSE.
 - [src/ps5/spawn/README.md](src/ps5/spawn/README.md): the elfldr-derived spawner and its origin.
-- [docs/research.md](docs/research.md): scene research and the architecture decision.
-- [docs/screenshots/README.md](docs/screenshots/README.md): host screenshots and probe pages.
+- [docs/screenshots/README.md](docs/screenshots/README.md): host screenshots, artwork previews and probe pages.
+- [third_party/README.md](third_party/README.md): vendored third-party code.
+- [docs/research.md](docs/research.md): the original scene research and architecture decision (historical).
 
 ## License
 
-GPL-3.0-or-later, see [LICENSE](LICENSE). The ps5-payload-sdk crt/libc are GPLv3+ and statically linked into the payload, the spawner is derived from GPL-3.0-or-later elfldr, and the SDK's FFmpeg includes x264, so the browser as a whole is distributed under the GPL. WebKit, Skia, ICU and the other libraries keep their own (compatible) licenses; see [docs/architecture.md](docs/architecture.md#licensing).
+GPL-3.0-or-later, see [LICENSE](LICENSE). The ps5-payload-sdk crt/libc are GPLv3+ and statically linked into the payload, the spawner is derived from GPL-3.0-or-later elfldr, and the SDK's FFmpeg includes x264, so the browser as a whole is distributed under the GPL. WebKit, Skia, ICU, the fonts and the other libraries keep their own (compatible) licenses; see [docs/architecture.md](docs/architecture.md#licensing) and `LICENSES/` in the package. Vendored third-party code keeps its own license, see [third_party/README.md](third_party/README.md).
 
-Vendored third-party code keeps its own license, see [third_party/README.md](third_party/README.md).
+ProsperoWeb is not affiliated with or endorsed by Sony Interactive Entertainment. PlayStation, PS5 and DualSense are trademarks of Sony Interactive Entertainment Inc.

@@ -1,6 +1,6 @@
 {
-  "titleid": "PRSB00001",
-  "name": "ProsperoBrowser",
+  "titleid": "PRWB00001",
+  "name": "ProsperoWeb",
   "kind": "app",
   "category": "utilities",
   "description": "A WebKit web browser for the PS5, driven by the controller, with tabs, bookmarks and video playback.",

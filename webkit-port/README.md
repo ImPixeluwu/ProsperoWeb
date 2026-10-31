@@ -26,7 +26,7 @@ Overlay that builds the upstream WebKit **PlayStation port** (`-DPORT=PlayStatio
 | `0001-cmake-playstation-homebrew-options` | `OptionsPlayStation.cmake`: `PS5_HOMEBREW` option; no `-sce-stdlib=v2`, no forced `-g`, no libc/libkernel lookup, no `--wrap=mmap`/`sce_sys` copy, `ENABLE_RESOURCE_USAGE` off, `ENABLE_GAMEPAD` allowed without the WPE backend, static `libWebKit` and no auxiliary executables; the `USE_FFMPEG` option of patch 0900; `USE_THEME_ADWAITA` (patch 0012); `ENABLE_USER_MESSAGE_HANDLERS` on (native `window.webkit.messageHandlers` for the shell's page bridge) |
 | `0002-wtf-posix-osallocator` | `OSAllocatorPOSIX.cpp` instead of the memory-extra based PlayStation allocator |
 | `0003-jsc-generic-shell` | generic `jsc.cpp` shell (no Sony libtestwrappers), MemoryExtra only if found |
-| `0004-webcore-curl-ca-bundle` | TLS roots from a PEM file (`$PROSPEROBROWSER_CA_BUNDLE`, default `/data/prosperobrowser/cacert.pem`) instead of Sony's CertificateStore |
+| `0004-webcore-curl-ca-bundle` | TLS roots from a PEM file (`$PROSPEROWEB_CA_BUNDLE`, default `/data/prosperoweb/cacert.pem`) instead of Sony's CertificateStore |
 | `0005-webkit-static-multicall-processes` | launcher calls `ps5_spawn_self()`/`ps5_terminate_process()` (a failed spawn is logged and reported as failed-to-launch); entry points become `ps5_webkit_*_process_main()` inside libWebKit; no WebProcess/NetworkProcess executables; `WKRunLoop` file name case |
 | `0006-wtf-payload-sdk-compat` | no Sony libc extensions (`getenv_np`, `SO_NBIO`, `<sys/sysinfo.h>`, `<malloc.h>`); no `[[clang::suppress]]` on functions with clang 18 |
 | `0007-webcore-playstation-build-fixes` | upstream PlayStation+Skia build breaks (`PlatformDisplaySkia` per-thread GL context, `HardwareAccelerationEnabled` setting), `AF_INET` on FreeBSD |
@@ -102,11 +102,11 @@ Symbols the shell must define (C linkage):
 `main()` must dispatch on `argv[0]`: `"WebProcess"` → `ps5_webkit_web_process_main()`, `"NetworkProcess"` → `ps5_webkit_network_process_main()` (see `include/ps5webkit/entry.h`), anything else runs the UI process.
 
 Runtime files:
-- **TLS roots**: a PEM bundle (curl's `cacert.pem`) at `/data/prosperobrowser/cacert.pem`, or the path in `$PROSPEROBROWSER_CA_BUNDLE` in the NetworkProcess environment.
+- **TLS roots**: a PEM bundle (curl's `cacert.pem`) at `/data/prosperoweb/cacert.pem`, or the path in `$PROSPEROWEB_CA_BUNDLE` in the NetworkProcess environment.
 - **Fonts**: fontconfig is compiled with `/user/homebrew/etc/fonts/fonts.conf`; ship fonts plus a `fonts.conf` whose `<dir>` points at them, and set `FONTCONFIG_FILE` (and a writable `<cachedir>`) for the WebProcess. The console has no system fonts for fontconfig.
 - **Language**: `$SYSTEM_LANGUAGE` (e.g. `en-US`) sets the preferred language list.
 - Drawing is the non-accelerated path: keep accelerated compositing off (the PlayStation default in `WebPreferencesPlayStation.cpp`) and paint with `WKPagePaint(page, argb32Pixels, size, rect)` from `WKViewClient.setViewNeedsDisplay`.
 
-`prosperobrowser.elf` (the real shell, `-Wl,--gc-sections`, with ffmpeg): 162 MiB as linked, about 87 MB `.text`, 19 MB `.rodata`, 22 MB `.bss`; see `docs/ps5-runtime.md` for the stripped sizes.
+`prosperoweb.elf` (the real shell, `-Wl,--gc-sections`, with ffmpeg): 162 MiB as linked, about 87 MB `.text`, 19 MB `.rodata`, 22 MB `.bss`; see `docs/ps5-runtime.md` for the stripped sizes.
 
 Measured with the smoke test (`smoke/wk_smoke.cpp`, links `WKContextCreateWithConfiguration`, `WKViewCreate`, `WKPagePaint` and both entry points): `ELF 64-bit LSB pie executable, x86-64`, 142 MB with `--gc-sections` (136 MB with `-Wl,--strip-debug`; about 68 MB `.text`, 17 MB `.rodata`), `NEEDED` = `libkernel_web.sprx`, `libSceLibcInternal.sprx`, `libSceNet.sprx`.

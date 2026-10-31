@@ -1,6 +1,6 @@
 # Store submission (ProsperoStore)
 
-Preparation for listing ProsperoBrowser in the ProsperoStore homebrew catalog. Nothing has been submitted: no pull request, reservation or message has been sent anywhere. Everything below was read from public sources on 2026-10-31; links to GitHub files are pinned to the commit that was read.
+Preparation for listing ProsperoWeb in the ProsperoStore homebrew catalog. Nothing has been submitted: no pull request, reservation or message has been sent anywhere. Everything below was read from public sources on 2026-10-31; links to GitHub files are pinned to the commit that was read.
 
 ## What ProsperoStore is
 
@@ -44,8 +44,8 @@ All in [`assets/app.json`](../assets/app.json), the single source; `scripts/ps5/
 
 | Field | Value | Why |
 | --- | --- | --- |
-| Title ID | `PRSB00001` | Unique by construction: no catalog record uses the `PRSB` prefix (164 records checked: 162 `PPSA`, one `CWEN`, one `FAKE`), and a GitHub code search for `PRSB0` finds no PS5 title. A custom prefix cannot collide with a retail PS5 title (`PPSA` is Sony's retail namespace, and the catalog already holds 120+ `PPSA9xxxx` homebrew IDs). ShadowMountPlus classifies it as a homebrew ID. |
-| Content ID | `IV9999-PRSB00001_00-PROSPEROBROWSER0` | Standard layout. `IV9999` is the homebrew publisher code websrv uses; ProsperoStore's `UP9000` is Sony's own first-party publisher code and is avoided. Suffix: `PROSPEROBROWSER` padded with `0` to 16 characters. |
+| Title ID | `PRWB00001` | Unique by construction: no catalog record uses the `PRWB` prefix (164 records checked at catalog commit `0bd485a`: 162 `PPSA`, one `CWEN`, one `FAKE`), a GitHub code search for `PRWB00001` finds nothing and one for `PRWB0` only unrelated hashes and tokens. A custom prefix cannot collide with a retail PS5 title (`PPSA` is Sony's retail namespace, and the catalog already holds 120+ `PPSA9xxxx` homebrew IDs). ShadowMountPlus classifies it as a homebrew ID. Development builds under the earlier name used `PRSB00001`; it was never published. |
+| Content ID | `IV9999-PRWB00001_00-PROSPEROWEB00000` | Standard layout. `IV9999` is the homebrew publisher code websrv uses; ProsperoStore's `UP9000` is Sony's own first-party publisher code and is avoided. Suffix: `PROSPEROWEB` padded with `0` to 16 characters. |
 | Concept ID | `00001` | The title ID's digits, as in ProsperoStore's `init-project.sh`. |
 | Version | `0.1.0` (release tag `v0.1.0`) | |
 | contentVersion | `01.001.000` | Mapping `0.M.P` -> `01.MMM.PPP` (0.1.1 -> `01.001.001`, 0.2.0 -> `01.002.000`; 1.0.0 -> `02.000.000`), monotonic as the catalog requires. |
@@ -63,7 +63,7 @@ Trade-off of the custom prefix, for the operator to confirm before the first pub
 | `assets/background.svg` | 1920x1080 | SVG source (wordmark in Noto Sans Bold, OFL) | |
 | `assets/sce_sys/icon0.png` | 512x512 | PNG, RGB | websrv tile, catalog `icon_url`, native app |
 | `assets/sce_sys/pic0.png`, `pic1.png` | 1920x1080 | PNG, RGB | packaged in the tile for completeness; nothing reads them yet |
-| `build-dist/assets/background-3840x2160.png` | 3840x2160 | PNG (not committed) | source for `pic0.dds`/`pic1.dds` of a native app |
+| `build-dist/assets/background-3840x2160.png` | 3840x2160 | PNG (not committed) | source for `pic0.dds`/`pic1.dds` of the native title (`make-title.sh`) |
 | `docs/screenshots/store-icon-preview.png` | 800x560 | PNG | icon at 512 and 128 |
 | `docs/screenshots/store-background-preview.png` | 1280x720 | PNG | background preview |
 
@@ -73,30 +73,31 @@ Screenshots for the README or the GitHub release (the catalog takes none). Witho
 
 ## Draft record
 
-[`docs/store/PRSB00001.json`](store/PRSB00001.json) is a valid catalog **reservation** record (release fields `null`), ready to be proposed as `apps/PRSB00001.json` if the operator decides to reserve the title ID. For the first release it becomes:
+[`docs/store/PRWB00001.json`](store/PRWB00001.json) is a valid catalog **reservation** record (release fields `null`), ready to be proposed as `apps/PRWB00001.json` if the operator decides to reserve the title ID. For the first release it becomes:
 
 ```json
 {
-  "titleid": "PRSB00001",
-  "name": "ProsperoBrowser",
+  "titleid": "PRWB00001",
+  "name": "ProsperoWeb",
   "kind": "app",
   "category": "utilities",
   "description": "A WebKit web browser for the PS5, driven by the controller, with tabs, bookmarks and video playback.",
   "license": "GPL-3.0-or-later",
   "author": "kvaps",
   "version": "0.1.0",
-  "source_repo": "https://github.com/kvaps/ProsperoBrowser",
-  "artifact_url": "https://github.com/kvaps/ProsperoBrowser/releases/download/v0.1.0/PRSB00001.zip",
-  "sha256": "<sha256 of PRSB00001.zip, lowercase hex>",
-  "icon_url": "https://raw.githubusercontent.com/kvaps/ProsperoBrowser/v0.1.0/assets/sce_sys/icon0.png"
+  "source_repo": "https://github.com/kvaps/ProsperoWeb",
+  "artifact_url": "https://github.com/kvaps/ProsperoWeb/releases/download/v0.1.0/PRWB00001.zip",
+  "sha256": "<sha256 of PRWB00001.zip, lowercase hex>",
+  "icon_url": "https://raw.githubusercontent.com/kvaps/ProsperoWeb/v0.1.0/assets/sce_sys/icon0.png"
 }
 ```
 
 ## What still needs the operator
 
-1. **A native app build (blocker).** The catalog lists only native titles (`eboot.bin` + `sce_sys/param.json` in a `PRSB00001/` folder); ProsperoBrowser today is an ELF payload started by websrv's loader title (`FAKE00000`) through `homebrew.js`, which is exactly what the catalog excludes. Listing needs a `PRSB00001/eboot.bin` that runs the browser as its own title, plus a replacement for the websrv-hosted spawn broker the browser uses to start its WebProcess and NetworkProcess (docs/ps5-runtime.md). This is engineering work, not packaging.
-2. **`pic0.dds`/`pic1.dds`**: convert `build-dist/assets/background-3840x2160.png` to BC7 DDS (e.g. `texconv -f BC7_UNORM -m 1 -dx10`), which needs a Windows tool or another BC7 encoder; not done here.
-3. **Public repository state**: `kvaps/ProsperoBrowser` currently shows no license to GitHub's detector and has no releases. The `license` check needs `LICENSE` on the default branch; the record needs a published release `v0.1.0` with `PRSB00001.zip` attached.
-4. **Confirm the title ID** (`PRSB00001` vs a `PPSA` ID, see above) and whether to reserve it now.
-5. **Real console screenshots** for the README and release notes.
-6. **The pull request itself**, from the `kvaps` account, after review of the record text.
+1. **A native app build (blocker).** The catalog lists only native titles (`eboot.bin` + `sce_sys/param.json` in a `PRWB00001/` folder); ProsperoWeb today is an ELF payload started by websrv's loader title (`FAKE00000`) through `homebrew.js`, which is exactly what the catalog excludes. Listing needs a `PRWB00001/eboot.bin` that runs the browser as its own title, plus a replacement for the websrv-hosted spawn broker the browser uses to start its WebProcess and NetworkProcess (docs/ps5-runtime.md). This is engineering work, not packaging.
+2. **Public repository state**: as of 2026-10-31 `kvaps/ProsperoWeb` shows no license to GitHub's detector and has no releases. The `license` check needs `LICENSE` on the default branch (`main`); the record needs a published release `v0.1.0` with `PRWB00001.zip` attached (the release workflow attaches it, see the README).
+3. **Confirm the title ID** (`PRWB00001` vs a `PPSA` ID, see above) and whether to reserve it now.
+4. **Real console screenshots** for the README and release notes.
+5. **The pull request itself**, from the `kvaps` account, after review of the record text.
+
+`pic0.dds`/`pic1.dds` are no longer open: `scripts/ps5/native/make-title.sh` encodes them with the vendored `bc7enc_rdo` (docs/native-title.md).

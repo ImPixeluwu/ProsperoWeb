@@ -1,17 +1,19 @@
 # PS5 runtime layout and process model
 
-How the `prosperobrowser` payload is laid out and runs on a jailbroken PS5. This is
-the phase-1 (software raster) design; anything not yet verifiable on a console
-is called out under "Must be verified on a console" and "Known risks".
+How the `prosperoweb` payload is laid out and runs on a jailbroken PS5. This is
+the phase-1 (software raster) design. It runs on a real console (see
+`console-verification.md`); what the console runs have confirmed and what is
+still open is listed under "Verified on a console", "Still to verify on a
+console" and "Known risks".
 
 ## On-disk layout
 
 The browser ships as a single statically-linked ELF plus its data directory,
-installed under `/data/prosperobrowser/`:
+installed under `/data/prosperoweb/`:
 
 ```
-/data/prosperobrowser/
-  prosperobrowser.elf   the payload (UI + WebProcess + NetworkProcess, one ELF)
+/data/prosperoweb/
+  prosperoweb.elf       the payload (UI + WebProcess + NetworkProcess, one ELF)
   chrome/
     chrome.html         the HTML browser chrome (from src/chrome-ui/)
     ...                 chrome assets (css/js/img)
@@ -33,26 +35,33 @@ installed under `/data/prosperobrowser/`:
   log.txt               shared log of all roles, fsync'ed per line (also stderr + klog)
 ```
 
-### Upgrading from ps5browser
+### Upgrading from ProsperoBrowser or ps5browser
 
-Releases before the rename installed to `/data/ps5browser/`. On the first
-start the UI copies (never moves) `tabs.json`, `history.json`,
-`bookmarks.json`, `config.json`, `storage/`, `localstorage/`, `indexeddb/`
-and `cache/` from `/data/ps5browser/` into `/data/prosperobrowser/`, each
-only if it is missing there, and logs `migrate: copied <n> items from
-/data/ps5browser`. In the copied `config.json`, paths and `file://` URLs
-under `/data/ps5browser` (such as `chrome_dir` from the old sample) are
-pointed at `/data/prosperobrowser`. It then writes `/data/prosperobrowser/.migrated-from-ps5browser`
-and never copies again; delete that file to repeat the copy. A failed
-item is logged (`migrate: failed: ...`) and no marker is written, so the
-next start retries. `/data/ps5browser/` is left as it was and can be
-deleted by hand once the new install works.
+Earlier releases installed to `/data/prosperobrowser/` (ProsperoBrowser)
+and, before that, `/data/ps5browser/` (ps5browser). On the first start the
+UI picks the newest of these that holds a profile (`/data/prosperobrowser/`
+first; a directory with none of the items below is skipped) and copies
+(never moves) `tabs.json`, `history.json`, `bookmarks.json`, `config.json`,
+`storage/`, `localstorage/`, `indexeddb/` and `cache/` from it into
+`/data/prosperoweb/`, each only if it is missing there, and logs
+`migrate: copied <n> items from <dir>`. Items are not mixed from two old
+directories. In the copied `config.json`, paths and `file://` URLs under
+either old directory (such as `chrome_dir` from an old sample) are pointed
+at `/data/prosperoweb`. It then writes
+`/data/prosperoweb/.migrated-legacy-profile` and never copies again;
+delete that file to repeat the copy. A failed item is logged
+(`migrate: failed: ...`) and no marker is written, so the next start
+retries. The old directories are left as they were and can be deleted by
+hand once the new install works, together with their websrv tiles
+(`/data/homebrew/prosperobrowser/`, `/data/homebrew/ps5browser/`).
 
-For one release `PS5BROWSER_*` environment variables (and `config.json`
-`"env"` keys) are still accepted: each one is used as its
-`PROSPEROBROWSER_*` counterpart unless that is set too, and `log.txt` gets
-one `env: deprecated PS5BROWSER_* variables used (...)` line (or one
-`env <NAME>: deprecated name in config.json` line per key).
+For one release `PROSPEROBROWSER_*` and `PS5BROWSER_*` environment
+variables (and `config.json` `"env"` keys) are still accepted: each one is
+used as its `PROSPEROWEB_*` counterpart unless that is set too; when both
+old names are set, the `PROSPEROBROWSER_*` one wins. `log.txt` gets one
+`env: deprecated variable names used (...)` line per launch (or one
+`env <NAME>: deprecated name in config.json` line per key; a key whose
+newer name is also in the file is logged as ignored).
 
 `config.json` keys (all optional; defaults in `src/frontend/ps5/ps5_config.h`):
 
@@ -61,21 +70,21 @@ one `env: deprecated PS5BROWSER_* variables used (...)` line (or one
   "home_url":   "https://duckduckgo.com/",
   "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
   "language":   "en",
-  "chrome_dir": "/data/prosperobrowser/chrome",
+  "chrome_dir": "/data/prosperoweb/chrome",
   "width":      1920,
   "height":     1080
 }
 ```
 
-`scripts/ps5/package.sh` assembles this directory as `dist/prosperobrowser/`,
-plus `dist/homebrew/prosperobrowser/` (`homebrew.js` + `sce_sys/icon0.png`) for
-`/data/homebrew/prosperobrowser/`: websrv lists every `/data/homebrew/<name>/`
+`scripts/ps5/package.sh` assembles this directory as `dist/prosperoweb/`,
+plus `dist/homebrew/prosperoweb/` (`homebrew.js` + `sce_sys/icon0.png`) for
+`/data/homebrew/prosperoweb/`: websrv lists every `/data/homebrew/<name>/`
 with a `homebrew.js` (preferred) or `eboot.elf` and uses
 `sce_sys/icon0.png` as the tile. The `homebrew.js` launches
-`/data/prosperobrowser/prosperobrowser.elf` in place (`cwd` `/data/prosperobrowser`), so
+`/data/prosperoweb/prosperoweb.elf` in place (`cwd` `/data/prosperoweb`), so
 the large ELF is not duplicated. websrv needs no `param.json` for homebrew
 entries. Without websrv, elfldr loads it directly:
-`echo file:/data/prosperobrowser/prosperobrowser.elf | nc -q0 PS5 9021` (elfldr
+`echo file:/data/prosperoweb/prosperoweb.elf | nc -q0 PS5 9021` (elfldr
 reads a raw ELF, a URI line or an HTTP GET `?uri=`, not a POST body).
 
 Environment set in `main()` before the role dispatch, so every process role
@@ -84,12 +93,12 @@ then overrides `SYSTEM_LANGUAGE` from `config.json`):
 
 | Variable | Value | Read by |
 |---|---|---|
-| `FONTCONFIG_FILE` | `/data/prosperobrowser/fonts/fonts.conf` | fontconfig (WebProcess) |
-| `FONTCONFIG_PATH` | `/data/prosperobrowser/fonts` | fontconfig |
-| `PROSPEROBROWSER_CA_BUNDLE` | `/data/prosperobrowser/cacert.pem` | curl SSL handle (NetworkProcess, patch 0004) |
+| `FONTCONFIG_FILE` | `/data/prosperoweb/fonts/fonts.conf` | fontconfig (WebProcess) |
+| `FONTCONFIG_PATH` | `/data/prosperoweb/fonts` | fontconfig |
+| `PROSPEROWEB_CA_BUNDLE` | `/data/prosperoweb/cacert.pem` | curl SSL handle (NetworkProcess, patch 0004) |
 | `SYSTEM_LANGUAGE` | `en-US` / `ru-RU` from `config.json` `language` | WTF `platformUserPreferredLanguages` (patch 0006) |
-| `TMPDIR` | `/data/prosperobrowser/tmp` (created at startup) | temporary files |
-| `HOME` | `/data/prosperobrowser` | home-relative defaults |
+| `TMPDIR` | `/data/prosperoweb/tmp` (created at startup) | temporary files |
+| `HOME` | `/data/prosperoweb` | home-relative defaults |
 
 `elfldr_spawn_fds` copies the parent's `environ` into each child
 (`elfldr_set_environ`, the shsrv pattern), so the auxiliary processes see
@@ -147,7 +156,7 @@ weak families after the last strong one and rejects a match whose family
 is not in what is left; and each `<alias>` tests one family (blocks
 listing several families did not take effect for all of them).
 
-The cache directory `<cachedir>` is `/data/prosperobrowser/cache/fontconfig`;
+The cache directory `<cachedir>` is `/data/prosperoweb/cache/fontconfig`;
 fontconfig creates it (and its parents) on the first start, which scans
 the fonts once (the CJK collections are the slow part). `fc-cache` is not
 needed on the console.
@@ -159,21 +168,21 @@ fallbacks and an unknown family, and fails if a match leaves the bundled
 fonts or the cache directory is not created.
 
 Sizes of the current build (Release, `--gc-sections`, ffmpeg engine on):
-`prosperobrowser.elf` 169 MB as linked, **162 MB shipped** (`llvm-strip
---strip-debug`, symbol table kept for backtraces), 129 MB with
+`prosperoweb.elf` 183 MB as linked, **176 MB shipped** (`llvm-strip
+--strip-debug`, symbol table kept for backtraces), 140 MB with
 `--strip-all` (not shipped: elfldr and the spawner only need program
 headers, section headers and `SHT_RELA`, so `--strip-all` should also load;
 untested). About 87 MB `.text`, 19 MB `.rodata`, 22 MB `.bss`, no `PT_TLS`.
 `NEEDED`: `libkernel_web`, `libSceLibcInternal`, `libSceNet` plus, through
 SDL2, `libSceSystemService`, `libSceUserService`, `libScePad`,
 `libSceAudioOut`, `libSceVideoOut`, `libSceKeyboard`, `libSceImeDialog`
-(all `.sprx` system modules). The whole package is about 235 MB, 68 MB of
+(all `.sprx` system modules). The whole package is about 236 MB, 68 MB of
 it fonts.
 
 The ELF path used when re-spawning the auxiliary processes is resolved by
-`ps5_spawn_resolve_self_path()`: `PROSPEROBROWSER_SELF_PATH` env →
-`/data/prosperobrowser/prosperobrowser.elf`. The UI's `main()` exports
-`PROSPEROBROWSER_SELF_PATH` from its own `argv[0]` when that is an absolute
+`ps5_spawn_resolve_self_path()`: `PROSPEROWEB_SELF_PATH` env →
+`/data/prosperoweb/prosperoweb.elf`. The UI's `main()` exports
+`PROSPEROWEB_SELF_PATH` from its own `argv[0]` when that is an absolute
 readable `*.elf` path (an explicit value wins).
 
 ## Process model
@@ -186,7 +195,7 @@ The payload is one multi-call ELF. `main()`
 - `argv[0]` basename `spawn-broker` → `ps5_spawn_broker_main()` (`src/ps5/spawn/`)
 - otherwise → the UI process (`Ps5App`)
 
-A `--role=<name>` argument and then `PROSPEROBROWSER_ROLE` are honoured as
+A `--role=<name>` argument and then `PROSPEROWEB_ROLE` are honoured as
 fallbacks when `argv[0]` is not a role name.
 
 The four roles:
@@ -205,7 +214,7 @@ The four roles:
 
 ```
  websrv (plain payload, :8080)
-   |  tile click: GET /hbldr?path=...prosperobrowser.elf      (hbldr, big app)
+   |  tile click: GET /hbldr?path=...prosperoweb.elf          (hbldr, big app)
    |  first spawn: GET /hbldr?...&daemon=1&args=spawn-broker ...  (elfldr_spawn)
    v                                   v
  UI (big app FAKE00000)  <-- AF_UNIX socket, else TCP 127.0.0.1:17771 -->  spawn-broker (plain payload)
@@ -228,7 +237,7 @@ Media audio is therefore forwarded to the UI process:
 
 ```
  WebProcess: FFmpegAudioDecoder -> RemoteAudioSink (writer thread)
-     |  loopback TCP 127.0.0.1:$PROSPEROBROWSER_AUDIO_PORT (17772), one connection per media element
+     |  loopback TCP 127.0.0.1:$PROSPEROWEB_AUDIO_PORT (17772), one connection per media element
      v
  UI: audio server thread (src/ps5/audio) -> Mixer (ring per stream, gain, clip) -> SDL device -> sceAudioOut
 ```
@@ -245,7 +254,7 @@ Media audio is therefore forwarded to the UI process:
 - Fallbacks in the WebProcess: remote, then the local SDL sink (inaudible on
   the console), then the null sink. A server that goes away mid-stream turns
   the remote sink into a silent real-time pacer; video keeps playing.
-- `PROSPEROBROWSER_AUDIO_TEST=1` plays a 1 s 440 Hz tone through the server at UI
+- `PROSPEROWEB_AUDIO_TEST=1` plays a 1 s 440 Hz tone through the server at UI
   startup, which checks UI-process audio without any page.
 
 Expected log lines:
@@ -253,7 +262,7 @@ Expected log lines:
 ```
 [UI] audio server: device opened: SDL driver ps5, device 2, 48000 Hz format 0x8120 2 ch 1024 samples
 [UI] audio server: listening on tcp 127.0.0.1:17772
-[UI] audio server: test tone played                                   (PROSPEROBROWSER_AUDIO_TEST=1)
+[UI] audio server: test tone played                                   (PROSPEROWEB_AUDIO_TEST=1)
 [WebProcess] media: audio sink: remote 127.0.0.1:17772 connected (stream 1, output latency 2048 frames, 100 ms ahead)
 [WebProcess] media: audio sink: using remote, latency 43 ms
 [UI] audio server: stream 1 connected (48000 Hz 2 ch)
@@ -278,17 +287,17 @@ where `sys_budget_set(0)` exists again.
 
 1. The websrv tile starts the UI through hbldr (`homebrew.js`).
 2. WebKit's first `ps5_spawn_self()` tries the broker endpoints in order:
-   AF_UNIX `$PROSPEROBROWSER_SPAWN_SOCK` (if set), `/tmp/prosperobrowser-spawn.sock`,
-   `/data/prosperobrowser/tmp/spawn.sock`, then TCP
-   `127.0.0.1:$PROSPEROBROWSER_SPAWN_PORT` (default `17771`).
+   AF_UNIX `$PROSPEROWEB_SPAWN_SOCK` (if set), `/tmp/prosperoweb-spawn.sock`,
+   `/data/prosperoweb/tmp/spawn.sock`, then TCP
+   `127.0.0.1:$PROSPEROWEB_SPAWN_PORT` (default `17771`).
 3. Nobody listens: the UI sends websrv a plain HTTP/1.0 request
-   (`PROSPEROBROWSER_WEBSRV`, default `127.0.0.1:8080`):
+   (`PROSPEROWEB_WEBSRV`, default `127.0.0.1:8080`):
 
    ```
-   GET /hbldr?path=/data/prosperobrowser/prosperobrowser.elf&cwd=/data/prosperobrowser&daemon=1&args=spawn-broker%20--role%3Dspawn-broker&env=PROSPEROBROWSER_ROLE%3Dspawn-broker%20PROSPEROBROWSER_SPAWN_PORT%3D17771%20PROSPEROBROWSER_SELF_PATH%3D/data/prosperobrowser/prosperobrowser.elf HTTP/1.0
+   GET /hbldr?path=/data/prosperoweb/prosperoweb.elf&cwd=/data/prosperoweb&daemon=1&args=spawn-broker%20--role%3Dspawn-broker&env=PROSPEROWEB_ROLE%3Dspawn-broker%20PROSPEROWEB_SPAWN_PORT%3D17771%20PROSPEROWEB_SELF_PATH%3D/data/prosperoweb/prosperoweb.elf HTTP/1.0
    ```
 
-   (`PROSPEROBROWSER_SPAWN_SOCK` is forwarded only when the UI has it set.)
+   (`PROSPEROWEB_SPAWN_SOCK` is forwarded only when the UI has it set.)
 
    websrv (`src/ps5/sys.c`, `sys_launch_daemon`) reads a `path` starting
    with `/` (or `file:`) from disk, splits `args` and `env` on spaces
@@ -306,7 +315,7 @@ where `sys_budget_set(0)` exists again.
 4. The UI polls all endpoints for up to 5 s, pings the broker, and sends the
    spawn request. Every later spawn reuses the connection.
 5. The broker spawns the child with the UI's ELF path, `argv` and whole
-   `environ` (so `FONTCONFIG_FILE`, `PROSPEROBROWSER_CA_BUNDLE`, … reach the
+   `environ` (so `FONTCONFIG_FILE`, `PROSPEROWEB_CA_BUNDLE`, … reach the
    WebProcess whatever the broker's own environment is), and the
    descriptors at child fd 3, 4, …: over AF_UNIX the ones it received as
    `SCM_RIGHTS`; over TCP the UI names them (`src_pid`, `src_fds`) and the
@@ -314,7 +323,7 @@ where `sys_budget_set(0)` exists again.
    the pid, and reports children that exit on their own back to the UI.
 
 If the broker cannot be reached or started, the spawn fails (WebKit then
-shows no page) unless `PROSPEROBROWSER_SPAWN_FALLBACK=direct` is set, which spawns
+shows no page) unless `PROSPEROWEB_SPAWN_FALLBACK=direct` is set, which spawns
 in-process — and panics the console when the UI is the big app. Without the
 fallback, after two failures in a row the UI waits 30 s before the next
 attempt (logged as `backing off`), so a broken broker does not make WebKit's
@@ -324,28 +333,28 @@ endless relaunches hammer websrv.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PROSPEROBROWSER_SPAWN_MODE` | `broker` | `direct` spawns in-process (old behaviour); only for plain-payload (elfldr) launches |
-| `PROSPEROBROWSER_SPAWN_FALLBACK` | unset | `direct`: spawn in-process when no broker can be reached |
-| `PROSPEROBROWSER_SPAWN_SOCK` | unset | extra AF_UNIX broker socket tried first (then `/tmp/prosperobrowser-spawn.sock`, `/data/prosperobrowser/tmp/spawn.sock`) |
-| `PROSPEROBROWSER_SPAWN_PORT` | `17771` | loopback TCP port of the broker (UI and broker) |
-| `PROSPEROBROWSER_WEBSRV` | `127.0.0.1:8080` | websrv address (IPv4 literal) used to start the broker |
-| `PROSPEROBROWSER_SELF_PATH` | `/data/prosperobrowser/prosperobrowser.elf` | the ELF the broker runs as itself and spawns for the children |
-| `PROSPEROBROWSER_ROLE` | — | role fallback (`spawn-broker` for the broker) |
+| `PROSPEROWEB_SPAWN_MODE` | `broker` | `direct` spawns in-process (old behaviour); only for plain-payload (elfldr) launches |
+| `PROSPEROWEB_SPAWN_FALLBACK` | unset | `direct`: spawn in-process when no broker can be reached |
+| `PROSPEROWEB_SPAWN_SOCK` | unset | extra AF_UNIX broker socket tried first (then `/tmp/prosperoweb-spawn.sock`, `/data/prosperoweb/tmp/spawn.sock`) |
+| `PROSPEROWEB_SPAWN_PORT` | `17771` | loopback TCP port of the broker (UI and broker) |
+| `PROSPEROWEB_WEBSRV` | `127.0.0.1:8080` | websrv address (IPv4 literal) used to start the broker |
+| `PROSPEROWEB_SELF_PATH` | `/data/prosperoweb/prosperoweb.elf` | the ELF the broker runs as itself and spawns for the children |
+| `PROSPEROWEB_ROLE` | — | role fallback (`spawn-broker` for the broker) |
 | `JSC_useJIT` | `false` | JavaScriptCore baseline/DFG JIT (see [JavaScript JIT and WebAssembly](#javascript-jit-and-webassembly)) |
 | `JSC_useWasm` | `false` | WebAssembly (IPInt interpreter, plus the JIT's entry thunks when `JSC_useJIT` is on) |
-| `PROSPEROBROWSER_MEDIA_AUDIO` | unset | first media audio sink tried: `remote` (default when `PROSPEROBROWSER_AUDIO_PORT` is set), `sdl` (output in the WebProcess, inaudible on the console) or `null` (silent) |
-| `PROSPEROBROWSER_AUDIO_PORT` | `17772` | loopback TCP port of the UI's audio server (UI and WebProcess); `off` disables the server and the forwarding |
-| `PROSPEROBROWSER_AUDIO_AHEAD_MS` | `100` | audio the WebProcess keeps queued in the UI's server (20-900 ms): lower is less latency, higher survives longer stalls |
-| `PROSPEROBROWSER_AUDIO_TEST` | unset | `1`: the UI plays a 1 s 440 Hz test tone at startup |
-| `PROSPEROBROWSER_MEDIA_FRAME_THREADS` | unset | `1`: frame-threaded video decoding (default: slice threads only) |
-| `PROSPEROBROWSER_PRESENT_THREAD` | unset | `0`: present on the main thread (blocks the run loop in the flip wait; for A/B comparisons, see [Performance](#performance)) |
-| `PROSPEROBROWSER_VIDEO_PORT` | `17773` | loopback TCP port of the UI's video overlay server (UI and WebProcess); `off` disables the server and the overlay |
-| `PROSPEROBROWSER_VIDEO_OVERLAY` | on (PlayStation) | `0`: media players paint video into the page instead of the overlay |
-| `PROSPEROBROWSER_VIDEO_TRANSPORT` | auto | `shm`, `file` or `tcp`: force the overlay's pixel transport (auto tries them in that order) |
-| `PROSPEROBROWSER_VIDEO_SHM_DIR` | `/data/prosperobrowser/tmp` | directory of the overlay's `file` transport segments (unlinked once mapped) |
-| `PROSPEROBROWSER_VIDEO_SCALE` | `bilinear` | `nearest`: cheaper overlay scaling in the UI |
-| `PROSPEROBROWSER_CPU_MONITOR` | on | `0`: no `cpu:` lines |
-| `PROSPEROBROWSER_CPU_WIDEN` | on | `0`: never try to widen a restricted CPU affinity |
+| `PROSPEROWEB_MEDIA_AUDIO` | unset | first media audio sink tried: `remote` (default when `PROSPEROWEB_AUDIO_PORT` is set), `sdl` (output in the WebProcess, inaudible on the console) or `null` (silent) |
+| `PROSPEROWEB_AUDIO_PORT` | `17772` | loopback TCP port of the UI's audio server (UI and WebProcess); `off` disables the server and the forwarding |
+| `PROSPEROWEB_AUDIO_AHEAD_MS` | `100` | audio the WebProcess keeps queued in the UI's server (20-900 ms): lower is less latency, higher survives longer stalls |
+| `PROSPEROWEB_AUDIO_TEST` | unset | `1`: the UI plays a 1 s 440 Hz test tone at startup |
+| `PROSPEROWEB_MEDIA_FRAME_THREADS` | unset | `1`: frame-threaded video decoding (default: slice threads only) |
+| `PROSPEROWEB_PRESENT_THREAD` | unset | `0`: present on the main thread (blocks the run loop in the flip wait; for A/B comparisons, see [Performance](#performance)) |
+| `PROSPEROWEB_VIDEO_PORT` | `17773` | loopback TCP port of the UI's video overlay server (UI and WebProcess); `off` disables the server and the overlay |
+| `PROSPEROWEB_VIDEO_OVERLAY` | on (PlayStation) | `0`: media players paint video into the page instead of the overlay |
+| `PROSPEROWEB_VIDEO_TRANSPORT` | auto | `shm`, `file` or `tcp`: force the overlay's pixel transport (auto tries them in that order) |
+| `PROSPEROWEB_VIDEO_SHM_DIR` | `/data/prosperoweb/tmp` | directory of the overlay's `file` transport segments (unlinked once mapped) |
+| `PROSPEROWEB_VIDEO_SCALE` | `bilinear` | `nearest`: cheaper overlay scaling in the UI |
+| `PROSPEROWEB_CPU_MONITOR` | on | `0`: no `cpu:` lines |
+| `PROSPEROWEB_CPU_WIDEN` | on | `0`: never try to widen a restricted CPU affinity |
 
 Any variable can also be set from `config.json` as `"env": {"NAME": "value"}`
 (applied in every process over the defaults above).
@@ -395,7 +404,7 @@ Descriptor rules (from the contract):
   (which is synchronous: it returns after the broker's reply, so a
   descriptor the broker rdups from the UI is still open while it does);
   the child holds independent duplicates.
-- The UI's environment (at least the `PROSPEROBROWSER_*` variables) is copied
+- The UI's environment (at least the `PROSPEROWEB_*` variables) is copied
   into the child.
 
 `ps5_terminate_process` = `kill(pid, SIGKILL)` + bounded `waitpid` reap,
@@ -550,17 +559,17 @@ A/V clock picks the frame, submit()  --->   copy into shm slot k
   The A/V decision stays in the WebProcess: only the frame it presents is
   sent, a newer one replaces one still queued.
 - **Transport** (`FFmpegVideoOverlayWire.h`, `FFmpegVideoOverlayClient.h`):
-  a loopback TCP control connection per player to `PROSPEROBROWSER_VIDEO_PORT`
+  a loopback TCP control connection per player to `PROSPEROWEB_VIDEO_PORT`
   (17773). On the first frame the client offers, in order, a named POSIX
-  shm object (`/prosperobrowser-video-<pid>-<player>-<n>`, three BGRA slots), a
-  file under `PROSPEROBROWSER_VIDEO_SHM_DIR` (`/data/prosperobrowser/tmp`) mapped
+  shm object (`/prosperoweb-video-<pid>-<player>-<n>`, three BGRA slots), a
+  file under `PROSPEROWEB_VIDEO_SHM_DIR` (`/data/prosperoweb/tmp`) mapped
   `MAP_SHARED|MAP_NOSYNC`, then pixels inline over TCP; the first one the
   UI maps wins, and the name is unlinked as soon as both sides mapped it.
   Each slot has a sequence counter (seqlock); the UI drops a copy that a
   rewrite tore (`torn` in the stats).
 - **UI** (`src/ps5/video`, `src/frontend/ps5/ps5_video_overlay.*`): the
   server keeps per player the newest frame scaled to its rect
-  (`src/ps5/display/scale.*`, bilinear; `PROSPEROBROWSER_VIDEO_SCALE=nearest`)
+  (`src/ps5/display/scale.*`, bilinear; `PROSPEROWEB_VIDEO_SCALE=nearest`)
   and the damage. The frame loop takes the active view's identity
   (`WKPageGetProcessIdentifier` + `WKPageGetWebPageIdentifierPlayStation`,
   patch 0011), maps rects by `content_top()` and clips them to the content
@@ -579,8 +588,8 @@ Expected log lines:
 [WebProcess] media: video overlay: player 1: connected to 127.0.0.1:17773 (server key 1)
 [UI] video overlay: player key 1 connected (pid N player 1)
 [WebProcess] media: video overlay: player 1: rect 320,152 1280x720 page 5
-[UI] video overlay: player key 1: shm /prosperobrowser-video-N-1-1 mapped
-[WebProcess] media: video overlay: player 1: transport shm (/prosperobrowser-video-N-1-1, 3 x 3686400 bytes)
+[UI] video overlay: player key 1: shm /prosperoweb-video-N-1-1 mapped
+[WebProcess] media: video overlay: player 1: transport shm (/prosperoweb-video-N-1-1, 3 x 3686400 bytes)
 [WebProcess] media: video overlay: player 1: hole punch on
 [WebProcess] media: video overlay: player 1: shm sent 29.9/s replaced 0 copy 0.60 ms | hole on rect 320,152 1280x720
 [UI] video overlay 5.0s: frames in 29.9/s rendered 29.9/s torn 0 | scale 1280x720 -> 1280x720 1.10/2.40 ms | tcp 0.0 MB/s | players 1
@@ -589,9 +598,9 @@ Expected log lines:
 
 Fallbacks: `shm ... refused: <errno> (the client falls back)` then
 `transport file`, or `transport tcp (pixels inline ...)`; no server at all:
-`no overlay server, painting video into the page`. `PROSPEROBROWSER_VIDEO_OVERLAY=0`
-turns the overlay off in the WebProcess, `PROSPEROBROWSER_VIDEO_PORT=off` in both
-processes, `PROSPEROBROWSER_VIDEO_TRANSPORT=shm|file|tcp` forces a transport.
+`no overlay server, painting video into the page`. `PROSPEROWEB_VIDEO_OVERLAY=0`
+turns the overlay off in the WebProcess, `PROSPEROWEB_VIDEO_PORT=off` in both
+processes, `PROSPEROWEB_VIDEO_TRANSPORT=shm|file|tcp` forces a transport.
 
 Limits: the hole moves with the page repaint, the video follows at the
 next geometry tick (8 ms while playing, 33 ms paused), so fast scrolling
@@ -612,7 +621,7 @@ page snapshots show the hole.
 If the process may run on fewer CPUs than the root set it tries once to
 widen its affinity (`cpuset_setaffinity`, CPU_LEVEL_WHICH; the SDK has no
 `sceKernelSetCpumask`): `cpu: widened ...` or `cpu: widening ... failed`.
-`PROSPEROBROWSER_CPU_WIDEN=0` skips that, `PROSPEROBROWSER_CPU_MONITOR=0` disables
+`PROSPEROWEB_CPU_WIDEN=0` skips that, `PROSPEROWEB_CPU_MONITOR=0` disables
 the monitor. A per-thread list needs the kernel's `kinfo_proc` to match the
 SDK's; otherwise the line says `threads 0: unavailable (kinfo_proc size ...)`.
 
@@ -637,7 +646,7 @@ report a touchpad.
 ## Text input
 
 Text entry goes through `shell::TextInputProvider`
-(`src/shell/include/prosperobrowser/shell/text_input.h`). On the PS5 the provider
+(`src/shell/include/prosperoweb/shell/text_input.h`). On the PS5 the provider
 is `Ps5ImeTextInput` (`src/frontend/ps5/ps5_ime.*`), the console's own
 keyboard dialog (`libSceImeDialog`); the shell's HTML OSK (`chrome.html`) is
 the fallback. The GTK host has no provider and always uses the HTML OSK.
@@ -665,7 +674,7 @@ the result replaces the value (an empty result deletes it). Passwords,
 `null`): the dialog starts empty and the text is inserted at the caret, as
 with the HTML OSK. The same replace semantics apply to the HTML OSK.
 
-Selection: `PROSPEROBROWSER_OSK=system|builtin` (environment, wins) or
+Selection: `PROSPEROWEB_OSK=system|builtin` (environment, wins) or
 `"osk": "system"|"builtin"` in `config.json`; default `system`.
 
 `sceImeDialogParam` as filled by `Ps5SystemIme::open()` (layout from the
@@ -741,7 +750,7 @@ With `useWasm=false`, `disableAllWasmOptions()` runs (`Options.cpp:858`),
 thunks or signalling memory are set up (`InitializeThreading.cpp:136`,
 `:147`) and the `WebAssembly` global is not exposed.
 
-To test, add to `/data/prosperobrowser/config.json` (the values are exported in
+To test, add to `/data/prosperoweb/config.json` (the values are exported in
 every process; the UI's environment also reaches the children):
 
 ```json
@@ -763,25 +772,33 @@ reported crashed children as `exit 0` (run 5), so klog is the place to look.
 `JSC_usePollingTraps=true` rules out JSC's signal-based VM traps, which the
 JIT enables, as the cause.
 
-## Must be verified on a console
+## Verified on a console
 
-- `rfork_thread(RFPROC|RFCFDG|RFMEM)` + ptrace spawn works for **long-lived**
-  WebKit children (elfldr has only run short-lived payloads this way).
-- `pt_rdup`/`pt_dup2` land the IPC socket at child fd 3 and the socket survives
-  into `AuxiliaryProcessMain` with blocking mode intact.
-- The environment copy reaches the child and WebKit reads `PROSPEROBROWSER_*`.
-- The SDL window surface really is the `sceVideoOut` scanout buffer at
-  1920×1080 ABGR8888, and the R/B swap produces correct colours (not swapped).
-- `WKPagePaint` output alpha/premultiplication composites correctly against the
-  chrome overlay.
-- DualSense mapping via `SDL_GameController` (buttons, analog triggers → L2/R2,
-  sticks) and USB-keyboard key codes.
-- The system keyboard dialog: `sceImeDialogInit` accepts the parameters
-  above from a homebrew big app, shows the pre-filled text, and the status
-  sequence is running → finished; the option bits and the URL / mail /
-  number types are the PS4 values.
-- The HTML5 Fullscreen API path (`WKViewClient.enterFullScreen/exitFullScreen`)
-  and `WKViewRequestExitFullScreen`.
+From the console runs on 2026-10-31 (`log.txt` and klog; the spawn log
+reports `fw 0x13420000`):
+
+- The broker, started through websrv, spawns long-lived WebProcess and
+  NetworkProcess children over loopback TCP with the IPC socket rdup'ed from
+  the UI (`spawn: role=WebProcess pid=N via broker (tcp, rdup)`), and they
+  survive for whole browsing sessions.
+- The environment reaches the children: the WebProcess reads the
+  `PROSPEROWEB_*` media variables and logs its `media:` lines.
+- Pages render on the TV through the SDL window surface; the chrome, the
+  pointer and page input work with the DualSense.
+- The system keyboard dialog opens from the big app, shows the pre-filled
+  text and returns the result (`ime: status finished`, `ime: result ...`).
+- Element fullscreen (`fullscreen: entered`, `fullscreen: exited`).
+- Audio from the WebProcess through the UI's audio server
+  (`audio server: stream N connected`), and YouTube playback through MSE
+  with H.264.
+
+## Still to verify on a console
+
+- `WKPagePaint` output alpha/premultiplication composites correctly against
+  the chrome overlay in every state (closed overlays leaving no ghosts).
+- USB-keyboard key codes and text input into page fields.
+- The option bits and the URL / mail / number types of the system keyboard
+  dialog (PS4 values).
 - The WebKit run loop: the public PlayStation API exposes only
   `WKRunLoopRunMain`/`WKRunLoopCallOnMainThread` (no "run once"), so the frame
   loop is a self-re-arming `WKRunLoopCallOnMainThread` callback that paces
@@ -790,7 +807,7 @@ JIT enables, as the cause.
 
 ## Known risks
 
-- **Spawn memory**: the broker maps the whole ELF image (162 MB, read-only),
+- **Spawn memory**: the broker maps the whole ELF image (176 MB, read-only),
   and the loader mallocs a mirror of the mapped image (~130 MB) per spawn
   while copying it into the child. websrv also reads the whole ELF into
   memory once to start the broker.
@@ -803,7 +820,8 @@ JIT enables, as the cause.
   runs in the child while its credentials are raised (root, all caps, no
   jail), but the kernel may still refuse a source process in another
   jail/sandbox; the log then shows `spawn: rdup(src_pid=..., fd=...) FAILED:
-  errno N` and the spawn fails at stage `rdup`. Not yet verified.
+  errno N` and the spawn fails at stage `rdup`. Works on the console used so
+  far.
 - **Broker port**: `127.0.0.1:17771` accepts any local process, which can
   then ask the broker to spawn an ELF or to copy a descriptor out of any
   pid. Loopback only, same trust level as websrv's own HTTP API.
