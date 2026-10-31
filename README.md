@@ -40,11 +40,15 @@ See also [docs/architecture.md](docs/architecture.md#non-goals).
 
 ## Install
 
-### Native title (in progress)
+### Native title (experimental, not yet verified on a console)
 
-The goal is a native title, `PRWB00001`: one folder installed from [ProsperoStore](https://github.com/darkxex/ProsperoStore) or from the `PRWB00001.zip` attached to a [GitHub release](https://github.com/kvaps/ProsperoWeb/releases), launched from the home screen like any other app, with the profile created automatically in `/data/prosperoweb/`. Prerequisites: a jailbroken PS5 with etaHEN or kstuff, ShadowMountPlus (registers the title) and elfldr listening on port 9021 (starts the helper that spawns the browser's processes).
+`PRWB00001` is the browser UI itself as a native title: one folder, launched from the home screen like any other app, with the profile created automatically in `/data/prosperoweb/`. Its `eboot.bin` is the UI linked as a native application; its `prosperoweb.elf` is the payload that the spawn helper runs for the WebProcess and NetworkProcess. Prerequisites: a jailbroken PS5 with etaHEN or kstuff, [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus) (lists the title on the home screen) and elfldr listening on `127.0.0.1:9021` (starts the spawn helper; websrv on port 8080 is used as a fallback).
 
-**This does not run the browser yet.** The packaging is done (`scripts/ps5/native/make-title.sh` builds the folder and the zip, and CI attaches the zip to releases), but `eboot.bin` is still a loader stub that only shows a notification until the browser is relinked as a native application. The title is not listed in ProsperoStore yet. The remaining work is in [docs/native-title.md](docs/native-title.md) and [docs/store-submission.md](docs/store-submission.md).
+1. Get `PRWB00001.zip` from a CI run or release, or build it (`cmake --build build-ps5 --target prosperoweb prosperoweb_native`, `scripts/ps5/package.sh`, `scripts/ps5/native/make-title.sh`).
+2. Unpack it so that the console has `/data/homebrew/PRWB00001/eboot.bin` (ShadowMountPlus scans `/data/homebrew` by default). Copy the zip and unpack it on the console, or keep the execute bit of `eboot.bin` when copying loose files.
+3. Wait for ShadowMountPlus's next scan (15 s by default), then start "ProsperoWeb" from the home screen.
+
+The first launch writes `/data/prosperoweb/log.txt` from the first line on. If the title does not start, the websrv tile below still works; [docs/native-title.md](docs/native-title.md) lists what to look for and how to fall back. The title is not listed in ProsperoStore yet ([docs/store-submission.md](docs/store-submission.md)).
 
 ### Current install: websrv tile
 

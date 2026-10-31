@@ -338,7 +338,10 @@ endless relaunches hammer websrv.
 | `PROSPEROWEB_SPAWN_SOCK` | unset | extra AF_UNIX broker socket tried first (then `/tmp/prosperoweb-spawn.sock`, `/data/prosperoweb/tmp/spawn.sock`) |
 | `PROSPEROWEB_SPAWN_PORT` | `17771` | loopback TCP port of the broker (UI and broker) |
 | `PROSPEROWEB_WEBSRV` | `127.0.0.1:8080` | websrv address (IPv4 literal) used to start the broker |
-| `PROSPEROWEB_SELF_PATH` | `/data/prosperoweb/prosperoweb.elf` | the ELF the broker runs as itself and spawns for the children |
+| `PROSPEROWEB_ELFLDR` | `127.0.0.1:9021` | elfldr address (IPv4 literal) used to start the broker |
+| `PROSPEROWEB_BROKER_LOADER` | `auto` | how the UI starts the broker: `elfldr`, `websrv`, or `auto` (both; elfldr first in the native title, websrv first under the websrv tile) |
+| `PROSPEROWEB_SELF_PATH` | `/data/prosperoweb/prosperoweb.elf`; native title: `<install folder>/prosperoweb.elf` | the ELF the broker runs as itself and spawns for the children |
+| `PROSPEROWEB_TITLE_DIR` | found | native title: the install folder as the broker and children see it, instead of searching the ShadowMountPlus scan paths ([native-title.md](native-title.md)) |
 | `PROSPEROWEB_ROLE` | — | role fallback (`spawn-broker` for the broker) |
 | `JSC_useJIT` | `true` | JavaScriptCore baseline/DFG JIT (see [JavaScript JIT and WebAssembly](#javascript-jit-and-webassembly)) |
 | `JSC_useWasm` | `true` | WebAssembly (IPInt interpreter, plus the JIT's entry thunks when `JSC_useJIT` is on) |
@@ -354,7 +357,7 @@ endless relaunches hammer websrv.
 | `PROSPEROWEB_VIDEO_SHM_DIR` | `/data/prosperoweb/tmp` | directory of the overlay's `file` transport segments (unlinked once mapped) |
 | `PROSPEROWEB_VIDEO_SCALE` | `bilinear` | `nearest`: cheaper overlay scaling in the UI |
 | `PROSPEROWEB_VIDEO_DECODE` | `ui` | who decodes H.264/HEVC: `ui` (the UI's hardware decoder, falling back to the WebProcess) or `webprocess` (software only; the UI then does not load the decoder either); see [Hardware video decoding](#hardware-video-decoding) |
-| `PROSPEROWEB_HWDEC` | on | `0`: the UI does not load `libSceVideodec2` (every stream is refused) |
+| `PROSPEROWEB_HWDEC` | native title: on; websrv payload: off | native title: `0` does not load `libSceVideodec2`; payload: `1` opts in to the background probe (off by default, see below) |
 | `PROSPEROWEB_HWDEC_PROBE` | on demand | `startup`: probe the hardware decoder right after the UI started instead of on the first video stream (in the background either way, 3 s watchdog per call) |
 | `PROSPEROWEB_HWDEC_AGC` | on | `0`: the probe does not load `libSceAgcDriver`/`libSceAgc` before the decoder |
 | `PROSPEROWEB_HWDEC_HEVC` | on | `0`: the UI refuses HEVC streams (H.264 only) |
@@ -662,7 +665,10 @@ Console status (runs 13 and 14): in the UI started by hbldr the first
 decoder call, `sceVideodec2QueryComputeMemoryInfo`, stops the whole process
 (`mDBG: Sending signal(... signo: 0xa0020101)` in klog), with
 `sceSysmoduleLoadModule(207)` returning 0 (run 13) or `0x80020064` (run 14).
-Keep `PROSPEROWEB_HWDEC=0` on consoles until this is solved. It is not a
+The payload build therefore keeps hardware decoding off unless
+`PROSPEROWEB_HWDEC=1`; the native title (docs/native-title.md) creates the
+decoder's library and compute queue as the first thing in `main()`, inside
+its own sandbox and with the application credentials, as the references do. It is not a
 linking problem: the payload SDK loads a `DT_NEEDED` `.sprx` and a `dlopen`ed
 one through the same code (`crt/rtld_payload.c` `dt_needed()` and
 `crt/rtld_dlfcn.c` `__dlopen()` both call `__rtld_lib_new()` and
