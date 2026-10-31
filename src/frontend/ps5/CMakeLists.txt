@@ -172,6 +172,7 @@ if(PROSPEROWEB_NATIVE_TITLE_TARGET)
   add_library(prosperoweb_native_runtime OBJECT
     native/native_crt.cpp
     native/native_runtime.c
+    native/native_trace.c
     native/native_memory.c
     native/native_title.c)
   target_link_libraries(prosperoweb_native_runtime PRIVATE prosperoweb_warnings)
@@ -233,7 +234,9 @@ if(PROSPEROWEB_NATIVE_TITLE_TARGET)
   set(_native_wraps pthread_create pthread_exit
     malloc free calloc realloc posix_memalign aligned_alloc malloc_usable_size
     mmap munmap pipe
-    sceImeDialogGetStatus sceImeDialogInit)
+    sceImeDialogGetStatus sceImeDialogInit
+    # native/native_trace.c: access() past EPERM, the IPC calls logged.
+    access socketpair sendmsg recvmsg select)
   list(TRANSFORM _native_wraps PREPEND "-Wl,--wrap=")
   target_link_options(prosperoweb_native PRIVATE
     -nostartfiles -nodefaultlibs

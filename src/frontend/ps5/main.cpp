@@ -39,6 +39,13 @@
 #include "ipc_selftest.h"
 
 #if PROSPEROWEB_NATIVE_TITLE
+#include <WebKit/WKRunLoop.h>
+
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <thread>
+
 #include "native/native_title.h"
 #include "ps5_hwdec.h"
 #include "title_paths.h"
@@ -179,6 +186,7 @@ void setup_native_title_env() {
   log_printf("title: payload ELF for the broker and children %s (%s here)", self,
              access(self_here.c_str(), R_OK) == 0 ? "present" : "MISSING");
 
+  native_file_selftest(layout.ui_root.c_str(), layout.child_root.c_str());
   prosperoweb::frontend::setup_runtime_env(prosperoweb::frontend::kPs5DataDir,
                                            layout.ui_root + "/data");
   // JavaScriptCore's JIT needs executable memory, which a title does not
@@ -188,6 +196,53 @@ void setup_native_title_env() {
   setenv("JSC_useWasm", "false", 1);
   setenv("PROSPEROWEB_UI_ONLY_ENV", "JSC_useJIT JSC_useWasm", 1);
   log_printf("env JSC_useJIT=false JSC_useWasm=false (UI only; the children keep theirs)");
+}
+
+// stdout/stderr of the title go nowhere: WebKit's own messages (failed
+// launches, assertions) land in this file instead.
+void redirect_stdio() {
+  const std::string path = std::string(prosperoweb::frontend::kPs5DataDir) + "/stderr-ui.txt";
+  if (std::freopen(path.c_str(), "w", stderr)) {
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+  }
+  if (std::freopen(path.c_str(), "a", stdout)) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+  }
+}
+
+// Every 5 s from 10 s on, posts a callback to the WebKit main run loop and
+// logs how long it took to run, or that the previous one has not run: the
+// launcher completes each child's launch on that loop.
+std::atomic<long long> g_heartbeat_posted{0};
+std::atomic<long long> g_heartbeat_ran{0};
+
+long long now_ms() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+void start_main_loop_watchdog() {
+  std::thread([] {
+    std::this_thread::sleep_for(std::chrono::seconds(10));
+    for (int i = 0; i < 60; i++) {
+      const long long posted = g_heartbeat_posted.load();
+      const long long ran = g_heartbeat_ran.load();
+      if (posted && ran < posted) {
+        prosperoweb::frontend::log_printf(
+            "main loop: heartbeat posted %lld ms ago has not run: the main run loop is blocked",
+            now_ms() - posted);
+      } else if (posted) {
+        prosperoweb::frontend::log_printf("main loop: heartbeat ran %lld ms after posting",
+                                          ran - posted);
+      }
+      if (!posted || ran >= posted) {
+        g_heartbeat_posted.store(now_ms());
+        WKRunLoopCallOnMainThread([](void*) { g_heartbeat_ran.store(now_ms()); }, nullptr);
+      }
+      std::this_thread::sleep_for(std::chrono::seconds(5));
+    }
+  }).detach();
 }
 
 #endif  // PROSPEROWEB_NATIVE_TITLE
@@ -205,6 +260,7 @@ int main(int argc, char** argv) {
   // the broker and the children run the payload ELF.
   const std::string role = "UI";
   mkdir(kPs5DataDir, 0755);
+  redirect_stdio();
   log_set_role(role);
   log_open(std::string(kPs5DataDir) + "/log.txt");
   log_printf("main: native title %s pid=%d argv0=%s", PROSPEROWEB_TITLE_ID,
@@ -228,6 +284,7 @@ int main(int argc, char** argv) {
   log_legacy_env(legacy_env);
   migrate_legacy_profile_dir();
   setup_native_title_env();
+  start_main_loop_watchdog();
   tune_process_cpus();
   start_cpu_monitor();
   Ps5App app;
