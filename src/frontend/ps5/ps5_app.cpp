@@ -77,6 +77,29 @@ inline std::uint32_t argb_to_abgr(std::uint32_t p) {
   return (p & 0xFF00FF00u) | ((p & 0x00FF0000u) >> 16) | ((p & 0x000000FFu) << 16);
 }
 
+// Premultiplied source-over: src + dst * (255 - src.alpha) / 255, per channel.
+inline std::uint32_t blend_over(std::uint32_t src, std::uint32_t dst) {
+  const std::uint32_t a = src >> 24;
+  if (a == 0xFF) {
+    return src;
+  }
+  if (a == 0) {
+    return dst;
+  }
+  const std::uint32_t inv = 255 - a;
+  auto scale = [inv](std::uint32_t c) {
+    const std::uint32_t t = c * inv + 128;
+    return (t + (t >> 8)) >> 8;  // c * inv / 255, rounded
+  };
+  std::uint32_t out = 0;
+  for (int shift = 0; shift < 32; shift += 8) {
+    const std::uint32_t s = (src >> shift) & 0xFF;
+    const std::uint32_t d = (dst >> shift) & 0xFF;
+    out |= std::min<std::uint32_t>(255, s + scale(d)) << shift;
+  }
+  return out;
+}
+
 }  // namespace
 
 Ps5App::Ps5App() = default;
@@ -129,7 +152,7 @@ int Ps5App::run() {
 
   std::string chrome_url = "file://" + config_.chrome_dir + "/chrome.html";
   chrome_ = std::make_unique<Ps5ChromeUi>(
-      factory_->context(), factory_->data_store(), chrome_url,
+      factory_->context(), factory_->data_store(), chrome_url, width_, height_,
       [this](const nlohmann::json& e) {
         if (controller_) {
           controller_->on_chrome_event(e);
@@ -261,34 +284,46 @@ void Ps5App::handle_axis_motion() {
   controller_->on_button(core::Button::R2, r2);
 }
 
-std::vector<SDL_Rect> Ps5App::derive_chrome_rects() const {
-  nlohmann::json state = controller_->chrome_state();
-  std::vector<SDL_Rect> rects;
-
-  // Explicit rects win if the state provides them.
-  if (state.contains("chrome_rects") && state["chrome_rects"].is_array()) {
-    for (const auto& r : state["chrome_rects"]) {
-      rects.push_back(SDL_Rect{r.value("x", 0), r.value("y", 0), r.value("width", 0),
-                               r.value("height", 0)});
-    }
-    return rects;
+std::vector<SDL_Rect> Ps5App::derive_chrome_rects() {
+  // The chrome renders asynchronously (WebProcess round trip), so its pixels
+  // lag the shell state by a frame or two: keep composing the areas of the
+  // last few frames, or a moving pointer or a closing panel would be cut off.
+  std::vector<SDL_Rect> current;
+  for (const auto& r : controller_->chrome_rects()) {
+    current.push_back(SDL_Rect{r.x, r.y, r.width, r.height});
   }
-
-  // Fallback compromise: top band, OSK band, and a full overlay for modals.
-  bool chrome_visible = state.value("chrome_visible", true);
-  if (chrome_visible) {
-    rects.push_back(SDL_Rect{0, 0, width_, shell::ShellController::kChromeBandHeight});
+  std::vector<SDL_Rect> rects = current;
+  for (const auto& old : recent_chrome_rects_) {
+    rects.insert(rects.end(), old.begin(), old.end());
   }
-  if (state.contains("osk") && state["osk"].value("open", false)) {
-    rects.push_back(SDL_Rect{0, height_ * 2 / 3, width_, height_ / 3});
-  }
-  bool menu_open = state.contains("menu") && state["menu"].value("open", false);
-  bool notice = state.contains("notice") && state["notice"].is_object() &&
-                !state["notice"].value("kind", nlohmann::json()).is_null();
-  if (menu_open || notice) {
-    rects.push_back(SDL_Rect{0, 0, width_, height_});  // modal: composite all
+  recent_chrome_rects_.push_front(std::move(current));
+  if (recent_chrome_rects_.size() > kChromeRectHistory) {
+    recent_chrome_rects_.pop_back();
   }
   return rects;
+}
+
+void Ps5App::paint_chrome() {
+  DirtyRect dirty = chrome_->web().take_dirty();
+  if (!chrome_painted_) {
+    dirty = DirtyRect{true, 0, 0, width_, height_};
+    chrome_painted_ = true;
+  }
+  if (!dirty.valid) {
+    return;
+  }
+  // WebKit blends its backing store over the target (source-over), so the
+  // area must start out transparent or old chrome pixels would show through.
+  const int x0 = std::clamp(dirty.x, 0, width_);
+  const int x1 = std::clamp(dirty.x + dirty.width, 0, width_);
+  const int y0 = std::clamp(dirty.y, 0, height_);
+  const int y1 = std::clamp(dirty.y + dirty.height, 0, height_);
+  for (int y = y0; y < y1; y++) {
+    std::uint32_t* row = &chrome_buffer_[static_cast<size_t>(y) * width_];
+    std::fill(row + x0, row + x1, 0u);
+  }
+  chrome_->web().paint(reinterpret_cast<unsigned char*>(chrome_buffer_.data()), width_,
+                       height_, dirty);
 }
 
 void Ps5App::paint_content() {
@@ -323,45 +358,54 @@ void Ps5App::composite_and_present() {
     return;
   }
 
-  // 1. Bring the content cache up to date.
+  // 1. Bring the content and chrome caches up to date (dirty areas only).
   paint_content();
+  paint_chrome();
+  const std::vector<SDL_Rect> chrome_rects = derive_chrome_rects();
 
-  // 2. Paint the chrome view into its own buffer.
-  std::vector<SDL_Rect> chrome_rects = derive_chrome_rects();
-  if (!chrome_rects.empty()) {
-    chrome_->web().paint(reinterpret_cast<unsigned char*>(chrome_buffer_.data()), width_,
-                         height_, DirtyRect{true, 0, 0, width_, height_});
-  }
-
-  // 3. Compose content and chrome into the ABGR8888 window surface. The
-  //    content cache itself is never written here, so overlays leave no
-  //    trace in it.
+  // 2. Compose into the ABGR8888 window surface: the page, with the
+  //    premultiplied chrome blended over it inside the chrome rects. Neither
+  //    cache is written here, so a closed overlay leaves no trace.
   if (SDL_MUSTLOCK(surface)) {
     SDL_LockSurface(surface);
   }
   auto* out = static_cast<std::uint32_t*>(surface->pixels);
-  int stride = surface->pitch / 4;
+  const int stride = surface->pitch / 4;
+  std::vector<std::pair<int, int>> spans;
   for (int y = 0; y < height_; y++) {
-    const std::uint32_t* row = &page_buffer_[static_cast<size_t>(y) * width_];
+    const std::uint32_t* page = &page_buffer_[static_cast<size_t>(y) * width_];
+    const std::uint32_t* chrome = &chrome_buffer_[static_cast<size_t>(y) * width_];
     std::uint32_t* orow = &out[static_cast<size_t>(y) * stride];
-    for (int x = 0; x < width_; x++) {
-      orow[x] = argb_to_abgr(row[x]);
-    }
-  }
-  for (const auto& r : chrome_rects) {
-    int x0 = std::max(0, r.x);
-    int y0 = std::max(0, r.y);
-    int x1 = std::min(width_, r.x + r.w);
-    int y1 = std::min(height_, r.y + r.h);
-    for (int y = y0; y < y1; y++) {
-      const std::uint32_t* src = &chrome_buffer_[static_cast<size_t>(y) * width_];
-      std::uint32_t* orow = &out[static_cast<size_t>(y) * stride];
-      for (int x = x0; x < x1; x++) {
-        std::uint32_t px = src[x];
-        if ((px >> 24) != 0) {  // only over non-transparent chrome pixels
-          orow[x] = argb_to_abgr(px);
+
+    // Merge the chrome rects crossing this row into disjoint spans, so no
+    // pixel is blended twice where rects overlap.
+    spans.clear();
+    for (const auto& r : chrome_rects) {
+      if (y >= r.y && y < r.y + r.h) {
+        const int x0 = std::max(0, r.x);
+        const int x1 = std::min(width_, r.x + r.w);
+        if (x0 < x1) {
+          spans.emplace_back(x0, x1);
         }
       }
+    }
+    std::sort(spans.begin(), spans.end());
+    int x = 0;
+    for (std::size_t i = 0; i < spans.size();) {
+      int s0 = spans[i].first;
+      int s1 = spans[i].second;
+      for (++i; i < spans.size() && spans[i].first <= s1; ++i) {
+        s1 = std::max(s1, spans[i].second);
+      }
+      for (; x < s0; x++) {
+        orow[x] = argb_to_abgr(page[x]);
+      }
+      for (; x < s1; x++) {
+        orow[x] = argb_to_abgr(blend_over(chrome[x], page[x]));
+      }
+    }
+    for (; x < width_; x++) {
+      orow[x] = argb_to_abgr(page[x]);
     }
   }
   if (SDL_MUSTLOCK(surface)) {

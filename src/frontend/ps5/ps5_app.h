@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <vector>
 
@@ -33,8 +34,9 @@ class Ps5App {
   void handle_controller_button(const SDL_ControllerButtonEvent& e, bool pressed);
   void handle_axis_motion();
   void paint_content();
+  void paint_chrome();
   void composite_and_present();
-  std::vector<SDL_Rect> derive_chrome_rects() const;
+  std::vector<SDL_Rect> derive_chrome_rects();
 
   static void frame_trampoline(void* self);
 
@@ -53,7 +55,12 @@ class Ps5App {
   std::vector<std::uint32_t> page_buffer_;
   std::uint64_t painted_tab_ = ~std::uint64_t{0};  // tab id in page_buffer_
   int painted_top_ = -1;
+  // Chrome cache: premultiplied ARGB32 over a transparent background.
   std::vector<std::uint32_t> chrome_buffer_;
+  bool chrome_painted_ = false;
+  // Chrome rects of the last frames (newest first), see derive_chrome_rects().
+  static constexpr std::size_t kChromeRectHistory = 4;
+  std::deque<std::vector<SDL_Rect>> recent_chrome_rects_;
   int width_ = 1920;
   int height_ = 1080;
 

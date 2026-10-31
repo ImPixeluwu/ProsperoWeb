@@ -24,6 +24,7 @@ TOPICS=(
     "0008-skia-freebsd-malloc-usable-size|Source/ThirdParty/skia/src/ports/SkMemory_malloc.cpp"
     "0009-webkit-static-injected-bundle|Source/WebKit/WebProcess/InjectedBundle/playstation/InjectedBundlePlayStation.cpp"
     "0010-webcore-timing-function-destructors|Source/WebCore/platform/animation/TimingFunction.h Source/WebCore/platform/animation/TimingFunction.cpp"
+    "0011-webkit-playstation-page-api|Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.h Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp"
     # Generated from webkit-port/media/ffmpeg: edit there, then run
     # webkit-port/media/sync-to-tree.sh (which calls this script).
     "0900-ffmpeg-media-player|Source/WebCore/PlatformPlayStation.cmake Source/WebCore/platform/FFmpeg.cmake Source/WebCore/platform/graphics/MediaPlayer.cpp Source/WebCore/platform/graphics/MediaPlayer.h Source/WebCore/platform/graphics/MediaPlayerEnums.h Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in Source/WebKit/WebProcess/GPU/media/MediaPlayerPrivateRemote.cpp $(cd "${ROOT}/webkit-port/media/ffmpeg" && printf 'Source/WebCore/platform/graphics/ffmpeg/%s ' *.h *.cpp)"

@@ -1,0 +1,57 @@
+Subject: WebKit: PlayStation page C API fixes for the PS5 shell
+
+WKPageSetDrawsTransparentBackground() exposes
+WebPageProxy::setBackgroundColor(transparent) to C clients, so the HTML
+chrome can be painted over the page with real alpha (the PlayStation C
+API has no drawsBackground setter). The Skia background fill in
+WKPagePaint is clipped to the unpainted rect instead of clearing the
+whole surface.
+diff --git a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp b/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
+index 8a0972133..faf055e8a 100644
+--- a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
++++ b/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
+@@ -62,10 +62,28 @@ static void drawPageBackground(WebKit::PlatformPaintContextPtr ctx, const std::o
+     cairo_set_operator(ctx, CAIRO_OPERATOR_OVER);
+     cairo_fill(ctx);
+ #elif USE(SKIA)
++#if defined(PS5_HOMEBREW)
++    // clear() ignores the rect; clip so only the unpainted part is cleared.
++    ctx->save();
++    ctx->clipIRect(rect);
++#endif
+     ctx->clear(SkColor(backgroundColor.value()));
++#if defined(PS5_HOMEBREW)
++    ctx->restore();
++#endif
+ #endif
+ }
+ 
++#if defined(PS5_HOMEBREW)
++void WKPageSetDrawsTransparentBackground(WKPageRef pageRef, bool transparent)
++{
++    std::optional<WebCore::Color> color;
++    if (transparent)
++        color = WebCore::Color(WebCore::Color::transparentBlack);
++    WebKit::toImpl(pageRef)->setBackgroundColor(color);
++}
++#endif
++
+ void WKPageHandleKeyboardEvent(WKPageRef pageRef, WKKeyboardEvent event)
+ {
+     using WebKit::NativeWebKeyboardEvent;
+diff --git a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.h b/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.h
+index 674924662..74ea890ea 100644
+--- a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.h
++++ b/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.h
+@@ -38,6 +38,11 @@ WK_EXPORT void WKPageHandleWheelEvent(WKPageRef, WKWheelEvent);
+ 
+ WK_EXPORT void WKPagePaint(WKPageRef, unsigned char* cairoSurfaceARGB32Data, WKSize surfaceSize, WKRect paintRect);
+ 
++// PS5 port: draw the page over a transparent base background instead of the
++// default opaque white (the C counterpart of drawsBackground = NO). Pixels the
++// page does not paint keep alpha 0 in WKPagePaint's output.
++WK_EXPORT void WKPageSetDrawsTransparentBackground(WKPageRef, bool transparent);
++
+ #ifdef __cplusplus
+ }
+ #endif

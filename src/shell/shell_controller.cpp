@@ -995,6 +995,32 @@ void ShellController::render_now() {
   chrome_.render(chrome_state());
 }
 
+std::vector<ShellController::Rect> ShellController::chrome_rects() const {
+  // chrome.css is laid out in rem, 16 px at 1920 wide.
+  const float rem = static_cast<float>(config_.width) / 120.0f;
+  std::vector<Rect> rects;
+  if (menu_open_ || notice_) {
+    // The menu panel and the notice backdrop: compose the whole window.
+    rects.push_back({0, 0, config_.width, config_.height});
+    return rects;
+  }
+  if (fullscreen_.chrome_visible()) {
+    rects.push_back({0, 0, config_.width, kChromeBandHeight});
+  }
+  if (osk_open_) {
+    // .osk: at most 45vh tall plus a 3rem shadow above it.
+    const int top = config_.height - config_.height * 45 / 100 - static_cast<int>(3.0f * rem);
+    rects.push_back({0, std::max(0, top), config_.width, config_.height - std::max(0, top)});
+  }
+  if (focus_ == Focus::Page && !pointer_hidden_by_mouse_) {
+    // .pointer: a 2.25rem ring centred on the position, plus its shadow.
+    const int r = static_cast<int>(2.25f * rem);
+    const core::Vec2 p = pointer_.position();
+    rects.push_back({static_cast<int>(p.x) - r, static_cast<int>(p.y) - r, 2 * r, 2 * r});
+  }
+  return rects;
+}
+
 json ShellController::chrome_state() const {
   json state;
   json tabs = json::array();
@@ -1025,6 +1051,11 @@ json ShellController::chrome_state() const {
   state["pointer"] = {{"x", p.x},
                       {"y", p.y},
                       {"visible", focus_ == Focus::Page && !pointer_hidden_by_mouse_}};
+  json rects = json::array();
+  for (const Rect& r : chrome_rects()) {
+    rects.push_back({{"x", r.x}, {"y", r.y}, {"width", r.width}, {"height", r.height}});
+  }
+  state["chrome_rects"] = std::move(rects);
 
   json osk = {{"open", osk_open_},
               {"layout", layout_name(osk_.layout())},

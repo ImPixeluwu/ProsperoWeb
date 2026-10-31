@@ -170,13 +170,14 @@ Phase 1 uses the non-accelerated raster path (no EGL/GLES at runtime):
   (`SDL_ps5video.c`), so the compositor swaps R/B when copying the ARGB32
   backbuffer into the window surface, then `SDL_UpdateWindowSurface` →
   `PS5_Tilemap_Blit` → `sceVideoOutSubmitFlip`.
-- The content view is painted full-surface; the chrome view (a second
-  `WKView` loading `chrome.html`) is painted into its own buffer and overlaid
-  only on the rects the chrome state declares (`chrome_rects`, else the derived
-  fallback: top band 0,0,1920,96, OSK band in the lower third, full-surface for
-  modals). This "paint chrome only over its rects" is a compromise so the two
-  transparent WebKit surfaces do not fully overpaint each other; see
-  `Ps5App::derive_chrome_rects`.
+- The content view is painted into a content-only cache at
+  `ShellController::content_top()` (below the 96 px band unless the chrome is
+  hidden), dirty rects only. The chrome view (a second `WKView` loading
+  `chrome.html`, transparent background via `WKPageSetDrawsTransparentBackground`,
+  patch 0011) has its own cache and is alpha-blended (premultiplied
+  source-over) over the page into the window surface, only inside
+  `ShellController::chrome_rects()` (band, OSK panel, pointer, whole window
+  under a menu/notice) of the last few frames; see `Ps5App::composite_and_present`.
 
 ## Must be verified on a console
 

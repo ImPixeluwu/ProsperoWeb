@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -102,6 +103,19 @@ class ShellController {
   void navigate(const std::string& input);
 
   void set_viewport(int width, int height);
+
+  // A window-space rectangle.
+  struct Rect {
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+  };
+  // Window areas where the chrome may draw right now: the top band, the OSK
+  // panel, the whole window under a menu or notice, and the gamepad pointer.
+  // Compositing frontends blend the chrome over the page only inside these
+  // (published as "chrome_rects" in chrome_state()).
+  std::vector<Rect> chrome_rects() const;
 
   // Builds the chrome state document (see ChromeUi).
   nlohmann::json chrome_state() const;

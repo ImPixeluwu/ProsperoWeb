@@ -551,6 +551,35 @@ TEST_SUITE("shell.menu") {
 }
 
 TEST_SUITE("shell.chrome_events") {
+  TEST_CASE("chrome rects cover the band, the OSK, modals and the pointer") {
+    Fixture f;
+    f.make();
+    auto has = [](const std::vector<ShellController::Rect>& rects, int x, int y) {
+      for (const auto& r : rects) {
+        if (x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height) return true;
+      }
+      return false;
+    };
+    const core::Vec2 p = f.shell->pointer();
+    auto rects = f.shell->chrome_rects();
+    CHECK(has(rects, 10, 10));                                             // band
+    CHECK(has(rects, static_cast<int>(p.x), static_cast<int>(p.y)));      // pointer
+    CHECK_FALSE(has(rects, 10, 1000));                                     // plain page
+    CHECK(f.shell->chrome_state()["chrome_rects"].size() == rects.size());
+
+    f.press(Button::Triangle);  // OSK on the address bar hides the pointer
+    rects = f.shell->chrome_rects();
+    CHECK(has(rects, 10, 1000));
+    CHECK_FALSE(has(rects, static_cast<int>(p.x), static_cast<int>(p.y)));
+    f.press(Button::Circle);
+
+    f.press(Button::Options);  // menu: the whole window
+    rects = f.shell->chrome_rects();
+    REQUIRE(rects.size() == 1);
+    CHECK(rects[0].width == 1920);
+    CHECK(rects[0].height == 1080);
+  }
+
   TEST_CASE("nav buttons and address focus") {
     Fixture f;
     f.make();

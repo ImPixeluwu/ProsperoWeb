@@ -20,9 +20,12 @@ class Ps5ChromeUi final : public shell::ChromeUi {
   using EventHandler = std::function<void(const nlohmann::json&)>;
 
   // context/data_store are shared with the content views. chrome_url is the
-  // file:// URL of chrome.html. on_event receives decoded chrome events.
+  // file:// URL of chrome.html. The chrome view spans the whole window
+  // (width x height) and paints over a transparent background. on_event
+  // receives decoded chrome events.
   Ps5ChromeUi(WKContextRef context, WKWebsiteDataStoreRef data_store,
-              const std::string& chrome_url, EventHandler on_event);
+              const std::string& chrome_url, int width, int height,
+              EventHandler on_event);
   ~Ps5ChromeUi() override = default;
 
   // shell::ChromeUi
