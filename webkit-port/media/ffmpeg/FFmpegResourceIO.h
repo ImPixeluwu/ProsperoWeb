@@ -11,13 +11,21 @@
 // abort flag every 50 ms); requests are started on the main thread and the
 // PlatformMediaResourceClient callbacks arrive there. The main thread never
 // waits for the demuxer thread, so the two cannot deadlock.
+//
+// Stalls and failures: a request that delivers nothing for 8 s while the
+// demuxer waits, a network failure or a 5xx/408/429 response is cancelled
+// and issued again from the current offset (Range), after 0.5, 1 and 2 s;
+// then the stream fails (NetworkRetry in FFmpegPlaybackPolicy.h). The
+// waits of the demuxer thread drive the stall check and the backoff.
 
 #pragma once
 
 #if ENABLE(VIDEO) && USE(FFMPEG)
 
+#include "FFmpegPlaybackPolicy.h"
 #include <atomic>
 #include <span>
+#include <string>
 #include <wtf/Condition.h>
 #include <wtf/Deque.h>
 #include <wtf/Lock.h>
@@ -92,7 +100,7 @@ public:
 private:
     FFmpegResourceStream(Ref<PlatformMediaResourceLoader>&&, const URL&, Ref<FFmpegIOShared>&&);
 
-    enum class RequestState : uint8_t { None, Pending, Receiving, Finished, Failed, Suspended };
+    enum class RequestState : uint8_t { None, Pending, Receiving, Finished, Failed, Suspended, RetryWait };
 
     struct Chunk {
         uint64_t position { 0 };
@@ -109,6 +117,12 @@ private:
     size_t copyOutLocked(uint8_t*, size_t) WTF_REQUIRES_LOCK(m_lock);
     void trimHistoryLocked() WTF_REQUIRES_LOCK(m_lock);
     bool waitLocked() WTF_REQUIRES_LOCK(m_lock);
+    // Stall detection and the retry backoff (demuxer thread, from the waits).
+    void checkRequestLocked() WTF_REQUIRES_LOCK(m_lock);
+    // A stall or a retryable failure: schedules the next retry or fails.
+    void retryOrFailLocked(const char* reason) WTF_REQUIRES_LOCK(m_lock);
+    void restartRequestLocked() WTF_REQUIRES_LOCK(m_lock);
+    std::string hostForLog() const;
 
     const Ref<PlatformMediaResourceLoader> m_loader;
     const URL m_url;
@@ -129,6 +143,12 @@ private:
     bool m_closed WTF_GUARDED_BY_LOCK(m_lock) { false };
     // Exclusive end of the first request's Range (0: open-ended).
     uint64_t m_rangeEnd WTF_GUARDED_BY_LOCK(m_lock) { 0 };
+    // The byte range of setByteRange(), for retries of the first request.
+    uint64_t m_byteRangeEnd WTF_GUARDED_BY_LOCK(m_lock) { 0 };
+    // Monotonic seconds of the last request start, response or data.
+    double m_lastProgressAt WTF_GUARDED_BY_LOCK(m_lock) { 0 };
+    double m_retryAt WTF_GUARDED_BY_LOCK(m_lock) { 0 };
+    FFmpegMedia::NetworkRetry m_retry WTF_GUARDED_BY_LOCK(m_lock);
     bool m_interruptibleBySeek { false };
     RefPtr<PlatformMediaResource> m_resource WTF_GUARDED_BY_LOCK(m_lock);
 };

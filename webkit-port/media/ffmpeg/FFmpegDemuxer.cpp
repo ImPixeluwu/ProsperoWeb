@@ -521,7 +521,8 @@ void FFmpegDemuxer::readLoop()
             Locker locker { m_lock };
             seekRequest = std::exchange(m_pendingSeek, std::nullopt);
             shouldWait = !seekRequest && (m_endOfStream
-                || FFmpegMedia::demuxerShouldWait(m_videoQueue.bytes() + m_audioQueue.bytes(), m_videoQueue.level(), m_audioQueue.level()));
+                || FFmpegMedia::demuxerShouldWait(m_videoQueue.bytes() + m_audioQueue.bytes(), m_videoQueue.level(), m_audioQueue.level(),
+                    m_isHLS ? FFmpegMedia::hlsQueuedSeconds : FFmpegMedia::maxQueuedSeconds));
             m_readerWaiting = shouldWait;
             if (shouldWait) {
                 m_condition.waitFor(m_lock, idlePollInterval);

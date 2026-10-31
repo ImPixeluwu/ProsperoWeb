@@ -16,7 +16,7 @@ target_include_directories(prosperoweb_media_tests SYSTEM PRIVATE "${PROSPEROWEB
 
 foreach(suite IN ITEMS media_support media_ranges media_clock media_ring media_policy
                        media_mse_support media_mse_bytes media_mse_time media_mse_policy
-                       media_presenter)
+                       media_presenter media_network)
   add_test(NAME media.${suite}
            COMMAND prosperoweb_media_tests --test-suite=${suite} --no-version)
 endforeach()

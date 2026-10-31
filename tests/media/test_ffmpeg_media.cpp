@@ -320,3 +320,60 @@ TEST_SUITE("media_policy") {
     CHECK(computeNetworkLevel(in) == NetworkLevel::DecodeError);
   }
 }
+
+TEST_SUITE("media_network") {
+  TEST_CASE("a request is stalled after 8 s without bytes") {
+    CHECK_FALSE(networkStalled(100.0, 107.9));
+    CHECK(networkStalled(100.0, 108.0));
+    CHECK(networkStalled(100.0, 125.0));
+  }
+
+  TEST_CASE("retryable statuses") {
+    CHECK(networkStatusIsRetryable(0));
+    CHECK(networkStatusIsRetryable(500));
+    CHECK(networkStatusIsRetryable(503));
+    CHECK(networkStatusIsRetryable(408));
+    CHECK(networkStatusIsRetryable(429));
+    CHECK_FALSE(networkStatusIsRetryable(403));
+    CHECK_FALSE(networkStatusIsRetryable(404));
+    CHECK_FALSE(networkStatusIsRetryable(410));
+  }
+
+  TEST_CASE("three retries with 0.5/1/2 s backoff, then give up") {
+    NetworkRetry retry;
+    auto first = retry.onFailure();
+    CHECK(first.retry);
+    CHECK(first.attempt == 1);
+    CHECK(first.delaySeconds == doctest::Approx(0.5));
+    auto second = retry.onFailure();
+    CHECK(second.attempt == 2);
+    CHECK(second.delaySeconds == doctest::Approx(1.0));
+    auto third = retry.onFailure();
+    CHECK(third.retry);
+    CHECK(third.attempt == 3);
+    CHECK(third.delaySeconds == doctest::Approx(2.0));
+    CHECK(retry.attempts() == networkMaxRetries);
+    CHECK_FALSE(retry.onFailure().retry);
+    CHECK_FALSE(retry.onFailure().retry);
+  }
+
+  TEST_CASE("bytes arriving reset the retries") {
+    NetworkRetry retry;
+    retry.onFailure();
+    retry.onFailure();
+    retry.onProgress();
+    CHECK(retry.attempts() == 0);
+    auto next = retry.onFailure();
+    CHECK(next.attempt == 1);
+    CHECK(next.delaySeconds == doctest::Approx(0.5));
+  }
+
+  TEST_CASE("HLS reads 30 s ahead, still bounded by the byte cap") {
+    QueueLevel twenty { true, 500, 20 };
+    QueueLevel thirty { true, 700, 30 };
+    CHECK(demuxerShouldWait(0, twenty, twenty));
+    CHECK_FALSE(demuxerShouldWait(0, twenty, twenty, hlsQueuedSeconds));
+    CHECK(demuxerShouldWait(0, thirty, thirty, hlsQueuedSeconds));
+    CHECK(demuxerShouldWait(maxQueuedBytes, twenty, twenty, hlsQueuedSeconds));
+  }
+}

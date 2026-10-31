@@ -17,6 +17,9 @@ namespace FFmpegMedia {
 // least maxQueuedSeconds queued; it resumes once that is no longer true.
 inline constexpr size_t maxQueuedBytes = 24u << 20;
 inline constexpr double maxQueuedSeconds = 10.0;
+// HLS reads further ahead: segment servers stall for many seconds at a time
+// (rezka: 17 s without a segment), and the byte cap above still bounds it.
+inline constexpr double hlsQueuedSeconds = 30.0;
 // A stream with fewer packets than this is never considered "full" (sparse
 // streams or broken durations must not stall the other stream).
 inline constexpr size_t minQueuedPackets = 25;
@@ -27,18 +30,18 @@ struct QueueLevel {
     double seconds { 0 };
 };
 
-inline bool streamHasEnough(const QueueLevel& queue)
+inline bool streamHasEnough(const QueueLevel& queue, double targetSeconds = maxQueuedSeconds)
 {
-    return !queue.enabled || (queue.packets >= minQueuedPackets && queue.seconds >= maxQueuedSeconds);
+    return !queue.enabled || (queue.packets >= minQueuedPackets && queue.seconds >= targetSeconds);
 }
 
-inline bool demuxerShouldWait(size_t totalBytes, const QueueLevel& video, const QueueLevel& audio)
+inline bool demuxerShouldWait(size_t totalBytes, const QueueLevel& video, const QueueLevel& audio, double targetSeconds = maxQueuedSeconds)
 {
     if (totalBytes >= maxQueuedBytes)
         return true;
     if (!video.enabled && !audio.enabled)
         return false;
-    return streamHasEnough(video) && streamHasEnough(audio);
+    return streamHasEnough(video, targetSeconds) && streamHasEnough(audio, targetSeconds);
 }
 
 // Network read-ahead per stream: a request is suspended above the high water
@@ -65,6 +68,56 @@ inline bool networkShouldResume(uint64_t unreadBytes)
 {
     return unreadBytes < networkLowWaterBytes;
 }
+
+// Stalled or failed media requests (FFmpegResourceIO.cpp). A request that
+// delivers no bytes for networkStallSeconds while the demuxer waits for
+// them, or that fails with a network error or a retryable HTTP status, is
+// cancelled and issued again from the current offset (a Range request),
+// after a backoff of 0.5, 1 and 2 s. After networkMaxRetries the stream
+// fails as before. Bytes arriving reset the count: each stall of a long
+// download gets its own retries.
+inline constexpr double networkStallSeconds = 8.0;
+inline constexpr unsigned networkMaxRetries = 3;
+
+inline bool networkStalled(double lastProgressAt, double now)
+{
+    return now - lastProgressAt >= networkStallSeconds;
+}
+
+// HTTP status of a failed response worth retrying: server errors, 408 and
+// 429. Other 4xx are final. 0 stands for a network failure (no response).
+inline bool networkStatusIsRetryable(int status)
+{
+    return !status || status == 408 || status == 429 || (status >= 500 && status <= 599);
+}
+
+class NetworkRetry {
+public:
+    struct Decision {
+        bool retry { false };
+        unsigned attempt { 0 }; // 1-based, when retry
+        double delaySeconds { 0 };
+    };
+
+    // A stall or a retryable failure: retry after the next backoff, or give up.
+    Decision onFailure()
+    {
+        Decision decision;
+        if (m_attempts >= networkMaxRetries)
+            return decision;
+        decision.retry = true;
+        decision.attempt = ++m_attempts;
+        decision.delaySeconds = 0.5 * static_cast<double>(1u << (decision.attempt - 1));
+        return decision;
+    }
+
+    // Bytes arrived: the connection works again.
+    void onProgress() { m_attempts = 0; }
+    unsigned attempts() const { return m_attempts; }
+
+private:
+    unsigned m_attempts { 0 };
+};
 
 // Layout of a decoded BGRA video frame. libswscale's x86 output loops store
 // 8 pixels per iteration (REAL_WRITEBGR32 in libswscale/x86/

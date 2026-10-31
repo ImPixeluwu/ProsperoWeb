@@ -15,6 +15,7 @@
 #include "ResourceResponse.h"
 #include "SharedBuffer.h"
 #include <wtf/MainThread.h>
+#include <wtf/MonotonicTime.h>
 #include <wtf/text/MakeString.h>
 #include <wtf/text/StringToIntegerConversion.h>
 
@@ -79,6 +80,11 @@ int64_t totalFromContentRange(const String& contentRange)
         return -1;
     auto total = parseIntegerAllowingTrailingJunk<uint64_t>(StringView(contentRange).substring(slash + 1));
     return total ? static_cast<int64_t>(*total) : -1;
+}
+
+double monotonicSeconds()
+{
+    return MonotonicTime::now().secondsSinceEpoch().seconds();
 }
 
 int readPacketCallback(void* opaque, uint8_t* buffer, int size)
@@ -158,16 +164,21 @@ void FFmpegResourceStream::setByteRange(uint64_t offset, uint64_t endOffset)
     Locker locker { m_lock };
     m_readPosition = offset;
     m_rangeEnd = endOffset > offset ? endOffset : 0;
+    m_byteRangeEnd = m_rangeEnd;
+}
+
+std::string FFmpegResourceStream::hostForLog() const
+{
+    return m_url.host().utf8().legacyCStringPointer();
 }
 
 int FFmpegResourceStream::open()
 {
     Locker locker { m_lock };
     startRequestLocked(m_readPosition, false);
-    while (m_state == RequestState::Pending) {
-        if (m_shared->aborted || m_closed)
+    while (m_state == RequestState::Pending || m_state == RequestState::RetryWait) {
+        if (!waitLocked())
             return AVERROR_EXIT;
-        m_condition.waitFor(m_lock, pollInterval);
     }
     if (m_state == RequestState::Failed)
         return AVERROR(EIO);
@@ -212,7 +223,58 @@ bool FFmpegResourceStream::waitLocked()
     if (m_shared->aborted || m_closed)
         return false;
     m_condition.waitFor(m_lock, pollInterval);
-    return !(m_shared->aborted || m_closed);
+    if (m_shared->aborted || m_closed)
+        return false;
+    checkRequestLocked();
+    return true;
+}
+
+void FFmpegResourceStream::checkRequestLocked()
+{
+    double now = monotonicSeconds();
+    if (m_state == RequestState::RetryWait) {
+        if (now >= m_retryAt)
+            restartRequestLocked();
+        return;
+    }
+    if ((m_state == RequestState::Pending || m_state == RequestState::Receiving) && FFmpegMedia::networkStalled(m_lastProgressAt, now))
+        retryOrFailLocked("stall 8s");
+}
+
+void FFmpegResourceStream::retryOrFailLocked(const char* reason)
+{
+    unsigned long long at = m_requestPosition + m_receivedInRequest;
+    // Whatever the current request still delivers is ignored from now on.
+    ++m_requestId;
+    stopResourceLocked();
+    auto decision = m_retry.onFailure();
+    if (!decision.retry) {
+        ffmpegMediaLog("net: %s on %s at byte %llu, giving up after %u retries", reason, hostForLog().c_str(), at, FFmpegMedia::networkMaxRetries);
+        m_state = RequestState::Failed;
+        m_shared->networkError = true;
+        m_condition.notifyAll();
+        return;
+    }
+    ffmpegMediaLog("net: %s on %s at byte %llu, retry %u/%u in %.1f s", reason, hostForLog().c_str(), at, decision.attempt,
+        FFmpegMedia::networkMaxRetries, decision.delaySeconds);
+    m_state = RequestState::RetryWait;
+    m_retryAt = monotonicSeconds() + decision.delaySeconds;
+    m_condition.notifyAll();
+}
+
+void FFmpegResourceStream::restartRequestLocked()
+{
+    // From the end of the received data when the reader is inside it (the
+    // buffer stays), else from the read position.
+    uint64_t start = bufferStartLocked();
+    uint64_t end = bufferEndLocked();
+    bool continueBuffer = !m_chunks.isEmpty() && m_readPosition >= start && m_readPosition <= end;
+    uint64_t position = continueBuffer ? end : m_readPosition;
+    if (m_byteRangeEnd > position)
+        m_rangeEnd = m_byteRangeEnd;
+    ffmpegMediaLog("net: retry %u/%u: requesting %s from byte %llu", m_retry.attempts(), FFmpegMedia::networkMaxRetries, hostForLog().c_str(),
+        static_cast<unsigned long long>(position));
+    startRequestLocked(position, continueBuffer);
 }
 
 int FFmpegResourceStream::read(uint8_t* buffer, int size)
@@ -257,6 +319,8 @@ int FFmpegResourceStream::read(uint8_t* buffer, int size)
         case RequestState::Suspended:
             startRequestLocked(m_readPosition, m_readPosition == end);
             break;
+        case RequestState::RetryWait:
+            break;
         }
         if (m_interruptibleBySeek && m_shared->seekPending)
             return AVERROR(EINTR);
@@ -269,7 +333,7 @@ int64_t FFmpegResourceStream::seek(int64_t offset, int whence)
 {
     Locker locker { m_lock };
     if (whence & AVSEEK_SIZE) {
-        while (m_state == RequestState::Pending || m_state == RequestState::None) {
+        while (m_state == RequestState::Pending || m_state == RequestState::None || m_state == RequestState::RetryWait) {
             if (m_state == RequestState::None)
                 startRequestLocked(m_readPosition, false);
             if (!waitLocked())
@@ -320,6 +384,7 @@ void FFmpegResourceStream::startRequestLocked(uint64_t position, bool keepBuffer
     m_receivedInRequest = 0;
     m_skipBytes = 0;
     m_state = RequestState::Pending;
+    m_lastProgressAt = monotonicSeconds();
     unsigned requestId = ++m_requestId;
     // The byte range end only bounds the first request (a segment); later
     // requests (resumes, seeks) are open-ended.
@@ -409,14 +474,24 @@ void FFmpegResourceStream::didReceiveResponse(unsigned requestId, const Resource
 
     bool isHTTP = response.url().protocolIsInHTTPFamily() || m_url.protocolIsInHTTPFamily();
     int status = response.httpStatusCode();
+    m_lastProgressAt = monotonicSeconds();
     if (isHTTP && status >= httpStatus400BadRequest) {
-        ffmpegMediaLog("net: HTTP %d for %s://%s", status, m_url.protocol().utf8().legacyCStringPointer(), m_url.host().utf8().legacyCStringPointer());
+        ffmpegMediaLog("net: HTTP %d for %s://%s at byte %llu", status, m_url.protocol().utf8().legacyCStringPointer(), hostForLog().c_str(),
+            static_cast<unsigned long long>(m_requestPosition));
+        shouldContinue = false;
+        if (FFmpegMedia::networkStatusIsRetryable(status)) {
+            char reason[16];
+            snprintf(reason, sizeof(reason), "HTTP %d", status);
+            retryOrFailLocked(reason);
+            return;
+        }
         m_state = RequestState::Failed;
         m_shared->networkError = true;
         m_condition.notifyAll();
-        shouldContinue = false;
         return;
     }
+    if (m_retry.attempts())
+        ffmpegMediaLog("net: retry %u/%u: HTTP %d from %s", m_retry.attempts(), FFmpegMedia::networkMaxRetries, status, hostForLog().c_str());
 
     m_shared->sawResponse = true;
     if (isHTTP && !passedAccessControlCheck)
@@ -457,6 +532,12 @@ void FFmpegResourceStream::didReceiveData(unsigned requestId, std::span<const ui
         return;
 
     m_shared->bytesReceived += data.size();
+    m_lastProgressAt = monotonicSeconds();
+    if (m_retry.attempts()) {
+        ffmpegMediaLog("net: %s recovered at byte %llu after %u retries", hostForLog().c_str(),
+            static_cast<unsigned long long>(m_requestPosition + m_receivedInRequest), m_retry.attempts());
+        m_retry.onProgress();
+    }
     if (m_skipBytes) {
         size_t skipped = static_cast<size_t>(std::min<uint64_t>(m_skipBytes, data.size()));
         m_skipBytes -= skipped;
@@ -503,8 +584,12 @@ void FFmpegResourceStream::didFail(unsigned requestId, bool isAccessControlFailu
     if (m_closed || requestId != m_requestId)
         return;
     ffmpegMediaLog("net: load failed%s for %s://%s at byte %llu", isAccessControlFailure ? " (CORS)" : "",
-        m_url.protocol().utf8().legacyCStringPointer(), m_url.host().utf8().legacyCStringPointer(),
+        m_url.protocol().utf8().legacyCStringPointer(), hostForLog().c_str(),
         static_cast<unsigned long long>(m_requestPosition + m_receivedInRequest));
+    if (!isAccessControlFailure) {
+        retryOrFailLocked("load failed");
+        return;
+    }
     m_state = RequestState::Failed;
     m_shared->networkError = true;
     if (isAccessControlFailure)
