@@ -26,6 +26,8 @@ void native_debug_printf(const char* fmt, ...) {
 // are loaded by id before the first call, or the imported functions stay
 // at address 0 (Stremio PS5, native/ps5_modules.c; the Kodi port's
 // PS5ImeDialog.cpp).
+static int g_ime_dialog_loaded;
+
 int native_load_system_modules(char* report, size_t report_len) {
   static const struct {
     uint16_t id;
@@ -41,6 +43,9 @@ int native_load_system_modules(char* report, size_t report_len) {
   for (size_t i = 0; i < sizeof(kModules) / sizeof(kModules[0]); i++) {
     const int rc = sceSysmoduleLoadModule(kModules[i].id);
     failed += rc != 0;
+    if (kModules[i].id == 0x0096) {
+      g_ime_dialog_loaded = rc == 0;
+    }
     if (used < report_len) {
       const int n = snprintf(report + used, report_len - used, "%s%s (sysmodule %#x): %s %#x",
                              used ? "; " : "", kModules[i].name, (unsigned)kModules[i].id,
@@ -51,13 +56,33 @@ int native_load_system_modules(char* report, size_t report_len) {
   return failed;
 }
 
+// ---- libSceImeDialog when its module did not load --------------------------------
+//
+// SDL's PS5 video driver polls the keyboard dialog every frame. Without the
+// module the import is address 0, so the link wraps the calls
+// (src/frontend/ps5/CMakeLists.txt) and they report "no dialog" / fail
+// unless the module loaded (syobon-action-ps5, src/ps5_compat.cpp, stubs
+// sceImeDialogGetStatus the same way).
+
+int __real_sceImeDialogGetStatus(void);
+int __real_sceImeDialogInit(const void* param, void* extended);
+
+int __wrap_sceImeDialogGetStatus(void) {
+  return g_ime_dialog_loaded ? __real_sceImeDialogGetStatus() : 0;  // STATUS_NONE
+}
+
+int __wrap_sceImeDialogInit(const void* param, void* extended) {
+  return g_ime_dialog_loaded ? __real_sceImeDialogInit(param, extended) : -1;
+}
+
 // ---- libSceKeyboard: none ------------------------------------------------------
 //
-// libSceKeyboard (USB keyboards, which SDL opens) is not among a title's
-// modules. These stand-ins report no keyboard, so SDL skips it (Stremio
-// PS5, native/ps5_modules.c).
+// In a title sceKeyboardInit crashes (syobon-action-ps5, README "Port
+// notes", verified on hardware), and libSceKeyboard is not among a title's
+// modules. These stand-ins, linked in place of the imports, report no
+// keyboard, which SDL copes with.
 
-int sceKeyboardInit(void) { return 0; }
+int sceKeyboardInit(void) { return -1; }
 
 int sceKeyboardOpen(int user, int type, int index, void* param) {
   (void)user;

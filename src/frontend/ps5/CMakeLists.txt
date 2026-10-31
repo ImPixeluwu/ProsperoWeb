@@ -230,7 +230,8 @@ if(PROSPEROWEB_NATIVE_TITLE_TARGET)
   target_link_directories(prosperoweb_native PRIVATE ${SDL2_LIBRARY_DIRS})
   set(_native_wraps pthread_create pthread_exit
     malloc free calloc realloc posix_memalign aligned_alloc malloc_usable_size
-    mmap munmap pipe)
+    mmap munmap pipe
+    sceImeDialogGetStatus sceImeDialogInit)
   list(TRANSFORM _native_wraps PREPEND "-Wl,--wrap=")
   target_link_options(prosperoweb_native PRIVATE
     -nostartfiles -nodefaultlibs
