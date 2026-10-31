@@ -130,7 +130,20 @@ TEST_SUITE("media_mse_support") {
     // Absurd sizes and rates are refused, so the player believes the answers.
     CHECK(mse("video/webm; codecs=\"vp9\"; width=99999") == Support::NotSupported);
     CHECK(mse("video/mp4; codecs=\"avc1.4d401e\"; height=99999") == Support::NotSupported);
-    CHECK(mse("video/webm; codecs=\"vp9\"; width=4096; height=2160") == Support::IsSupported);
+    // 1080p by default (landscape or portrait); PS5BROWSER_MEDIA_MAX_VIDEO raises it.
+    CHECK(mse("video/webm; codecs=\"vp9\"; width=1920; height=1080") == Support::IsSupported);
+    CHECK(mse("video/mp4; codecs=\"avc1.640028\"; width=1080; height=1920") == Support::IsSupported);
+    CHECK(mse("video/webm; codecs=\"vp9\"; width=3840; height=2160") == Support::NotSupported);
+    CHECK(mse("video/mp4; codecs=\"avc1.640033\"; width=2560") == Support::NotSupported);
+    CHECK(mse("video/mp4; codecs=\"avc1.640033\"; width=2048; height=1536") == Support::NotSupported);
+    VideoLimits uhd;
+    REQUIRE(parseVideoLimits("3840x2160", uhd));
+    CHECK(uhd.maxLongSide == 3840);
+    CHECK(uhd.maxShortSide == 2160);
+    CHECK(evaluateMediaSource("video/webm; codecs=\"vp9\"; width=3840; height=2160", { }, uhd) == Support::IsSupported);
+    CHECK(evaluateMediaSource("video/webm; codecs=\"vp9\"; width=4096; height=4096", { }, uhd) == Support::NotSupported);
+    CHECK_FALSE(parseVideoLimits("big", uhd));
+    CHECK_FALSE(parseVideoLimits("8x8", uhd));
     CHECK(mse("video/webm; codecs=\"vp9\"; framerate=9999") == Support::NotSupported);
     CHECK(mse("video/webm; codecs=\"vp9\"; framerate=abc") == Support::NotSupported);
     CHECK(mse("audio/webm; codecs=\"opus\"; channels=99") == Support::NotSupported);
@@ -146,6 +159,19 @@ TEST_SUITE("media_mse_support") {
     CHECK(mse("video/mp4; codecs=\"avc1.4d401e\"; tunnelmode=false") == Support::IsSupported);
     // No EME.
     CHECK(mse("video/mp4; codecs=\"avc1.4d401e\"; cryptoblockformat=subsample") == Support::NotSupported);
+  }
+
+  TEST_CASE("VP9 off: players fall back to H.264") {
+    DecoderAvailability noVP9;
+    noVP9.vp8 = false;
+    noVP9.vp9 = false;
+    CHECK(mse("video/webm; codecs=\"vp09.00.51.08.01.01.01.01.00\"", noVP9) == Support::NotSupported);
+    CHECK(mse("video/webm; codecs=\"vp9\"", noVP9) == Support::NotSupported);
+    CHECK(mse("video/webm; codecs=\"vp8\"", noVP9) == Support::NotSupported);
+    CHECK(mse("video/mp4; codecs=\"vp09.00.10.08\"", noVP9) == Support::NotSupported);
+    CHECK(mse("video/mp4; codecs=\"avc1.4d401f\"", noVP9) == Support::IsSupported);
+    CHECK(mse("audio/webm; codecs=\"opus\"", noVP9) == Support::IsSupported);
+    CHECK(mse("audio/mp4; codecs=\"mp4a.40.2\"", noVP9) == Support::IsSupported);
   }
 
   TEST_CASE("codecs and containers") {

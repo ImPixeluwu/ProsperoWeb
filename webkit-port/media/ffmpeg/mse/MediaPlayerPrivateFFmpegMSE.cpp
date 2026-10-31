@@ -143,7 +143,7 @@ MediaPlayer::SupportsType MediaPlayerPrivateFFmpegMSE::supportsType(const MediaE
     if (parameters.platformType != PlatformMediaDecodingType::MediaSource)
         return MediaPlayer::SupportsType::IsNotSupported;
     auto result = MediaPlayer::SupportsType::IsNotSupported;
-    switch (FFmpegMedia::evaluateMediaSource(parameters.type.raw().utf8().toStdString(), MediaPlayerPrivateFFmpeg::decoderAvailability())) {
+    switch (FFmpegMedia::evaluateMediaSource(parameters.type.raw().utf8().toStdString(), MediaPlayerPrivateFFmpeg::decoderAvailability(), MediaPlayerPrivateFFmpeg::videoLimits())) {
     case FFmpegMedia::Support::IsSupported:
         result = MediaPlayer::SupportsType::IsSupported;
         break;

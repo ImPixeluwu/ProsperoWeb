@@ -124,14 +124,14 @@ The first sample the generic code enqueues for a video (audio) track binds that 
 | | |
 |---|---|
 | Byte streams | `video/mp4`, `audio/mp4` (fragmented ISO BMFF), `video/webm`, `audio/webm` |
-| Codecs | H.264, HEVC, VP8, VP9, AAC (LC, HE, HE v2), Opus, Vorbis, FLAC, AC-3, E-AC-3, as far as the linked libavcodec has software decoders; AV1 only with libdav1d/libaom (not in the SDK); video codecs in `audio/*` are refused |
-| Parameters | "" for `width`/`height` above 4096, `framerate` above 120, `channels` above 8, non-numeric values, `eotf` other than `bt709` (no HDR, so `smpte2084` and `arib-std-b67` are refused), `decode-to-texture` other than `true`/`false`, `experimental` other than `allowed`/`true`/`false`, `tunnelmode=true`, and any `cryptoblockformat` (no EME) |
+| Codecs | H.264, HEVC, AAC (LC, HE, HE v2), Opus, Vorbis, FLAC, AC-3, E-AC-3, as far as the linked libavcodec has software decoders; VP8/VP9 only with `PS5BROWSER_MEDIA_VP9=1` (also for `canPlayType`: software VP9 480p could not keep up on the console, so players are steered to H.264); AV1 only with libdav1d/libaom (not in the SDK); video codecs in `audio/*` are refused |
+| Parameters | "" for sizes above 1080p (`width`/`height` above 1920, or both above 1088 on the shorter side; `PS5BROWSER_MEDIA_MAX_VIDEO=3840x2160` raises it), `framerate` above 120, `channels` above 8, non-numeric values, `eotf` other than `bt709` (no HDR, so `smpte2084` and `arib-std-b67` are refused), `decode-to-texture` other than `true`/`false`, `experimental` other than `allowed`/`true`/`false`, `tunnelmode=true`, and any `cryptoblockformat` (no EME) |
 
-The parameter rules apply to `canPlayType()` as well. YouTube probes them (`width=99999`, `framerate=9999`, `eotf=catavision`, ...) to decide whether the browser's answers can be trusted, then picks VP9 (WebM) or H.264 (MP4) with Opus or AAC.
+The parameter rules apply to `canPlayType()` as well. YouTube probes them (`width=99999`, `framerate=9999`, `eotf=catavision`, ...) to decide whether the browser's answers can be trusted, then picks H.264 (MP4) with AAC or Opus (VP9 when enabled).
 
 ### MSE risks
 
-- **Software decoding**: YouTube offers VP9 up to 4K to a decoder that accepts it. It sizes the stream by the viewport and its dropped-frame statistics, but 1440p or 2160p VP9 is beyond the PS5's CPU in software. The 4096 limit only rejects absurd probes.
+- **Software decoding**: the console log of the first YouTube run showed VP9 854x480 dropping a third of its frames, hence H.264 and 1080p by default.
 - **Memory**: per SourceBuffer up to 64 MiB (video) or 8 MiB (audio) of samples, plus about 1.5 s in the decoder queues and the frame pool. Each append copies its media segments once more while demuxing.
 - **Untested on hardware** at the time of writing; see the `mse:` log lines.
 

@@ -19,6 +19,8 @@
 #include <skia/core/SkColorSpace.h>
 #include <skia/core/SkImage.h>
 #include <skia/core/SkPixmap.h>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <wtf/HashSet.h>
 #include <wtf/Lock.h>
@@ -183,8 +185,12 @@ const FFmpegMedia::DecoderAvailability& MediaPlayerPrivateFFmpeg::decoderAvailab
         FFmpegMedia::DecoderAvailability available;
         available.h264 = findSoftwareDecoder(AV_CODEC_ID_H264);
         available.hevc = findSoftwareDecoder(AV_CODEC_ID_HEVC);
-        available.vp8 = findSoftwareDecoder(AV_CODEC_ID_VP8);
-        available.vp9 = findSoftwareDecoder(AV_CODEC_ID_VP9);
+        // Software VP9 costs far more CPU than H.264 at the same size;
+        // answering "" makes YouTube & co. serve H.264 instead.
+        const char* vp9 = getenv("PS5BROWSER_MEDIA_VP9");
+        bool allowVP9 = vp9 && !strcmp(vp9, "1");
+        available.vp8 = allowVP9 && findSoftwareDecoder(AV_CODEC_ID_VP8);
+        available.vp9 = allowVP9 && findSoftwareDecoder(AV_CODEC_ID_VP9);
         available.av1 = findSoftwareDecoder(AV_CODEC_ID_AV1);
         available.aac = findSoftwareDecoder(AV_CODEC_ID_AAC);
         available.mp3 = findSoftwareDecoder(AV_CODEC_ID_MP3);
@@ -193,9 +199,22 @@ const FFmpegMedia::DecoderAvailability& MediaPlayerPrivateFFmpeg::decoderAvailab
         available.flac = findSoftwareDecoder(AV_CODEC_ID_FLAC);
         available.ac3 = findSoftwareDecoder(AV_CODEC_ID_AC3);
         available.eac3 = findSoftwareDecoder(AV_CODEC_ID_EAC3);
+        ffmpegMediaLog("codecs: VP8/VP9 %s (PS5BROWSER_MEDIA_VP9), AV1 %s", available.vp9 ? "on" : "off", available.av1 ? "on" : "off");
         return available;
     }();
     return decoders.get();
+}
+
+const FFmpegMedia::VideoLimits& MediaPlayerPrivateFFmpeg::videoLimits()
+{
+    static NeverDestroyed<FFmpegMedia::VideoLimits> limits = [] {
+        FFmpegMedia::VideoLimits value;
+        if (const char* text = getenv("PS5BROWSER_MEDIA_MAX_VIDEO"); text && !FFmpegMedia::parseVideoLimits(text, value))
+            value = { };
+        ffmpegMediaLog("codecs: video limit %.0fx%.0f (PS5BROWSER_MEDIA_MAX_VIDEO)", value.maxLongSide, value.maxShortSide);
+        return value;
+    }();
+    return limits.get();
 }
 
 void MediaPlayerPrivateFFmpeg::getSupportedTypes(HashSet<String>& types)
@@ -206,11 +225,10 @@ void MediaPlayerPrivateFFmpeg::getSupportedTypes(HashSet<String>& types)
 
 MediaPlayer::SupportsType MediaPlayerPrivateFFmpeg::supportsType(const MediaEngineSupportParameters& parameters)
 {
-    // MSE and MediaStream are not implemented by this engine.
-    if (parameters.platformType != PlatformMediaDecodingType::FileOrHLS) {
-        logSupportsType(parameters, MediaPlayer::SupportsType::IsNotSupported);
+    // MediaSource is MediaPlayerPrivateFFmpegMSE's (which logs those
+    // queries), MediaStream is not implemented.
+    if (parameters.platformType != PlatformMediaDecodingType::FileOrHLS)
         return MediaPlayer::SupportsType::IsNotSupported;
-    }
 
     auto container = parameters.type.containerType();
     if (container.isEmpty())
@@ -222,7 +240,7 @@ MediaPlayer::SupportsType MediaPlayerPrivateFFmpeg::supportsType(const MediaEngi
     auto containerString = container.utf8().toStdString();
     auto result = MediaPlayer::SupportsType::IsNotSupported;
     // Extended parameters (width, framerate, eotf, ...): see FFmpegSupportTable.h.
-    auto parameterSupport = FFmpegMedia::evaluateContentTypeParameters(FFmpegMedia::parseContentTypeParameters(parameters.type.raw().utf8().toStdString()));
+    auto parameterSupport = FFmpegMedia::evaluateContentTypeParameters(FFmpegMedia::parseContentTypeParameters(parameters.type.raw().utf8().toStdString()), videoLimits());
     switch (FFmpegMedia::combineSupport(FFmpegMedia::evaluate(containerString, codecs, decoderAvailability()), parameterSupport)) {
     case FFmpegMedia::Support::IsSupported:
         result = MediaPlayer::SupportsType::IsSupported;

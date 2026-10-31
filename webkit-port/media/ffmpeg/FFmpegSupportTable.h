@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <string>
@@ -21,6 +22,8 @@ enum class Support { NotSupported, MaybeSupported, IsSupported };
 // Decoders available at run time. Defaults match the PS5 SDK ffmpeg 7.0.1
 // build: native h264/hevc/vp8/vp9/aac/opus/vorbis/mp3/flac/ac3/eac3, but no
 // software AV1 decoder (no libdav1d/libaom; ff_av1_decoder is hwaccel-only).
+// The engine reports VP8/VP9 as unavailable unless PS5BROWSER_MEDIA_VP9=1:
+// software VP9 is much slower than H.264, and players then pick H.264.
 struct DecoderAvailability {
     bool h264 { true };
     bool hevc { true };
@@ -334,31 +337,52 @@ inline bool parseDecimal(std::string_view text, double& out)
 // Limits for the extended isTypeSupported() parameters that YouTube (and
 // other Cobalt-style players) use to probe the decoder: anything beyond them
 // is "", so a player never picks a stream this build cannot decode in time.
-inline constexpr double maxVideoWidth = 4096;
-inline constexpr double maxVideoHeight = 4096;
+// Video defaults to 1080p (software decoding on the console); the longer
+// side may be either dimension, so portrait 1080x1920 fits too.
+// PS5BROWSER_MEDIA_MAX_VIDEO=3840x2160 raises it (parseVideoLimits()).
+struct VideoLimits {
+    double maxLongSide { 1920 };
+    double maxShortSide { 1088 };
+};
 inline constexpr double maxFrameRate = 120;
 inline constexpr double maxAudioChannels = 8;
+
+// "WIDTHxHEIGHT" (either order); false when malformed.
+inline bool parseVideoLimits(std::string_view text, VideoLimits& limits)
+{
+    size_t x = text.find_first_of("xX");
+    double a = 0;
+    double b = 0;
+    if (x == std::string_view::npos || !parseDecimal(text.substr(0, x), a) || !parseDecimal(text.substr(x + 1), b) || a < 16 || b < 16)
+        return false;
+    limits.maxLongSide = std::max(a, b);
+    limits.maxShortSide = std::min(a, b);
+    return true;
+}
 
 // Checks the non-codecs parameters of a content type. IsSupported means "no
 // objection" (the codecs decide), NotSupported means some parameter asks for
 // something this engine cannot do:
-//  - width/height above 4096, framerate above 120, channels above 8, or a
-//    value that is not a number;
+//  - width/height beyond `limits` (1080p by default), framerate above 120,
+//    channels above 8, or a value that is not a number;
 //  - eotf other than bt709 (smpte2084 and arib-std-b67 are HDR transfer
 //    functions; there is no HDR output);
 //  - decode-to-texture other than true/false, experimental other than
 //    allowed/true/false, tunnelmode other than false (no tunneled playback);
 //  - cryptoblockformat with any value (no EME).
 // Unknown parameters are ignored.
-inline Support evaluateContentTypeParameters(const std::vector<ContentTypeParameter>& parameters)
+inline Support evaluateContentTypeParameters(const std::vector<ContentTypeParameter>& parameters, const VideoLimits& limits = { })
 {
+    double width = 0;
+    double height = 0;
     for (auto& parameter : parameters) {
         auto& name = parameter.name;
         auto value = lowercase(trim(parameter.value));
         double number = 0;
         if (name == "width" || name == "height") {
-            if (!parseDecimal(value, number) || number > (name == "width" ? maxVideoWidth : maxVideoHeight))
+            if (!parseDecimal(value, number) || number > limits.maxLongSide)
                 return Support::NotSupported;
+            (name == "width" ? width : height) = number;
         } else if (name == "framerate") {
             if (!parseDecimal(value, number) || number > maxFrameRate)
                 return Support::NotSupported;
@@ -383,6 +407,8 @@ inline Support evaluateContentTypeParameters(const std::vector<ContentTypeParame
         } else if (name == "cryptoblockformat")
             return Support::NotSupported;
     }
+    if (width > 0 && height > 0 && std::min(width, height) > limits.maxShortSide)
+        return Support::NotSupported;
     return Support::IsSupported;
 }
 
@@ -398,7 +424,7 @@ inline Support combineSupport(Support a, Support b)
 // MediaSource.isTypeSupported() / addSourceBuffer() answer for a full content
 // type string. No container (MediaPlayer choosing an engine for a MediaSource
 // before any type is known) is "maybe", so this engine gets selected.
-inline Support evaluateMediaSource(std::string_view rawContentType, const DecoderAvailability& decoders)
+inline Support evaluateMediaSource(std::string_view rawContentType, const DecoderAvailability& decoders, const VideoLimits& limits = { })
 {
     std::string mimeType;
     auto parameters = parseContentTypeParameters(rawContentType, &mimeType);
@@ -424,7 +450,7 @@ inline Support evaluateMediaSource(std::string_view rawContentType, const Decode
             return Support::NotSupported;
     }
     auto codecSupport = evaluate(mimeType, codecs, decoders);
-    return combineSupport(codecSupport, evaluateContentTypeParameters(parameters));
+    return combineSupport(codecSupport, evaluateContentTypeParameters(parameters, limits));
 }
 
 } // namespace FFmpegMedia
