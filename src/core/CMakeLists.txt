@@ -14,6 +14,7 @@ add_library(prosperobrowser_core STATIC
   storage.cpp
   tab_manager.cpp
   text_utils.cpp
+  touchpad_model.cpp
   url_normalizer.cpp
   utf16.cpp
 )
