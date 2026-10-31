@@ -8,6 +8,7 @@
 #include <WebKit/WKString.h>
 #include <WebKit/WKWebsiteDataStoreConfigurationRef.h>
 #include <WebKit/WKWebsiteDataStoreRef.h>
+#include <wpe/wpe.h>  // WPE_KEY_* keysyms
 
 #include "wk_helpers.h"
 
@@ -25,6 +26,52 @@ int to_wk_mouse_button(shell::MouseButton b) {
       return kWKEventMouseButtonRightButton;
   }
   return kWKEventMouseButtonLeftButton;
+}
+
+// WKPageHandleKeyboardEvent feeds virtualKeyCode to WebKit as a WPE keysym
+// (libwpe WebEventFactory), not a DOM key code: translate. Returns 0 for keys
+// without a mapping.
+std::uint32_t wpe_keysym_for_dom(std::uint32_t dom, std::uint32_t modifiers) {
+  const bool shift = (modifiers & shell::kModShift) != 0;
+  if (dom >= 'A' && dom <= 'Z') {
+    return (shift ? WPE_KEY_A : WPE_KEY_a) + (dom - 'A');
+  }
+  if (dom >= '0' && dom <= '9') {
+    return WPE_KEY_0 + (dom - '0');
+  }
+  if (dom >= 112 && dom <= 123) {
+    return WPE_KEY_F1 + (dom - 112);
+  }
+  switch (dom) {
+    case 8: return WPE_KEY_BackSpace;
+    case 9: return shift ? WPE_KEY_ISO_Left_Tab : WPE_KEY_Tab;
+    case 13: return WPE_KEY_Return;
+    case 27: return WPE_KEY_Escape;
+    case 32: return WPE_KEY_space;
+    case 33: return WPE_KEY_Page_Up;
+    case 34: return WPE_KEY_Page_Down;
+    case 35: return WPE_KEY_End;
+    case 36: return WPE_KEY_Home;
+    case 37: return WPE_KEY_Left;
+    case 38: return WPE_KEY_Up;
+    case 39: return WPE_KEY_Right;
+    case 40: return WPE_KEY_Down;
+    case 45: return WPE_KEY_Insert;
+    case 46: return WPE_KEY_Delete;
+    default: return 0;
+  }
+}
+
+// The text WebKit needs on a control key's event for keypress and its default
+// action (Return submits a form); printable text goes through insert_text().
+const char* control_key_text(std::uint32_t keysym) {
+  switch (keysym) {
+    case WPE_KEY_Return: return "\r";
+    case WPE_KEY_BackSpace: return "\x08";
+    case WPE_KEY_Tab:
+    case WPE_KEY_ISO_Left_Tab: return "\t";
+    default: return "";
+  }
 }
 
 // Escapes a UTF-8 string into a JS string literal body (without quotes).
@@ -91,8 +138,13 @@ void Ps5EngineView::scroll(int x, int y, int dx, int dy) { web_->scroll(x, y, dx
 
 void Ps5EngineView::key(std::uint32_t key_code, std::uint32_t modifiers, bool pressed,
                         const std::string& text) {
-  // shell::KeyModifier bits match WKEventModifiers bits (shift/control/alt/meta).
-  web_->key(key_code, modifiers, pressed, text);
+  // shell::KeyModifier bits match WKEventModifiers bits (shift/control/alt/meta);
+  // WebKit patch 0011 forwards them and the event text.
+  const std::uint32_t keysym = wpe_keysym_for_dom(key_code, modifiers);
+  if (keysym == 0) {
+    return;
+  }
+  web_->key(keysym, modifiers, pressed, text.empty() ? control_key_text(keysym) : text);
 }
 
 void Ps5EngineView::insert_text(const std::string& utf8) {

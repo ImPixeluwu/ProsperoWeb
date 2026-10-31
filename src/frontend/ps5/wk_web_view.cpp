@@ -357,12 +357,12 @@ void WkWebView::scroll(int x, int y, int dx, int dy) {
   WKPageHandleWheelEvent(page_, e);
 }
 
-void WkWebView::key(std::uint32_t key_code, std::uint32_t wk_modifiers,
+void WkWebView::key(std::uint32_t keysym, std::uint32_t wk_modifiers,
                     bool pressed, const std::string& text) {
   WKKeyboardEvent e = WKKeyboardEventMake(
       pressed ? kWKEventKeyDown : kWKEventKeyUp, kWKInputTypeNormal, text.c_str(),
       static_cast<uint32_t>(text.size()), nullptr,
-      static_cast<int32_t>(key_code), 0, 0, wk_modifiers);
+      static_cast<int32_t>(keysym), 0, 0, wk_modifiers);
   WKPageHandleKeyboardEvent(page_, e);
 }
 

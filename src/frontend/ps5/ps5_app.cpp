@@ -58,8 +58,17 @@ std::uint32_t dom_key_code(SDL_Keycode k) {
     case SDLK_UP: return 38;
     case SDLK_RIGHT: return 39;
     case SDLK_DOWN: return 40;
+    case SDLK_PAGEUP: return 33;
+    case SDLK_PAGEDOWN: return 34;
+    case SDLK_END: return 35;
+    case SDLK_HOME: return 36;
+    case SDLK_INSERT: return 45;
     case SDLK_DELETE: return 46;
-    default: return 0;
+    default:
+      if (k >= SDLK_F1 && k <= SDLK_F12) {
+        return static_cast<std::uint32_t>(112 + (k - SDLK_F1));
+      }
+      return 0;
   }
 }
 
@@ -134,6 +143,8 @@ int Ps5App::run() {
     log_printf("SDL_CreateWindow failed: %s", SDL_GetError());
     return 1;
   }
+  // Printable keyboard input arrives as SDL_TEXTINPUT (see pump_sdl_events).
+  SDL_StartTextInput();
 
   page_buffer_.assign(static_cast<size_t>(width_) * height_, 0xFF000000u);
   chrome_buffer_.assign(static_cast<size_t>(width_) * height_, 0u);
@@ -235,8 +246,11 @@ void Ps5App::pump_sdl_events() {
         break;
       case SDL_KEYDOWN:
       case SDL_KEYUP: {
-        if (auto* view = controller_->active_view()) {
-          std::uint32_t code = dom_key_code(e.key.keysym.sym);
+        // Key events carry no text: printable characters arrive separately
+        // as SDL_TEXTINPUT and are inserted below, so they are not typed twice.
+        std::uint32_t code = dom_key_code(e.key.keysym.sym);
+        auto* view = controller_->active_view();
+        if (view && code != 0) {
           view->key(code, dom_modifiers(SDL_GetModState()), e.type == SDL_KEYDOWN,
                     std::string());
         }
@@ -244,8 +258,7 @@ void Ps5App::pump_sdl_events() {
       }
       case SDL_TEXTINPUT: {
         if (auto* view = controller_->active_view()) {
-          view->key(0, 0, true, e.text.text);
-          view->key(0, 0, false, e.text.text);
+          view->insert_text(e.text.text);
         }
         break;
       }
@@ -264,6 +277,8 @@ void Ps5App::handle_controller_button(const SDL_ControllerButtonEvent& e, bool p
 void Ps5App::handle_axis_motion() {
   if (!pad_) {
     controller_->on_sticks(0, 0, 0, 0);
+    trigger_edge(core::Button::L2, false, l2_down_);
+    trigger_edge(core::Button::R2, false, r2_down_);
     return;
   }
   auto norm = [this](SDL_GameControllerAxis axis) {
@@ -277,11 +292,21 @@ void Ps5App::handle_axis_motion() {
                          norm(SDL_CONTROLLER_AXIS_RIGHTX),
                          norm(SDL_CONTROLLER_AXIS_RIGHTY));
 
-  // L2/R2 analog triggers → L2/R2 buttons past half-press.
-  bool l2 = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000;
-  bool r2 = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000;
-  controller_->on_button(core::Button::L2, l2);
-  controller_->on_button(core::Button::R2, r2);
+  // L2/R2 analog triggers act as buttons past half-press. Report only the
+  // press/release edges: the shell runs an action on every press.
+  trigger_edge(core::Button::L2,
+               SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000,
+               l2_down_);
+  trigger_edge(core::Button::R2,
+               SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000,
+               r2_down_);
+}
+
+void Ps5App::trigger_edge(core::Button button, bool down, bool& was_down) {
+  if (down != was_down) {
+    was_down = down;
+    controller_->on_button(button, down);
+  }
 }
 
 std::vector<SDL_Rect> Ps5App::derive_chrome_rects() {

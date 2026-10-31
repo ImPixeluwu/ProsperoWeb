@@ -94,7 +94,9 @@ class WkWebView {
   void pointer_move(int x, int y);
   void pointer_button(int x, int y, int wk_mouse_button, bool pressed);
   void scroll(int x, int y, int dx, int dy);
-  void key(std::uint32_t key_code, std::uint32_t wk_modifiers, bool pressed,
+  // keysym is a WPE keysym (WPE_KEY_*), which is what the PlayStation
+  // WKPageHandleKeyboardEvent expects in virtualKeyCode.
+  void key(std::uint32_t keysym, std::uint32_t wk_modifiers, bool pressed,
            const std::string& text);
 
   void run_javascript(const std::string& js);

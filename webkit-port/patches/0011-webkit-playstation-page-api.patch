@@ -6,8 +6,12 @@ chrome can be painted over the page with real alpha (the PlayStation C
 API has no drawsBackground setter). The Skia background fill in
 WKPagePaint is clipped to the unpainted rect instead of clearing the
 whole surface.
+
+WKPageHandleKeyboardEvent forwards the WKKeyboardEvent modifiers and
+text (so Return fires keypress and submits forms); virtualKeyCode is a
+WPE keysym, as before.
 diff --git a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp b/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
-index 8a0972133..faf055e8a 100644
+index 8a0972133..9b7bd65b5 100644
 --- a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
 +++ b/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
 @@ -62,10 +62,28 @@ static void drawPageBackground(WebKit::PlatformPaintContextPtr ctx, const std::o
@@ -39,6 +43,44 @@ index 8a0972133..faf055e8a 100644
  void WKPageHandleKeyboardEvent(WKPageRef pageRef, WKKeyboardEvent event)
  {
      using WebKit::NativeWebKeyboardEvent;
+@@ -74,7 +92,20 @@ void WKPageHandleKeyboardEvent(WKPageRef pageRef, WKKeyboardEvent event)
+     wpeEvent.time = 0;
+     wpeEvent.key_code = event.virtualKeyCode;
+     wpeEvent.hardware_key_code = event.virtualKeyCode;
++#if defined(PS5_HOMEBREW)
++    // virtualKeyCode is a WPE keysym (WPE_KEY_*); modifiers are WKEventModifiers.
++    wpeEvent.modifiers = 0;
++    if (event.modifiers & kWKEventModifiersShiftKey)
++        wpeEvent.modifiers |= wpe_input_keyboard_modifier_shift;
++    if (event.modifiers & kWKEventModifiersControlKey)
++        wpeEvent.modifiers |= wpe_input_keyboard_modifier_control;
++    if (event.modifiers & kWKEventModifiersAltKey)
++        wpeEvent.modifiers |= wpe_input_keyboard_modifier_alt;
++    if (event.modifiers & kWKEventModifiersMetaKey)
++        wpeEvent.modifiers |= wpe_input_keyboard_modifier_meta;
++#else
+     wpeEvent.modifiers = 0; // TODO: Handle modifiers.
++#endif
+     switch (event.type) {
+     case kWKEventKeyDown:
+         wpeEvent.pressed = true;
+@@ -90,7 +121,16 @@ void WKPageHandleKeyboardEvent(WKPageRef pageRef, WKKeyboardEvent event)
+     NativeWebKeyboardEvent::HandledByInputMethod handledByInputMethod = NativeWebKeyboardEvent::HandledByInputMethod::No;
+     std::optional<Vector<WebCore::CompositionUnderline>> preeditUnderlines;
+     std::optional<WebKit::EditingRange> preeditSelectionRange;
++#if defined(PS5_HOMEBREW)
++    // The event text (e.g. "\r" for Return) drives keypress and implicit form
++    // submission; printable text is inserted by the client separately.
++    String text = emptyString();
++    if (event.text && event.length > 0)
++        text = String::fromUTF8(unsafeMakeSpan(event.text, static_cast<size_t>(event.length)));
++    WebKit::toImpl(pageRef)->handleKeyboardEvent(NativeWebKeyboardEvent::create(&wpeEvent, text, false, handledByInputMethod, WTF::move(preeditUnderlines), WTF::move(preeditSelectionRange)));
++#else
+     WebKit::toImpl(pageRef)->handleKeyboardEvent(NativeWebKeyboardEvent::create(&wpeEvent, ""_s, false, handledByInputMethod, WTF::move(preeditUnderlines), WTF::move(preeditSelectionRange)));
++#endif
+ }
+ 
+ void WKPageHandleMouseEvent(WKPageRef pageRef, WKMouseEvent event)
 diff --git a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.h b/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.h
 index 674924662..74ea890ea 100644
 --- a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.h

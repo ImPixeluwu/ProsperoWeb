@@ -33,6 +33,7 @@ class Ps5App {
   void pump_sdl_events();
   void handle_controller_button(const SDL_ControllerButtonEvent& e, bool pressed);
   void handle_axis_motion();
+  void trigger_edge(core::Button button, bool down, bool& was_down);
   void paint_content();
   void paint_chrome();
   void composite_and_present();
@@ -64,6 +65,8 @@ class Ps5App {
   int width_ = 1920;
   int height_ = 1080;
 
+  bool l2_down_ = false;
+  bool r2_down_ = false;
   std::uint64_t last_frame_ticks_ = 0;
   bool running_ = false;
 };
