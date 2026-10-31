@@ -150,7 +150,10 @@ int __wrap_select(int n, fd_set* r, fd_set* w, fd_set* e, struct timeval* t) {
 
 static const char* result(int ok, int saved) { return ok ? "ok" : strerror(saved); }
 
+static void step(const char* what, const char* path);
+
 static void test_path(const char* path) {
+  step("path", path);
   struct stat st;
   int rc = stat(path, &st);
   const int stat_errno = errno;

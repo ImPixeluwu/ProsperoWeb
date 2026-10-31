@@ -198,7 +198,9 @@ void setup_native_title_env() {
                broker_here.c_str());
   }
 
+  native_boot_say("[prosperoweb] main: title layout resolved, file selftest\n");
   native_file_selftest(layout.ui_root.c_str(), layout.child_root.c_str());
+  native_boot_say("[prosperoweb] main: file selftest done\n");
   prosperoweb::frontend::setup_runtime_env(prosperoweb::frontend::kPs5DataDir,
                                            layout.ui_root + "/data");
   // JavaScriptCore's JIT needs executable memory, which a title does not
@@ -263,6 +265,9 @@ void start_main_loop_watchdog() {
 
 int main(int argc, char** argv) {
   using namespace prosperoweb::frontend;
+#if PROSPEROWEB_NATIVE_TITLE
+  native_boot_say("[prosperoweb] main: entered\n");
+#endif
   apply_arg_env(argc, argv);
   // Before anything reads the environment (the role, then every module).
   // The children inherit the new names, so only the UI or broker logs this.
@@ -271,10 +276,14 @@ int main(int argc, char** argv) {
   // The title is the UI: the system starts it with no role argument, and
   // the broker and the children run the payload ELF.
   const std::string role = "UI";
+  native_boot_say("[prosperoweb] main: legacy env adopted\n");
   mkdir(kPs5DataDir, 0755);
+  native_boot_say("[prosperoweb] main: profile dir ok, redirecting stdio\n");
   redirect_stdio();
+  native_boot_say("[prosperoweb] main: stdio redirected, opening log.txt\n");
   log_set_role(role);
   log_open(std::string(kPs5DataDir) + "/log.txt");
+  native_boot_say("[prosperoweb] main: log.txt open\n");
   log_printf("main: native title %s pid=%d argv0=%s", PROSPEROWEB_TITLE_ID,
              static_cast<int>(getpid()), argc > 0 && argv[0] ? argv[0] : "(none)");
   // First, before any other thread and before any helper is started: the
@@ -287,16 +296,22 @@ int main(int argc, char** argv) {
                  std::getenv(name));
     }
   }
+  native_boot_say("[prosperoweb] main: config read, decoder start-up\n");
   hwdec_native_startup();
+  native_boot_say("[prosperoweb] main: decoder start-up done, loading modules\n");
   char modules[256];
   native_load_system_modules(modules, sizeof(modules));
   log_printf("main: system modules: %s", modules);
   log_printf("main: heap %zu MiB of direct memory%s", native_heap_size() >> 20,
              native_heap_size() ? "" : " (none: the system heap)");
   log_legacy_env(legacy_env);
+  native_boot_say("[prosperoweb] main: modules loaded, migrating profile\n");
   migrate_legacy_profile_dir();
+  native_boot_say("[prosperoweb] main: title paths and runtime env\n");
   setup_native_title_env();
+  native_boot_say("[prosperoweb] main: runtime env set, starting watchdog\n");
   start_main_loop_watchdog();
+  native_boot_say("[prosperoweb] main: starting the UI\n");
   tune_process_cpus();
   start_cpu_monitor();
   Ps5App app;

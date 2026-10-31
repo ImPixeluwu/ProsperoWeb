@@ -71,7 +71,9 @@ bool present(F* function) {
 
 constexpr int kOpenRead = 0x0;
 constexpr int kOpenWriteCreateTruncate = 0x1 | 0x200 | 0x400;  // O_WRONLY|O_CREAT|O_TRUNC
-int g_boot_fd = -1;
+constexpr int kOpenWriteCreateAppend = 0x1 | 0x8 | 0x200;      // O_WRONLY|O_APPEND|O_CREAT
+constexpr const char* kBootFile = "/data/prosperoweb/boot.txt";
+bool g_boot_file = false;
 
 std::size_t length_of(const char* text) {
   std::size_t n = 0;
@@ -81,26 +83,37 @@ std::size_t length_of(const char* text) {
   return n;
 }
 
+// Each line opens boot.txt for appending, writes and closes it again: no
+// descriptor is kept that later code could close, reuse or redirect.
 void say(const char* text) {
   if (present(&sceKernelDebugOutText)) {
     sceKernelDebugOutText(0, text);
   }
-  if (g_boot_fd >= 0 && present(&sceKernelWrite)) {
-    sceKernelWrite(g_boot_fd, text, length_of(text));
+  if (!g_boot_file || !present(&sceKernelOpen) || !present(&sceKernelWrite) ||
+      !present(&sceKernelClose)) {
+    return;
+  }
+  const int fd = sceKernelOpen(kBootFile, kOpenWriteCreateAppend, 0644);
+  if (fd >= 0) {
+    sceKernelWrite(fd, text, length_of(text));
+    sceKernelClose(fd);
   }
 }
 
-// /data/prosperoweb/boot.txt, rewritten every start: the breadcrumbs reach
+// /data/prosperoweb/boot.txt, emptied at every start: the breadcrumbs reach
 // it even when klog does not show them.
 void open_boot_file() {
-  if (!present(&sceKernelOpen)) {
+  if (!present(&sceKernelOpen) || !present(&sceKernelClose)) {
     return;
   }
   if (present(&sceKernelMkdir)) {
     sceKernelMkdir("/data/prosperoweb", 0755);
   }
-  const int fd = sceKernelOpen("/data/prosperoweb/boot.txt", kOpenWriteCreateTruncate, 0644);
-  g_boot_fd = fd >= 0 ? fd : -1;
+  const int fd = sceKernelOpen(kBootFile, kOpenWriteCreateTruncate, 0644);
+  if (fd >= 0) {
+    sceKernelClose(fd);
+    g_boot_file = true;
+  }
 }
 
 // Minimal formatting without libc (snprintf may be one of the missing ones).
