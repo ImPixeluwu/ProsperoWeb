@@ -226,6 +226,17 @@ optionally klogsrv (port 3232) to read the debug output.
    Reboot the console between attempts (and after any launch that showed
    no picture), so no copy of the browser is left running.
 
+   websrv must keep running while the browser runs (it does, since its
+   tile launched the browser): on the first page load the browser asks
+   websrv (http://127.0.0.1:8080) to start its spawn broker, a background
+   helper ("spawn-broker") that starts the WebProcess and NetworkProcess.
+   Starting them from the browser itself panics the console. The broker
+   exits on its own after the browser quits.
+
+   PS5BROWSER_SPAWN_MODE=direct (spawn without the broker) is only for a
+   plain-payload launch through elfldr, used for debugging; never set it
+   for the tile launch.
+
    To quit, use Options -> Quit; this also saves the session.
 
 Logs:
@@ -239,7 +250,8 @@ Logs:
   - klog: the same lines (prefixed "[ps5browser]") plus the kernel's and
     the loader's messages. Start klogsrv and connect BEFORE launching:
       nc PS5_IP 3232 > klog.txt
-    Look for "[ps5browser]", "spawn:" and "exit_value" lines.
+    Look for "[ps5browser]", "spawn:", "broker", "websrv:" and
+    "exit_value" lines.
 
 Environment the browser sets for itself (unless already set):
   FONTCONFIG_FILE=${INSTALL_DIR}/fonts/fonts.conf

@@ -98,22 +98,94 @@ The payload is one multi-call ELF. `main()`
 
 - `argv[0]` basename `WebProcess` → `ps5_webkit_web_process_main()`
 - `argv[0]` basename `NetworkProcess` → `ps5_webkit_network_process_main()`
+- `argv[0]` basename `spawn-broker` → `ps5_spawn_broker_main()` (`src/ps5/spawn/`)
 - otherwise → the UI process (`Ps5App`)
 
-`PS5BROWSER_ROLE` is honoured as a fallback when `argv[0]` is not a role name.
+A `--role=<name>` argument and then `PS5BROWSER_ROLE` are honoured as
+fallbacks when `argv[0]` is not a role name.
 
-The three roles:
+The four roles:
 
 - **UI** — our `main()`. Owns the SDL2 window and the WebKit UI process
   (`WKView`/`WKPage`), composites content + chrome, feeds gamepad/keyboard
-  input. Started by the user (launchpad/etaHEN).
+  input. Started from the websrv tile through hbldr, so it is the big app
+  (title `FAKE00000`), which is what gives it the screen and the controller.
+- **spawn-broker** — a plain payload that performs every spawn for the UI.
+  Started on demand by the UI through websrv (daemon launch). Exits when the
+  UI is gone and its children have exited.
 - **WebProcess** — WebKit web content process. One per web process (the number
-  is bounded by WebKit; see risks). Started by the UI process via the spawner.
-- **NetworkProcess** — WebKit networking process. Started the same way.
+  is bounded by WebKit; see risks). Spawned by the broker for the UI.
+- **NetworkProcess** — WebKit networking process. Spawned the same way.
+
+```
+ websrv (plain payload, :8080)
+   |  tile click: GET /hbldr?path=...ps5browser.elf      (hbldr, big app)
+   |  first spawn: GET /hbldr?...&daemon=1&args=spawn-broker ...  (elfldr_spawn)
+   v                                   v
+ UI (big app FAKE00000)  <-- AF_UNIX /data/ps5browser/tmp/spawn.sock -->  spawn-broker (plain payload)
+   |  WebKit IPC (SOCK_SEQPACKET pair;                                      |  rfork + ptrace + execve
+   |  the client end goes over the broker socket with SCM_RIGHTS)           v
+   +------------------------------------------------------------------>  WebProcess, NetworkProcess
+                                                                          (children of the broker)
+```
 
 WebKit's `ProcessLauncherPlayStation.cpp` (patched for the homebrew port)
 creates a `SOCK_SEQPACKET` socketpair, keeps the server end, and calls our
 spawn contract.
+
+### Why a broker
+
+On the console (firmware reporting `0x13420000`), launched from the websrv
+tile, the UI reached `spawn: role=WebProcess starting`, the rfork child got
+past `sys_budget_set(0)` (failing with `ENOENT`, non-fatal), and the kernel
+panicked and powered the console off. The same spawner worked when the UI
+was itself a plain payload started by elfldr (children spawned, profile
+created; no picture, because a plain payload is not the foreground app).
+hbldr never rforks from the big app either: websrv starts big apps from its
+own plain-payload process. So the UI no longer spawns: `rfork` + `ptrace` +
+`execve` run in the broker, a plain payload like the earlier working runs,
+where `sys_budget_set(0)` exists again.
+
+### Launch sequence
+
+1. The websrv tile starts the UI through hbldr (`homebrew.js`).
+2. WebKit's first `ps5_spawn_self()` connects to the broker socket
+   (`PS5BROWSER_SPAWN_SOCK`, default `/data/ps5browser/tmp/spawn.sock`).
+3. Nobody listens: the UI sends websrv a plain HTTP/1.0 request
+   (`PS5BROWSER_WEBSRV`, default `127.0.0.1:8080`):
+
+   ```
+   GET /hbldr?path=/data/ps5browser/ps5browser.elf&cwd=/data/ps5browser&daemon=1&args=spawn-broker%20--role%3Dspawn-broker&env=PS5BROWSER_ROLE%3Dspawn-broker%20PS5BROWSER_SPAWN_SOCK%3D/data/ps5browser/tmp/spawn.sock%20PS5BROWSER_SELF_PATH%3D/data/ps5browser/ps5browser.elf HTTP/1.0
+   ```
+
+   websrv (`src/ps5/sys.c`, `sys_launch_daemon`) reads a `path` starting
+   with `/` (or `file:`) from disk, splits `args` and `env` on spaces
+   (`args_split`; a backslash escapes the next character) and starts the
+   ELF with `elfldr_spawn`: `argv[0]` is the first `args` token, which is
+   also the process name, so the broker shows up as `spawn-broker`. websrv
+   answers `200` once the payload runs, `503` if it could not start it.
+4. The UI polls the socket for up to 10 s, pings the broker, and sends the
+   spawn request. Every later spawn reuses the connection.
+5. The broker spawns the child with the UI's ELF path, `argv` and whole
+   `environ` (so `FONTCONFIG_FILE`, `PS5BROWSER_CA_BUNDLE`, … reach the
+   WebProcess whatever the broker's own environment is), and the received
+   descriptors at child fd 3, 4, …. It replies with the pid, and reports
+   children that exit on their own back to the UI.
+
+If the broker cannot be reached or started, the spawn fails (WebKit then
+shows no page) unless `PS5BROWSER_SPAWN_FALLBACK=direct` is set, which spawns
+in-process — and panics the console when the UI is the big app.
+
+### Environment variables
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PS5BROWSER_SPAWN_MODE` | `broker` | `direct` spawns in-process (old behaviour); only for plain-payload (elfldr) launches |
+| `PS5BROWSER_SPAWN_FALLBACK` | unset | `direct`: spawn in-process when no broker can be reached |
+| `PS5BROWSER_SPAWN_SOCK` | `/data/ps5browser/tmp/spawn.sock` | broker socket (UI and broker) |
+| `PS5BROWSER_WEBSRV` | `127.0.0.1:8080` | websrv address (IPv4 literal) used to start the broker |
+| `PS5BROWSER_SELF_PATH` | `/data/ps5browser/ps5browser.elf` | the ELF the broker runs as itself and spawns for the children |
+| `PS5BROWSER_ROLE` | — | role fallback (`spawn-broker` for the broker) |
 
 ## Spawn mechanics (fd / argv contract)
 
@@ -133,12 +205,13 @@ int fds[] = { clientFd };          // the SOCK_SEQPACKET client end
 int pid = ps5_spawn_self(argv, fds, 1);
 ```
 
-`ps5_spawn_self`:
+`ps5_spawn_self` (in broker mode it forwards `argv`, `environ` and `fds` to
+the broker, which runs these steps; in direct mode the UI runs them itself):
 
 1. Builds the child fd table: `fds[i]` must appear in the child as fd `3+i`
    (`ps5_spawn_build_fd_table`). The WebKit IPC socket therefore lands at fd 3,
    which is exactly where `AuxiliaryProcessMain` reads it (`argv[2] == "3"`).
-2. Reads our own ELF image once and caches the bytes.
+2. Maps the ELF image once (read-only `MAP_PRIVATE`) and keeps it.
 3. Runs the elfldr-derived loader (`elfldr_spawn_fds`):
    `rfork_thread(RFPROC|RFCFDG|RFMEM)` → the child opens `/dev/deci_std*` as
    fds 0/1/2, `PT_TRACE_ME`, and `execve` of the `SceSpZeroConf` system
@@ -156,11 +229,11 @@ Descriptor rules (from the contract):
   forwarded to the launcher) plus the injected extras.
 - The caller keeps ownership of `fds[]` and closes its copies after the call;
   the child holds independent duplicates.
-- The current environment (at least the `PS5BROWSER_*` variables) is copied
+- The UI's environment (at least the `PS5BROWSER_*` variables) is copied
   into the child.
 
-`ps5_terminate_process` = `kill(pid, SIGKILL)` + non-blocking `waitpid` reap;
-safe for an already-dead pid.
+`ps5_terminate_process` = `kill(pid, SIGKILL)` + bounded `waitpid` reap,
+done by the broker (`{"op":"terminate"}`); safe for an already-dead pid.
 
 Kernel read/write for the loader comes from the payload arguments the SDK crt
 parses (`<ps5/payload.h>`); the loader uses `kernel_*` from `<ps5/kernel.h>`.
@@ -209,11 +282,14 @@ Phase 1 uses the non-accelerated raster path (no EGL/GLES at runtime):
 
 ## Known risks
 
-- **Spawn memory**: `ps5_spawn_self` caches the whole ELF image (162 MB) in
-  the UI process, and the loader mallocs a mirror of the mapped image
-  (~130 MB) per spawn while copying it into the child. Shipping
-  `--strip-all` saves 33 MB of the cached copy; mapping the file instead of
-  reading it would save the rest.
+- **Spawn memory**: the broker maps the whole ELF image (162 MB, read-only),
+  and the loader mallocs a mirror of the mapped image (~130 MB) per spawn
+  while copying it into the child. websrv also reads the whole ELF into
+  memory once to start the broker.
+- **Broker launch**: depends on websrv still running on `127.0.0.1:8080`
+  and on the big app being allowed to connect to it and to an AF_UNIX
+  socket under `/data` created by another process, and to pass descriptors
+  to it with `SCM_RIGHTS`. Not yet verified on a console.
 - **Relocations**: the loader applies `R_X86_64_RELATIVE` only (~311k).
   The ELF also has 334 `GLOB_DAT`, 27 `R_X86_64_64` and one `JUMP_SLOT`
   relocation, left to the SDK crt at startup, the same as for every
