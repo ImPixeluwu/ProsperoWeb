@@ -276,6 +276,78 @@ Phase 1 uses the non-accelerated raster path (no EGL/GLES at runtime):
   `ShellController::chrome_rects()` (band, OSK panel, pointer, whole window
   under a menu/notice) of the last few frames; see `Ps5App::composite_and_present`.
 
+## Text input
+
+Text entry goes through `shell::TextInputProvider`
+(`src/shell/include/ps5browser/shell/text_input.h`). On the PS5 the provider
+is `Ps5ImeTextInput` (`src/frontend/ps5/ps5_ime.*`), the console's own
+keyboard dialog (`libSceImeDialog`); the shell's HTML OSK (`chrome.html`) is
+the fallback. The GTK host has no provider and always uses the HTML OSK.
+
+| Trigger | Request | On OK |
+| --- | --- | --- |
+| Triangle (page mode) | kind `url`, pre-filled with the tab URL, Enter label "Go" | `navigate()` (normalised, search fallback), as the OSK commit |
+| Square (page mode) | kind from the focused field's `<input type>`, pre-filled with its value when known | the field's value is replaced (see below) |
+| Cross click that focuses a text field (within 1 s) | same as Square | same as Square |
+
+While the dialog is up the shell keeps its focus (it does not enter OSK
+mode), keeps painting, and ignores gamepad buttons and sticks; Ps5App drops
+SDL key/text events. Cancelling the dialog changes nothing. If the
+dialog cannot open (`sceImeDialogInit` fails twice, once with the full and
+once with SDL's plain parameters) or ends with an error, the same request
+opens the HTML OSK with the same text.
+
+Page fields: `core::kFocusReporterScript` posts
+`{type:'focus_info', inputType, value}` right before each
+`{type:'focus', editable:true}`. With a known value the dialog is pre-filled
+with it and on OK the shell first selects the field's content
+(`select()`, or `execCommand('selectAll')`) and then calls `insert_text()`, so
+the result replaces the value (an empty result deletes it). Passwords,
+`contenteditable` and values over 2048 characters are never sent (value
+`null`): the dialog starts empty and the text is inserted at the caret, as
+with the HTML OSK. The same replace semantics apply to the HTML OSK.
+
+Selection: `PS5BROWSER_OSK=system|builtin` (environment, wins) or
+`"osk": "system"|"builtin"` in `config.json`; default `system`.
+
+`sceImeDialogParam` as filled by `Ps5SystemIme::open()` (layout from the
+SDL2 PS5 port, 96 bytes, checked with `static_assert`; the console's
+`wchar_t` is 16-bit, the buffers are `char16_t` UTF-16):
+
+| Field | Value |
+| --- | --- |
+| `userId` | `sceUserServiceGetForegroundUser()`, else `sceUserServiceGetInitialUser()` (after `sceUserServiceInitialize(NULL)`, `0x80960003` = already initialised is fine) |
+| `type` | URL 2 for `url`, MAIL 3 for `email`, NUMBER 4 for `number`, else DEFAULT 0 |
+| `supportedLanguages` | 0 |
+| `enterLabel` | GO 3 for `url`, SEARCH 2 for `search`, else DEFAULT 0 |
+| `inputMethod` | DEFAULT 0 |
+| `filter` | NULL |
+| `option` | PASSWORD 0x04 for `password`, NO_AUTO_CAPITALIZATION 0x02 for `url`/`email`, else 0 (PS4 bit values, unverified on PS5) |
+| `maxTextLength` | request length clamped to 1..2048 UTF-16 units |
+| `inputTextBuffer` | 2049-unit buffer owned by `Ps5SystemIme`, pre-filled with the initial text, NUL-terminated |
+| `posx`, `posy` | 960, 540 |
+| `horizontalAlignment`, `verticalAlignment` | CENTER 1, CENTER 1 |
+| `placeholder` | NULL |
+| `title` | UTF-16 title (127 units max) |
+| `reserved` | zero |
+
+The retry after a failed `sceImeDialogInit` uses SDL's values: type, Enter
+label and option 0, position 0,0, LEFT/TOP.
+
+Interaction with SDL: the SDL2 PS5 driver implements the screen keyboard
+with the same dialog. `SDL_StartTextInput()` would open it, so Ps5App sets
+`SDL_HINT_ENABLE_SCREEN_KEYBOARD=0` first. SDL also checks the dialog
+status inside every `SDL_PollEvent()` and, when it sees `FINISHED` before
+we do, fetches the result, terminates the dialog and (on OK only) injects
+a Return key. Ps5App therefore polls the dialog before `SDL_PollEvent()`;
+if SDL still wins, the Return key marks the outcome as OK (the text is in
+our buffer anyway) and is not forwarded to the page.
+
+Log lines (`log.txt`, prefix `ime:`): `user id`, `open title=... kind=...
+len=N max=N`, `init ok`, `status running/finished/none`, `status
+cancelled`, `result "<text>"` (`<N bytes, hidden>` for passwords),
+`error 0x...` with the failing call, `falling back to the built-in OSK`.
+
 ## Must be verified on a console
 
 - `rfork_thread(RFPROC|RFCFDG|RFMEM)` + ptrace spawn works for **long-lived**
@@ -289,6 +361,10 @@ Phase 1 uses the non-accelerated raster path (no EGL/GLES at runtime):
   chrome overlay.
 - DualSense mapping via `SDL_GameController` (buttons, analog triggers → L2/R2,
   sticks) and USB-keyboard key codes.
+- The system keyboard dialog: `sceImeDialogInit` accepts the parameters
+  above from a homebrew big app, shows the pre-filled text, and the status
+  sequence is running → finished; the option bits and the URL / mail /
+  number types are the PS4 values.
 - The HTML5 Fullscreen API path (`WKViewClient.enterFullScreen/exitFullScreen`)
   and `WKViewRequestExitFullScreen`.
 - The WebKit run loop: the public PlayStation API exposes only
@@ -334,6 +410,11 @@ Phase 1 uses the non-accelerated raster path (no EGL/GLES at runtime):
   phase 1; EGL/GLES are linked as stubs only.
 - **`insert_text`** falls back to `document.execCommand('insertText', …)`; it is
   not a trusted editing command and may not work in every editable context.
-- **`text_input_focused`** is not wired: the public PlayStation C API has no
-  editor-state/focus callback, so the OSK auto-open on field focus is not
-  available yet (see "Could not be mapped" in the handoff).
+- **`text_input_focused`** comes from the injected focus script, not from the
+  engine (the public PlayStation C API has no editor-state callback), so it
+  misses focus changes inside closed shadow roots and cross-origin frames
+  without the user script.
+- **System keyboard dialog**: whether the dialog takes the DualSense away from
+  the app while it is up is unverified; the shell ignores pad input during a
+  request anyway. Only one dialog can exist per process: a stale one (e.g.
+  from SDL) is terminated before ours opens.

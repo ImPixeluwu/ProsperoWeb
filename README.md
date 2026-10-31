@@ -103,8 +103,8 @@ The keyboard stands in for a DualSense; an SDL2 game controller, if connected, w
 | Arrows | D-pad | Scroll |
 | Enter | Cross | Click at the pointer |
 | Escape | Circle | Back / leave fullscreen |
-| F1 | Triangle | Edit the address (OSK) |
-| F2 | Square | OSK for the focused text field |
+| F1 | Triangle | Edit the address (system keyboard on the PS5, OSK on the host) |
+| F2 | Square | Edit the focused text field (system keyboard on the PS5, OSK on the host) |
 | `[` / `]` | L1 / R1 | Previous / next tab |
 | Page Up / Page Down | L2 / R2 | Page up / down |
 | F10 | L3 | Hide / show the chrome |
@@ -114,6 +114,8 @@ The keyboard stands in for a DualSense; an SDL2 game controller, if connected, w
 | F7 | Touchpad | New tab |
 | W A S D (held) | Left stick | Move the pointer |
 | I J K L (held) | Right stick | Scroll |
+
+On the PS5, Triangle, Square and a click into a text field open the console's own keyboard dialog, pre-filled with the URL or the field's value; confirming navigates or replaces the field's value, cancelling changes nothing. The built-in OSK below is the fallback when the dialog fails, and the only keyboard with `PS5BROWSER_OSK=builtin` (or `"osk": "builtin"` in `config.json`) and on the host; see docs/ps5-runtime.md, "Text input".
 
 In the OSK: D-pad moves between keys, Cross types the key at the caret, L1/R1 move the caret, Square deletes before the caret, Triangle inserts a space, L2 is Shift, Touchpad (or the on-screen layout key) switches the layout, Options commits, Circle cancels. Holding the D-pad, Square, L1 or R1 repeats; the on-screen Clear key empties the text. In the menu: D-pad up/down selects, Cross activates, Circle goes back.
 

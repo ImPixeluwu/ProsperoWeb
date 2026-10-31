@@ -99,7 +99,7 @@ No EGL/GLES runs at runtime: CSS 3D transforms are not rendered in 3D, WebGL is 
 - **`core::GamepadMapper`** turns a button into an `Action` depending on focus (page, chrome, OSK, menu). The page-mode mapping is the table in the [README](../README.md#host-input-mapping).
 - **`core::PointerModel`** moves a virtual pointer with the left stick; Cross clicks at the pointer. The right stick and the D-pad scroll.
 - On the PS5 every page action becomes a trusted engine event: `WKPageHandleMouseEvent` (move, down, up), `WKPageHandleWheelEvent`, `WKPageHandleKeyboardEvent`. Clicks therefore carry user activation (fullscreen, autoplay with sound, popups behave as with a mouse).
-- **On-screen keyboard**: the OSK is a core model (`core::OnScreenKeyboard`, Latin, Cyrillic and symbol layouts) drawn by `chrome.html`, not Sony's `sceImeDialog`. It edits the address bar or, through `insert_text`, the focused page field. It opens on Triangle (address) or Square (page field) and automatically when a page text field gains focus.
+- **Text entry**: on the PS5 Triangle (address), Square (page field) and a click that focuses a text field open Sony's keyboard dialog (`sceImeDialog`) through `shell::TextInputProvider`, pre-filled with the current text; the committed text navigates or replaces the field's value. The fallback, and the only keyboard on the host, is the built-in OSK: a core model (`core::OnScreenKeyboard`, Latin, Cyrillic and symbol layouts) drawn by `chrome.html`. See ps5-runtime.md, "Text input".
 - **USB keyboard**: SDL key events are translated to WPE keysyms for `WKPageHandleKeyboardEvent`; `SDL_TEXTINPUT` text is inserted with `insert_text`.
 
 ## Video path
