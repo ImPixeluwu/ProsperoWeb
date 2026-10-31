@@ -6,8 +6,8 @@
 namespace ps5browser::core {
 
 // Maps button presses to actions using the default layout below. Actions
-// fire on press; releases map to Action::None (key repeat for scrolling is
-// handled by RepeatTimer in the frontend). The PS button is reserved by the
+// fire on press; releases map to Action::None (key repeat for held buttons
+// is handled by RepeatTimer in ShellController). The PS button is reserved by the
 // system and always maps to Action::None.
 //
 // Page mode (pointer over content):
@@ -23,9 +23,13 @@ namespace ps5browser::core {
 //   Share=Reload  Touchpad=NewTab  R3=ToggleFullscreen
 //
 // Osk mode (on-screen keyboard):
-//   D-pad=OskMove{Up,Down,Left,Right}  Cross=OskSelect  Circle=OskCancel
-//   Options=OskConfirm  Square=OskBackspace  Triangle=OskSpace
-//   L2=OskShift  R1=OskNextLayout
+//   D-pad=OskMove{Up,Down,Left,Right} (moves the key focus)
+//   Cross=OskSelect  Circle=OskCancel  Options=OskConfirm
+//   Square=OskBackspace (deletes before the caret)  Triangle=OskSpace
+//   L1=OskCaretLeft  R1=OskCaretRight (move the text caret)
+//   L2=OskShift  Touchpad=OskNextLayout (the on-screen layout key too)
+//   D-pad, Square, L1 and R1 auto-repeat while held. Clearing the whole
+//   text is only the on-screen Clear key, never a long press.
 class GamepadMapper {
  public:
   Action map(Button button, bool pressed, Mode mode) const;

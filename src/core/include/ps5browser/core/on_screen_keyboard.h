@@ -10,20 +10,34 @@
 
 namespace ps5browser::core {
 
-// Gamepad-driven on-screen keyboard. Holds the key grid, the focused key and
-// the text being edited; the frontend only draws keys() and cursor() and
-// forwards Osk* actions. Editing always happens at the end of the text.
+// Gamepad-driven on-screen keyboard. Holds the key grid, the focused key
+// (cursor) and the text being edited with a caret; the frontend only draws
+// keys(), cursor() and caret() and forwards Osk* actions. Characters are
+// inserted at the caret and Backspace deletes the code point before it.
+// The caret moves by whole UTF-8 code points.
 class OnScreenKeyboard {
  public:
   enum class Layout : std::uint8_t { Latin, Symbols, Cyrillic };
   enum class Direction : std::uint8_t { Up, Down, Left, Right };
-  enum class KeyKind : std::uint8_t { Char, Shift, Space, Backspace, LayoutSwitch, Enter };
+  enum class KeyKind : std::uint8_t {
+    Char,
+    Shift,
+    Space,
+    Backspace,
+    LayoutSwitch,
+    Enter,
+    Clear,       // empties the text
+    CaretLeft,   // moves the caret one code point left
+    CaretRight,  // moves the caret one code point right
+  };
   enum class PressResult : std::uint8_t {
     None,
     Inserted,
     Deleted,
     ShiftChanged,
     LayoutChanged,
+    CaretMoved,
+    Cleared,
     Committed,  // Enter pressed; text() holds the final value
   };
 
@@ -44,9 +58,20 @@ class OnScreenKeyboard {
   OnScreenKeyboard();
 
   // Opens an editing session: sets text (also remembered for cancel()),
-  // resets shift, keeps the layout and moves the cursor to the first key.
+  // puts the caret at its end, resets shift, keeps the layout and moves the
+  // cursor to the first key. Text over kMaxTextBytes is cut at a code point.
   void set_text(std::string initial);
   const std::string& text() const { return text_; }
+
+  // Caret position in code points from the start of text() (0..length).
+  std::size_t caret() const;
+  // Caret position in bytes into text(); always on a code point boundary.
+  std::size_t caret_byte() const { return caret_; }
+  // Moves the caret by delta code points, clamped to the text. Returns
+  // whether it moved.
+  bool move_caret(int delta);
+  void caret_home();
+  void caret_end();
 
   Layout layout() const { return layout_; }
   void set_layout(Layout layout);
@@ -71,9 +96,13 @@ class OnScreenKeyboard {
   // Direct actions (bound to gamepad shortcuts).
   PressResult backspace();
   PressResult space();
+  // Empties the text (the caret goes to 0). None if already empty.
+  PressResult clear();
+  PressResult caret_left();
+  PressResult caret_right();
   PressResult toggle_shift();
   PressResult next_layout();
-  // Restores the text passed to the last set_text().
+  // Restores the text passed to the last set_text(), caret at its end.
   void cancel();
 
  private:
@@ -85,6 +114,7 @@ class OnScreenKeyboard {
   bool shift_ = false;
   Cursor cursor_;
   std::string text_;
+  std::size_t caret_ = 0;  // byte offset into text_
   std::string initial_;
 };
 

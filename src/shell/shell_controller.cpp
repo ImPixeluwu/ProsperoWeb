@@ -59,9 +59,12 @@ std::pair<const char*, double> key_code_and_width(const OnScreenKeyboard::Key& k
     case Kind::Char: return {nullptr, 1.0};
     case Kind::Shift: return {"shift", 1.5};
     case Kind::LayoutSwitch: return {"layout", 1.5};
-    case Kind::Space: return {"space", 4.0};
+    case Kind::Space: return {"space", 3.0};
     case Kind::Backspace: return {"backspace", 1.5};
     case Kind::Enter: return {"enter", 1.5};
+    case Kind::Clear: return {"clear", 1.5};
+    case Kind::CaretLeft: return {"left", 1.0};
+    case Kind::CaretRight: return {"right", 1.0};
   }
   return {nullptr, 1.0};
 }
@@ -724,6 +727,8 @@ void ShellController::run_osk_action(Action action) {
     case Action::OskSpace: osk_.space(); break;
     case Action::OskShift: osk_.toggle_shift(); break;
     case Action::OskNextLayout: osk_.next_layout(); break;
+    case Action::OskCaretLeft: osk_.caret_left(); break;
+    case Action::OskCaretRight: osk_.caret_right(); break;
     default: break;
   }
   mark_dirty();
@@ -1087,6 +1092,7 @@ json ShellController::chrome_state() const {
               {"layout", layout_name(osk_.layout())},
               {"shift", osk_.shift()},
               {"text", osk_.text()},
+              {"caret_index", osk_.caret()},
               {"target", osk_target_ == OskTarget::Address ? "address" : "page"},
               {"cursor", {{"row", osk_.cursor().row}, {"col", osk_.cursor().col}}}};
   json rows = json::array();

@@ -78,8 +78,10 @@ TEST_SUITE("gamepad_mapper") {
                                 {Button::Square, Action::OskBackspace},
                                 {Button::Triangle, Action::OskSpace},
                                 {Button::L2, Action::OskShift},
-                                {Button::R1, Action::OskNextLayout},
-                                {Button::Touchpad, Action::None},
+                                {Button::L1, Action::OskCaretLeft},
+                                {Button::R1, Action::OskCaretRight},
+                                {Button::Touchpad, Action::OskNextLayout},
+                                {Button::R2, Action::None},
                                 {Button::PS, Action::None},
                             });
   }

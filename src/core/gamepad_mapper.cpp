@@ -74,17 +74,17 @@ Action GamepadMapper::map_osk(Button button) {
     case Button::Square: return Action::OskBackspace;
     case Button::Triangle: return Action::OskSpace;
     case Button::L2: return Action::OskShift;
-    case Button::R1: return Action::OskNextLayout;
+    case Button::L1: return Action::OskCaretLeft;
+    case Button::R1: return Action::OskCaretRight;
+    case Button::Touchpad: return Action::OskNextLayout;
     case Button::Up: return Action::OskMoveUp;
     case Button::Down: return Action::OskMoveDown;
     case Button::Left: return Action::OskMoveLeft;
     case Button::Right: return Action::OskMoveRight;
-    case Button::L1:
     case Button::R2:
     case Button::L3:
     case Button::R3:
     case Button::Share:
-    case Button::Touchpad:
     case Button::PS: return Action::None;
   }
   return Action::None;

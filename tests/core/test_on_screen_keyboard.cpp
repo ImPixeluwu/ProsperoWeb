@@ -99,13 +99,13 @@ TEST_SUITE("osk") {
     CHECK(osk.cursor() == Osk::Cursor{0, 0});
     osk.move(Osk::Direction::Left);
     CHECK(osk.cursor() == Osk::Cursor{0, 9});
-    osk.move(Osk::Direction::Up);  // wraps to the special row (5 keys)
-    CHECK(osk.cursor() == Osk::Cursor{4, 4});
+    osk.move(Osk::Direction::Up);  // wraps to the special row (8 keys)
+    CHECK(osk.cursor() == Osk::Cursor{4, 7});
     CHECK(osk.current_key().kind == Osk::KeyKind::Enter);
     osk.move(Osk::Direction::Down);
-    CHECK(osk.cursor() == Osk::Cursor{0, 4});
+    CHECK(osk.cursor() == Osk::Cursor{0, 7});
     osk.move(Osk::Direction::Right);
-    CHECK(osk.current_key().value == "6");
+    CHECK(osk.current_key().value == "9");
     CHECK_FALSE(osk.set_cursor({9, 0}));
   }
 

@@ -19,7 +19,8 @@ namespace ps5browser::shell {
 //     "content": {"x", "y", "width", "height"},   // where the page view goes
 //     "pointer": {"x", "y", "visible"},           // window coordinates
 //     "osk": {"open", "layout", "shift", "text", "target": "address" | "page",
-//             "cursor": {"row", "col"},
+//             "caret_index",                  // code points before the caret
+//             "cursor": {"row", "col"},       // focused key in "rows"
 //             "rows": [[{"label", "code", "width"}]]},
 //     "notice": {"kind": "drm" | "error" | "info" | null, "title", "text"},
 //     "menu": {"open", "section": "main" | "bookmarks" | "history",

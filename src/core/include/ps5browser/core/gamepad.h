@@ -85,6 +85,8 @@ enum class Action : std::uint8_t {
   OskMoveDown,
   OskMoveLeft,
   OskMoveRight,
+  OskCaretLeft,
+  OskCaretRight,
 };
 
 }  // namespace ps5browser::core

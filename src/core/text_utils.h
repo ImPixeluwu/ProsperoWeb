@@ -18,7 +18,13 @@ std::string fold_case(std::string_view s);
 
 bool starts_with_ci(std::string_view s, std::string_view prefix);
 
-// Removes the last UTF-8 code point from s (no-op on empty string).
-void pop_utf8(std::string& s);
+// Byte offset of the code point boundary before / after pos (clamped to
+// [0, s.size()]). Continuation bytes are skipped, so the result never splits
+// a multi-byte sequence.
+std::size_t utf8_prev(std::string_view s, std::size_t pos);
+std::size_t utf8_next(std::string_view s, std::size_t pos);
+
+// Number of code points in s (counts lead bytes).
+std::size_t utf8_length(std::string_view s);
 
 }  // namespace ps5browser::core::detail

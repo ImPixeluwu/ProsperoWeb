@@ -115,7 +115,7 @@ The keyboard stands in for a DualSense; an SDL2 game controller, if connected, w
 | W A S D (held) | Left stick | Move the pointer |
 | I J K L (held) | Right stick | Scroll |
 
-In the OSK: D-pad moves, Cross types the key, Square deletes, Triangle inserts a space, L2 is Shift, R1 switches the layout, Options commits, Circle cancels. In the menu: D-pad up/down selects, Cross activates, Circle goes back.
+In the OSK: D-pad moves between keys, Cross types the key at the caret, L1/R1 move the caret, Square deletes before the caret, Triangle inserts a space, L2 is Shift, Touchpad (or the on-screen layout key) switches the layout, Options commits, Circle cancels. Holding the D-pad, Square, L1 or R1 repeats; the on-screen Clear key empties the text. In the menu: D-pad up/down selects, Cross activates, Circle goes back.
 
 While a text field in the page or the HTML address bar has focus, only the function keys stay mapped, so typing reaches the field. The real mouse goes straight to the page; moving it hides the gamepad pointer until a stick moves again.
 

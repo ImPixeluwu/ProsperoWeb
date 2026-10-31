@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "text_utils.h"
 
+#include <algorithm>
+
 namespace ps5browser::core::detail {
 
 namespace {
+
+bool is_continuation(char c) { return (static_cast<unsigned char>(c) & 0xC0) == 0x80; }
 
 bool is_space(char c) {
   return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
@@ -72,14 +76,37 @@ bool starts_with_ci(std::string_view s, std::string_view prefix) {
   return true;
 }
 
-void pop_utf8(std::string& s) {
-  while (!s.empty()) {
-    const auto c = static_cast<unsigned char>(s.back());
-    s.pop_back();
-    if ((c & 0xC0) != 0x80) {
-      break;  // removed the lead byte (or an ASCII byte)
+std::size_t utf8_prev(std::string_view s, std::size_t pos) {
+  pos = std::min(pos, s.size());
+  if (pos == 0) {
+    return 0;
+  }
+  --pos;
+  while (pos > 0 && is_continuation(s[pos])) {
+    --pos;
+  }
+  return pos;
+}
+
+std::size_t utf8_next(std::string_view s, std::size_t pos) {
+  if (pos >= s.size()) {
+    return s.size();
+  }
+  ++pos;
+  while (pos < s.size() && is_continuation(s[pos])) {
+    ++pos;
+  }
+  return pos;
+}
+
+std::size_t utf8_length(std::string_view s) {
+  std::size_t n = 0;
+  for (const char c : s) {
+    if (!is_continuation(c)) {
+      ++n;
     }
   }
+  return n;
 }
 
 }  // namespace ps5browser::core::detail

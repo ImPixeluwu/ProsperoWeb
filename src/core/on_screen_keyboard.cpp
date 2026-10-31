@@ -24,10 +24,12 @@ Row char_row(std::initializer_list<Pair> keys) {
   return row;
 }
 
+// Clear sits away from Backspace so a sideways slip does not wipe the text.
 Row special_row() {
-  return {Key{KeyKind::Shift, "", ""}, Key{KeyKind::LayoutSwitch, "", ""},
-          Key{KeyKind::Space, " ", " "}, Key{KeyKind::Backspace, "", ""},
-          Key{KeyKind::Enter, "", ""}};
+  return {Key{KeyKind::Shift, "", ""},     Key{KeyKind::LayoutSwitch, "", ""},
+          Key{KeyKind::Clear, "", ""},     Key{KeyKind::CaretLeft, "", ""},
+          Key{KeyKind::Space, " ", " "},   Key{KeyKind::CaretRight, "", ""},
+          Key{KeyKind::Backspace, "", ""}, Key{KeyKind::Enter, "", ""}};
 }
 
 std::vector<Row> latin() {
@@ -99,13 +101,33 @@ OnScreenKeyboard::OnScreenKeyboard()
 
 void OnScreenKeyboard::set_text(std::string initial) {
   if (initial.size() > kMaxTextBytes) {
-    initial.resize(kMaxTextBytes);
+    initial.resize(detail::utf8_prev(initial, kMaxTextBytes + 1));
   }
   text_ = initial;
+  caret_ = text_.size();
   initial_ = std::move(initial);
   shift_ = false;
   cursor_ = {};
 }
+
+std::size_t OnScreenKeyboard::caret() const {
+  return detail::utf8_length(std::string_view(text_).substr(0, caret_));
+}
+
+bool OnScreenKeyboard::move_caret(int delta) {
+  const std::size_t before = caret_;
+  for (; delta < 0; ++delta) {
+    caret_ = detail::utf8_prev(text_, caret_);
+  }
+  for (; delta > 0; --delta) {
+    caret_ = detail::utf8_next(text_, caret_);
+  }
+  return caret_ != before;
+}
+
+void OnScreenKeyboard::caret_home() { caret_ = 0; }
+
+void OnScreenKeyboard::caret_end() { caret_ = text_.size(); }
 
 void OnScreenKeyboard::set_layout(Layout layout) {
   layout_ = layout;
@@ -127,6 +149,9 @@ std::string OnScreenKeyboard::label(const Key& key) const {
     case KeyKind::Backspace: return "Backspace";
     case KeyKind::LayoutSwitch: return layout_name(following(layout_));
     case KeyKind::Enter: return "Enter";
+    case KeyKind::Clear: return "Clear";
+    case KeyKind::CaretLeft: return "\u2190";
+    case KeyKind::CaretRight: return "\u2192";
   }
   return {};
 }
@@ -187,7 +212,8 @@ OnScreenKeyboard::PressResult OnScreenKeyboard::insert(std::string_view s) {
   if (text_.size() + s.size() > kMaxTextBytes) {
     return PressResult::None;
   }
-  text_.append(s);
+  text_.insert(caret_, s);
+  caret_ += s.size();
   return PressResult::Inserted;
 }
 
@@ -204,16 +230,38 @@ OnScreenKeyboard::PressResult OnScreenKeyboard::press() {
     case KeyKind::Backspace: return backspace();
     case KeyKind::LayoutSwitch: return next_layout();
     case KeyKind::Enter: return PressResult::Committed;
+    case KeyKind::Clear: return clear();
+    case KeyKind::CaretLeft: return caret_left();
+    case KeyKind::CaretRight: return caret_right();
   }
   return PressResult::None;
 }
 
 OnScreenKeyboard::PressResult OnScreenKeyboard::backspace() {
+  if (caret_ == 0) {
+    return PressResult::None;
+  }
+  const std::size_t start = detail::utf8_prev(text_, caret_);
+  text_.erase(start, caret_ - start);
+  caret_ = start;
+  return PressResult::Deleted;
+}
+
+OnScreenKeyboard::PressResult OnScreenKeyboard::clear() {
   if (text_.empty()) {
     return PressResult::None;
   }
-  detail::pop_utf8(text_);
-  return PressResult::Deleted;
+  text_.clear();
+  caret_ = 0;
+  return PressResult::Cleared;
+}
+
+OnScreenKeyboard::PressResult OnScreenKeyboard::caret_left() {
+  return move_caret(-1) ? PressResult::CaretMoved : PressResult::None;
+}
+
+OnScreenKeyboard::PressResult OnScreenKeyboard::caret_right() {
+  return move_caret(1) ? PressResult::CaretMoved : PressResult::None;
 }
 
 OnScreenKeyboard::PressResult OnScreenKeyboard::space() { return insert(" "); }
@@ -230,6 +278,7 @@ OnScreenKeyboard::PressResult OnScreenKeyboard::next_layout() {
 
 void OnScreenKeyboard::cancel() {
   text_ = initial_;
+  caret_ = text_.size();
   shift_ = false;
 }
 
