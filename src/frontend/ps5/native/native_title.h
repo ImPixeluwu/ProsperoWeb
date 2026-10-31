@@ -10,6 +10,10 @@
 extern "C" {
 #endif
 
+// One line in /data/prosperoweb/boot.txt and klog, written with libkernel
+// calls only (native_crt.cpp); text should end in a newline.
+void native_boot_say(const char* text);
+
 // The system debug output (klog), printf-style.
 void native_debug_printf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 

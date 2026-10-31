@@ -358,6 +358,12 @@ void run_reverse(Initializer* first, Initializer* last) {
 
 }  // namespace
 
+// A breadcrumb in boot.txt and klog, for code outside the CRT
+// (native_title.h).
+extern "C" void native_boot_say(const char* text) {
+  say(text);
+}
+
 extern "C" __attribute__((weak)) void catchReturnFromMain(int status) { (void)status; }
 
 extern "C" void _init() {

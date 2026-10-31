@@ -186,20 +186,31 @@ static void test_path(const char* path) {
                  result(f != NULL, fopen_errno), (unsigned)kfd, kgot, (unsigned)kstat);
 }
 
+static void step(const char* what, const char* path) {
+  char line[320];
+  snprintf(line, sizeof(line), "[prosperoweb] file selftest step: %s %s\n", what, path);
+  native_boot_say(line);
+}
+
 static void test_dir(const char* path) {
+  step("opendir", path);
   DIR* d = opendir(path);
   const int saved = errno;
   int entries = 0;
   if (d) {
-    while (readdir(d)) {
+    step("readdir loop", path);
+    while (entries < 10000 && readdir(d)) {
       entries++;
     }
+    step("closedir", path);
     closedir(d);
   }
+  step("getcwd", path);
   char cwd[256] = "?";
   if (!getcwd(cwd, sizeof(cwd))) {
     snprintf(cwd, sizeof(cwd), "getcwd: %s", strerror(errno));
   }
+  step("done", path);
   ps5_log_printf("file selftest: opendir %s: %s (%d entries); cwd %s", path,
                  result(d != NULL, saved), entries, cwd);
 }

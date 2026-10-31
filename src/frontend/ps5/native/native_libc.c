@@ -48,11 +48,30 @@ typedef struct {
   int fd;
   int used;
   int pos;
-  char buf[DIR_BUF];
+  int records;
+  char buf[DIR_BUF] __attribute__((aligned(16)));
 } NativeDir;
 
+void native_boot_say(const char* text);  // native_crt.cpp
+
+// The first calls of each directory function leave a breadcrumb (console
+// run 19 died in this code without klog).
+static int g_dir_trace = 24;
+
+static void dir_say(const char* what, const char* detail, long value) {
+  if (g_dir_trace <= 0) {
+    return;
+  }
+  g_dir_trace--;
+  char line[256];
+  snprintf(line, sizeof(line), "[prosperoweb] dir: %s %s %ld\n", what, detail ? detail : "", value);
+  native_boot_say(line);
+}
+
 void* opendir(const char* path) {
+  dir_say("opendir", path, 0);
   const int fd = sceKernelOpen(path, O_RDONLY | O_DIRECTORY, 0);
+  dir_say("opendir sceKernelOpen ->", path, fd);
   if (fd < 0) {
     errno = fd ? (fd & 0xffff) : ENOENT;
     return NULL;
@@ -66,6 +85,7 @@ void* opendir(const char* path) {
   d->fd = fd;
   d->used = 0;
   d->pos = 0;
+  d->records = 0;
   return d;
 }
 
@@ -77,16 +97,37 @@ struct dirent* readdir(void* dirp) {
   }
   if (d->pos >= d->used) {
     const int n = getdents(d->fd, d->buf, (int)sizeof(d->buf));
+    dir_say("readdir getdents ->", "", n);
     if (n <= 0) {
       return NULL;  // end of directory, or errno from getdents
     }
     d->used = n;
     d->pos = 0;
   }
+  // FreeBSD 11 record: u32 d_fileno, u16 d_reclen, u8 d_type, u8 d_namlen,
+  // then the name. A record that does not fit ends the listing instead of
+  // handing callers garbage.
+  if (d->used - d->pos < 8) {
+    dir_say("readdir short tail", "", d->used - d->pos);
+    d->pos = d->used;
+    return NULL;
+  }
   struct dirent* entry = (struct dirent*)(d->buf + d->pos);
-  // d_reclen is at offset 4 (after the u32 d_fileno).
-  const uint16_t reclen = *(uint16_t*)(d->buf + d->pos + 4);
-  d->pos += reclen ? reclen : (int)sizeof(d->buf);
+  uint16_t reclen;
+  memcpy(&reclen, d->buf + d->pos + 4, sizeof(reclen));
+  const uint8_t namlen = (uint8_t)d->buf[d->pos + 7];
+  if (reclen < 8 || d->pos + reclen > d->used || 8 + (int)namlen >= (int)reclen) {
+    dir_say("readdir bad record, reclen", "", reclen);
+    d->pos = d->used;
+    errno = EIO;
+    return NULL;
+  }
+  if (d->records++ == 0) {
+    char name[64] = {0};
+    memcpy(name, d->buf + d->pos + 8, namlen < sizeof(name) - 1 ? namlen : sizeof(name) - 1);
+    dir_say("readdir first entry", name, reclen);
+  }
+  d->pos += reclen;
   return entry;
 }
 
@@ -97,6 +138,7 @@ int closedir(void* dirp) {
     return -1;
   }
   const int fd = d->fd;
+  dir_say("closedir records", "", d->records);
   free(d);
   return sceKernelClose(fd) < 0 ? -1 : 0;
 }
