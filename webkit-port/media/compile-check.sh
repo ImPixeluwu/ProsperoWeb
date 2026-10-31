@@ -22,6 +22,11 @@ MODE=(-fsyntax-only)
 
 [[ -f "${BUILD}/build.ninja" ]] || { echo "no ${BUILD}/build.ninja" >&2; exit 1; }
 
+if grep -q 'MediaPlayerPrivateFFmpeg' "${ROOT}/third_party/webkit/Source/WebCore/platform/graphics/MediaPlayer.cpp"; then
+    echo "the tree already contains the ffmpeg engine (patch 0900): run webkit-port/media/sync-to-tree.sh" >&2
+    echo "and build it for real with scripts/ps5/build-webkit.sh webcore" >&2
+    exit 1
+fi
 "${ROOT}/webkit-port/media/sync-to-tree.sh" --patch >/dev/null
 TREE="${OUT}/patchwork/b/Source/WebCore/platform/graphics"
 

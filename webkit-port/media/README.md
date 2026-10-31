@@ -2,7 +2,7 @@
 
 `MediaPlayerPrivateFFmpeg` is a WebCore media engine (`USE(FFMPEG)`) for the PS5 homebrew build, where upstream's PlayStation port has no media backend at all. It plays `<video>`/`<audio>` from progressive files and HLS with software decoding on top of the payload SDK's static ffmpeg 7.0.1.
 
-`ffmpeg/` is the source of truth. `sync-to-tree.sh` turns it into `../patches/pending/0900-ffmpeg-media-player.patch`, which adds the files to WebKit as `Source/WebCore/platform/graphics/ffmpeg/` and wires them up. The patch is kept out of `patches/` on purpose: `fetch-webkit.sh` applies every `patches/*.patch`, and a new patch there would change the patch-set hash under a running build.
+`ffmpeg/` is the source of truth. It reaches WebKit as `../patches/0900-ffmpeg-media-player.patch`, a regular patch that `scripts/ps5/fetch-webkit.sh` applies after 0001-0010: it adds the files as `Source/WebCore/platform/graphics/ffmpeg/` and wires them up. The `USE_FFMPEG` option itself is part of patch 0001, which owns `OptionsPlayStation.cmake`.
 
 ## Files
 
@@ -95,21 +95,19 @@ Not supported: MSE (`supportsType` rejects `MediaSource`; the decoders, queues, 
 
 ## Integration
 
-After the current WebKit build has finished:
+The engine is built by default (`USE_FFMPEG=ON` in `scripts/ps5/build-webkit.sh`; `USE_FFMPEG=OFF scripts/ps5/build-webkit.sh configure` turns it off). After editing `ffmpeg/` or `FFmpeg.cmake`:
 
 ```sh
-webkit-port/media/sync-to-tree.sh            # regenerate the patch from ffmpeg/ (tree untouched)
-webkit-port/media/compile-check.sh           # optional: syntax-check against build-wk-ps5's flags
-webkit-port/media/sync-to-tree.sh --apply    # git apply it to third_party/webkit
-scripts/ps5/build-webkit.sh configure        # USE_FFMPEG defaults to ON with PS5_HOMEBREW
-scripts/ps5/build-webkit.sh webcore          # then: webkit
+webkit-port/media/sync-to-tree.sh            # copy ffmpeg/ + FFmpeg.cmake into third_party/webkit,
+                                             # then scripts/ps5/export-webkit-patches.sh
+scripts/ps5/build-webkit.sh webcore          # then: webkit, package
 ```
 
-To make it permanent, move the patch into `webkit-port/patches/`. Then add a `0900-ffmpeg-media-player` topic to `scripts/ps5/export-webkit-patches.sh`, covering the files listed in `sync-to-tree.sh` minus `Source/cmake/OptionsPlayStation.cmake`, which `0001` already owns: either fold that hunk into `0001` or let the export script own it there.
+`export-webkit-patches.sh` owns patch 0900 like every other patch (topic `0900-ffmpeg-media-player`; its file list follows `ffmpeg/`), rewrites it from the tree and updates the patch-set stamp, so `fetch-webkit.sh` stays consistent. `sync-to-tree.sh --patch` / `--apply` only bootstrap the patch from a tree that does not contain the engine yet (for example after moving to a new WebKit commit); `compile-check.sh` belongs to that pre-integration workflow and refuses to run on an integrated tree.
 
-What the patch changes:
+What the patches change:
 
-- `OptionsPlayStation.cmake`: `WEBKIT_OPTION_DEFINE(USE_FFMPEG … PRIVATE ${PS5_HOMEBREW})`, which depends on `ENABLE_VIDEO`. `USE_FFMPEG` reaches `cmakeconfig.h`, so `USE(FFMPEG)` works without an extra `-D`.
+- `OptionsPlayStation.cmake` (patch 0001): `WEBKIT_OPTION_DEFINE(USE_FFMPEG … PRIVATE ${PS5_HOMEBREW})`, which depends on `ENABLE_VIDEO`. `USE_FFMPEG` reaches `cmakeconfig.h`, so `USE(FFMPEG)` works without an extra `-D`.
 - `PlatformPlayStation.cmake`: `include(platform/FFmpeg.cmake)`. That file adds the sources and the include directory, finds the ffmpeg archives with `find_library` (`pkg_check_modules` is a no-op on PlayStation), and defines `FFMPEG_MEDIA_SDL_AUDIO=1` when `SDL2/SDL.h` and `libSDL2.a` exist.
 - `MediaPlayer.cpp`: `MediaPlayerPrivateFFmpeg::registerMediaEngine` under `USE(FFMPEG)`.
 - New enum value `FFmpeg` in `MediaPlayerType` (`MediaPlayer.h`), `MediaPlayerMediaEngineIdentifier` (`MediaPlayerEnums.h`) and its IPC serialization (`WebCoreArgumentCoders.serialization.in`), plus the exhaustive switch in `MediaPlayerPrivateRemote.cpp`.

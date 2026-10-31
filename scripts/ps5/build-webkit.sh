@@ -16,6 +16,7 @@
 #   PS5_DEPS_PREFIX   dependency prefix (build-deps)  (third_party/ps5-prefix)
 #   WEBKIT_BUILD_DIR  build directory                 (build-wk-ps5)
 #   JOBS              parallel compile jobs           (4)
+#   USE_FFMPEG        ffmpeg <video> engine (0900)    (ON)
 #   WEBKIT_CMAKE_ARGS extra arguments for cmake
 #
 # Requires third_party/webkit fetched and patched (scripts/ps5/fetch-webkit.sh)
@@ -82,6 +83,7 @@ configure() {
         -DENABLE_WEBASSEMBLY=OFF \
         -DENABLE_VIDEO=ON \
         -DENABLE_MEDIA_SOURCE=OFF \
+        -DUSE_FFMPEG="${USE_FFMPEG:-ON}" \
         -DENABLE_FULLSCREEN_API=ON \
         -DENABLE_GAMEPAD=ON \
         -DENABLE_REMOTE_INSPECTOR=OFF \
