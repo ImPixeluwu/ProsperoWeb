@@ -23,7 +23,7 @@ Overlay that builds the upstream WebKit **PlayStation port** (`-DPORT=PlayStatio
 
 | Patch | Why |
 |---|---|
-| `0001-cmake-playstation-homebrew-options` | `OptionsPlayStation.cmake`: `PS5_HOMEBREW` option; no `-sce-stdlib=v2`, no forced `-g`, no libc/libkernel lookup, no `--wrap=mmap`/`sce_sys` copy, `ENABLE_RESOURCE_USAGE` off, `ENABLE_GAMEPAD` allowed without the WPE backend, static `libWebKit` and no auxiliary executables; the `USE_FFMPEG` option of patch 0900 |
+| `0001-cmake-playstation-homebrew-options` | `OptionsPlayStation.cmake`: `PS5_HOMEBREW` option; no `-sce-stdlib=v2`, no forced `-g`, no libc/libkernel lookup, no `--wrap=mmap`/`sce_sys` copy, `ENABLE_RESOURCE_USAGE` off, `ENABLE_GAMEPAD` allowed without the WPE backend, static `libWebKit` and no auxiliary executables; the `USE_FFMPEG` option of patch 0900; `USE_THEME_ADWAITA` (patch 0012) |
 | `0002-wtf-posix-osallocator` | `OSAllocatorPOSIX.cpp` instead of the memory-extra based PlayStation allocator |
 | `0003-jsc-generic-shell` | generic `jsc.cpp` shell (no Sony libtestwrappers), MemoryExtra only if found |
 | `0004-webcore-curl-ca-bundle` | TLS roots from a PEM file (`$PS5BROWSER_CA_BUNDLE`, default `/data/ps5browser/cacert.pem`) instead of Sony's CertificateStore |
@@ -34,6 +34,7 @@ Overlay that builds the upstream WebKit **PlayStation port** (`-DPORT=PlayStatio
 | `0009-webkit-static-injected-bundle` | injected bundle = weak `WKBundleInitialize` linked into the executable (no Sony `library-bundle.h`) |
 | `0010-webcore-timing-function-destructors` | out-of-line `*TimingFunction` destructors: clang 18 / PS5 target leaves the vtable-referenced destructors undefined |
 | `0011-webkit-playstation-page-api` | `WKPagePrivatePlayStation`: `WKPageSetDrawsTransparentBackground()` (transparent chrome view); the Skia background fill in `WKPagePaint` clipped to the unpainted rect; `WKPageHandleKeyboardEvent` forwards modifiers and event text (keysym in `virtualKeyCode`); `WKPageHandleWheelEvent` sends one precise-pixel 2D event, none for a zero delta |
+| `0012-webcore-playstation-adwaita-theme` | form controls and scrollbars drawn by the Adwaita theme (`USE_THEME_ADWAITA`, set by patch 0001; `platform/Adwaita.cmake` and `themeAdwaita.css` included from `WebCore/CMakeLists.txt`): the upstream PlayStation `RenderTheme`/`Theme` are empty and `ControlFactory` falls back to `EmptyControlFactory`; the PlayStation theme singletons are compiled out, Adwaita's media controls and the coordinated async scrollbars (they need async scrolling) stay off |
 | `0900-ffmpeg-media-player` | `MediaPlayerPrivateFFmpeg` (`USE_FFMPEG`): software `<video>`/`<audio>` (progressive + HLS) on the SDK's ffmpeg; generated from `media/ffmpeg/`, edit there and run `media/sync-to-tree.sh` |
 
 Editing patches: change files in `third_party/webkit/`, then run `scripts/ps5/export-webkit-patches.sh`, which rewrites `patches/*.patch` (keeping each patch's header text) from the tree. Every changed path must belong to one topic listed in that script.

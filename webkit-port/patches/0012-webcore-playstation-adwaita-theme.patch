@@ -1,0 +1,129 @@
+Subject: [PATCH] WebCore: Adwaita form-control and scrollbar theme for the PS5 homebrew build
+
+The upstream PlayStation RenderThemePlayStation and ThemePlayStation are empty
+classes and ControlFactory falls back to EmptyControlFactory, so no form
+control (text field, checkbox, radio, select, button, range) gets any native
+size or painting. With PS5_HOMEBREW, patch 0001 sets USE_THEME_ADWAITA and
+WebCore/CMakeLists.txt includes platform/Adwaita.cmake (sources, themeAdwaita.css
+user-agent sheet), as the WPE, GTK and Windows ports do. The PlayStation theme
+singletons are compiled out under USE(THEME_ADWAITA). Adwaita's modern media
+controls stay off (no icons are bundled), as before.
+USE(COORDINATED_GRAPHICS_ASYNC_SCROLLBAR), implied by Adwaita + Skia +
+coordinated graphics, stays off: it needs the scrolling tree
+(ENABLE_ASYNC_SCROLLING), which the PlayStation port does not build.
+diff --git a/Source/WTF/wtf/PlatformUse.h b/Source/WTF/wtf/PlatformUse.h
+index 5b5ba4c94..234eac1ab 100644
+--- a/Source/WTF/wtf/PlatformUse.h
++++ b/Source/WTF/wtf/PlatformUse.h
+@@ -83,7 +83,9 @@
+ #define USE_SOUP 1
+ #endif
+ 
+-#if USE(COORDINATED_GRAPHICS) && USE(THEME_ADWAITA) && USE(SKIA)
++/* The PS5 homebrew build uses Adwaita without async scrolling (no scrolling
++   tree), which the coordinated async scrollbars need. */
++#if USE(COORDINATED_GRAPHICS) && USE(THEME_ADWAITA) && USE(SKIA) && !defined(PS5_HOMEBREW)
+ #define USE_COORDINATED_GRAPHICS_ASYNC_SCROLLBAR 1
+ #endif
+ 
+diff --git a/Source/WebCore/CMakeLists.txt b/Source/WebCore/CMakeLists.txt
+index 174257e32..b08675014 100644
+--- a/Source/WebCore/CMakeLists.txt
++++ b/Source/WebCore/CMakeLists.txt
+@@ -2925,6 +2925,11 @@ if (ENABLE_WEBCORE_TEST_SUPPORT)
+     WEBKIT_LIBRARY_DECLARE(WebCoreTestSupport)
+ endif ()
+ WEBKIT_INCLUDE_CONFIG_FILES_IF_EXISTS()
++if (PS5_HOMEBREW AND USE_THEME_ADWAITA)
++    # PlayStation homebrew build: Adwaita replaces the empty PlayStation
++    # RenderTheme/Theme/ScrollbarTheme (compiled out with USE(THEME_ADWAITA)).
++    include(platform/Adwaita.cmake)
++endif ()
+ WEBKIT_ADD_TARGET_UNSAFE_BUFFER_WARNINGS(WebCore)
+ if (ENABLE_WEBCORE_TEST_SUPPORT)
+     WEBKIT_ADD_TARGET_UNSAFE_BUFFER_WARNINGS(WebCoreTestSupport)
+diff --git a/Source/WebCore/platform/playstation/ScrollbarThemePlayStation.cpp b/Source/WebCore/platform/playstation/ScrollbarThemePlayStation.cpp
+index 39cd12019..239c80ab4 100644
+--- a/Source/WebCore/platform/playstation/ScrollbarThemePlayStation.cpp
++++ b/Source/WebCore/platform/playstation/ScrollbarThemePlayStation.cpp
+@@ -26,6 +26,9 @@
+ #include "config.h"
+ #include "ScrollbarThemePlayStation.h"
+ 
++// Superseded by the Adwaita theme (PS5 homebrew build, USE_THEME_ADWAITA).
++#if !USE(THEME_ADWAITA)
++
+ #include "HostWindow.h"
+ #include "NotImplemented.h"
+ #include "ScrollView.h"
+@@ -87,3 +90,5 @@ void ScrollbarThemePlayStation::paintThumb(GraphicsContext& context, Scrollbar&
+ }
+ 
+ } // namespace WebCore
++
++#endif // !USE(THEME_ADWAITA)
+diff --git a/Source/WebCore/platform/playstation/ThemePlayStation.cpp b/Source/WebCore/platform/playstation/ThemePlayStation.cpp
+index 4d950561d..61efb44cf 100644
+--- a/Source/WebCore/platform/playstation/ThemePlayStation.cpp
++++ b/Source/WebCore/platform/playstation/ThemePlayStation.cpp
+@@ -26,6 +26,9 @@
+ #include "config.h"
+ #include "ThemePlayStation.h"
+ 
++// Superseded by the Adwaita theme (PS5 homebrew build, USE_THEME_ADWAITA).
++#if !USE(THEME_ADWAITA)
++
+ #include <wtf/NeverDestroyed.h>
+ 
+ namespace WebCore {
+@@ -37,3 +40,5 @@ Theme& Theme::singleton()
+ }
+ 
+ } // namespace WebCore
++
++#endif // !USE(THEME_ADWAITA)
+diff --git a/Source/WebCore/rendering/adwaita/RenderThemeAdwaita.cpp b/Source/WebCore/rendering/adwaita/RenderThemeAdwaita.cpp
+index 15a41e942..3ae70784d 100644
+--- a/Source/WebCore/rendering/adwaita/RenderThemeAdwaita.cpp
++++ b/Source/WebCore/rendering/adwaita/RenderThemeAdwaita.cpp
+@@ -213,11 +213,20 @@ String RenderThemeAdwaita::extraDefaultStyleSheet()
+ 
+ Vector<String, 2> RenderThemeAdwaita::mediaControlsScripts()
+ {
++#if defined(PS5_HOMEBREW)
++    // No media-controls icons are bundled for the PS5 homebrew build, which
++    // had no built-in media controls with its previous (empty) theme: keep it so.
++    return { };
++#else
+     return { StringImpl::createWithoutCopying(ModernMediaControlsJavaScript) };
++#endif
+ }
+ 
+ Vector<String, 2> RenderThemeAdwaita::mediaControlsStyleSheets(const HTMLMediaElement&)
+ {
++#if defined(PS5_HOMEBREW)
++    return { };
++#endif
+     if (m_mediaControlsStyleSheet.isEmpty())
+         m_mediaControlsStyleSheet = StringImpl::createWithoutCopying(ModernMediaControlsUserAgentStyleSheet);
+     return { m_mediaControlsStyleSheet };
+diff --git a/Source/WebCore/rendering/playstation/RenderThemePlayStation.cpp b/Source/WebCore/rendering/playstation/RenderThemePlayStation.cpp
+index 3cdfc90a3..46e4471b0 100644
+--- a/Source/WebCore/rendering/playstation/RenderThemePlayStation.cpp
++++ b/Source/WebCore/rendering/playstation/RenderThemePlayStation.cpp
+@@ -27,6 +27,9 @@
+ #include "config.h"
+ #include "RenderThemePlayStation.h"
+ 
++// Superseded by the Adwaita theme (PS5 homebrew build, USE_THEME_ADWAITA).
++#if !USE(THEME_ADWAITA)
++
+ #include <wtf/NeverDestroyed.h>
+ 
+ namespace WebCore {
+@@ -38,3 +41,5 @@ RenderThemePlayStation& RenderTheme::singleton()
+ }
+ 
+ } // namespace WebCore
++
++#endif // !USE(THEME_ADWAITA)

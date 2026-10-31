@@ -19,10 +19,10 @@ With -DPS5_HOMEBREW=ON (defines PS5_HOMEBREW=1 for C/C++) this patch:
    ffmpeg media engine of patch 0900.
 Without PS5_HOMEBREW the behaviour is unchanged.
 diff --git a/Source/cmake/OptionsPlayStation.cmake b/Source/cmake/OptionsPlayStation.cmake
-index f55771f99..8bcde261a 100644
+index f55771f99..9014c6888 100644
 --- a/Source/cmake/OptionsPlayStation.cmake
 +++ b/Source/cmake/OptionsPlayStation.cmake
-@@ -1,7 +1,14 @@
+@@ -1,7 +1,18 @@
  set(PORT PlayStation)
  
 -string(APPEND CMAKE_C_FLAGS_RELEASE " -g")
@@ -32,6 +32,10 @@ index f55771f99..8bcde261a 100644
 +option(PS5_HOMEBREW "Build for the PS5 homebrew payload SDK" OFF)
 +if (PS5_HOMEBREW)
 +    add_definitions(-DPS5_HOMEBREW=1)
++    # The upstream PlayStation RenderTheme/Theme are empty stubs (Sony keeps
++    # its theme private); draw form controls and scrollbars with Adwaita as
++    # WPE, GTK and Windows do. Wired up in WebCore/CMakeLists.txt.
++    SET_AND_EXPOSE_TO_BUILD(USE_THEME_ADWAITA ON)
 +else ()
 +    string(APPEND CMAKE_C_FLAGS_RELEASE " -g")
 +    string(APPEND CMAKE_CXX_FLAGS_RELEASE " -g")
@@ -39,7 +43,7 @@ index f55771f99..8bcde261a 100644
  set(CMAKE_CONFIGURATION_TYPES "Debug" "Release")
  
  include(PlayStationModule)
-@@ -22,7 +29,9 @@ set(CMAKE_CXX_LINKER_WRAPPER_FLAG "-Wl,")
+@@ -22,7 +33,9 @@ set(CMAKE_CXX_LINKER_WRAPPER_FLAG "-Wl,")
  set(CMAKE_CXX_LINKER_WRAPPER_FLAG_SEP ",")
  
  # Set the standard libary version
@@ -50,7 +54,7 @@ index f55771f99..8bcde261a 100644
  
  set(ENABLE_WEBKIT_LEGACY OFF)
  set(ENABLE_WEBINSPECTORUI OFF)
-@@ -51,8 +60,11 @@ endmacro()
+@@ -51,8 +64,11 @@ endmacro()
  list(APPEND CMAKE_PREFIX_PATH ${WEBKIT_LIBRARIES_DIR})
  
  # Find libraries
@@ -64,7 +68,7 @@ index f55771f99..8bcde261a 100644
  find_package(ICU 70.1 REQUIRED COMPONENTS data i18n uc)
  find_package(Threads REQUIRED)
  
-@@ -171,6 +183,11 @@ endif ()
+@@ -171,6 +187,11 @@ endif ()
  
  # PlayStation Specific Options
  WEBKIT_OPTION_DEFINE(ENABLE_STATIC_JSC "Control whether to build a non-shared JSC" PUBLIC ON)
@@ -76,7 +80,7 @@ index f55771f99..8bcde261a 100644
  
  # Turn off JIT
  WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_JIT PRIVATE OFF)
-@@ -184,7 +201,12 @@ WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_ISO_MALLOC PRIVATE OFF)
+@@ -184,7 +205,12 @@ WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_ISO_MALLOC PRIVATE OFF)
  WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_FULLSCREEN_API PRIVATE ON)
  WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_PERIODIC_MEMORY_MONITOR PRIVATE ON)
  WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_REMOTE_INSPECTOR PRIVATE ON)
@@ -90,7 +94,7 @@ index f55771f99..8bcde261a 100644
  WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_SMOOTH_SCROLLING PRIVATE ON)
  
  if (USE_WPE_BACKEND_PLAYSTATION)
-@@ -196,6 +218,9 @@ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_APPLICATION_MANIFEST PRIVATE ${ENABLE_EX
+@@ -196,6 +222,9 @@ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_APPLICATION_MANIFEST PRIVATE ${ENABLE_EX
  
  if (USE_WPE_BACKEND_PLAYSTATION)
      WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GAMEPAD PRIVATE ${ENABLE_EXPERIMENTAL_FEATURES})
@@ -100,7 +104,7 @@ index f55771f99..8bcde261a 100644
  endif ()
  
  # Enable variation fonts when cairo >= 1.16, fontconfig >= 2.13.0, freetype >= 2.9.0 and harfbuzz >= 1.4.2
-@@ -254,7 +279,12 @@ set(CMAKE_CXX_STANDARD_LIBRARIES
+@@ -254,7 +283,12 @@ set(CMAKE_CXX_STANDARD_LIBRARIES
      "${CMAKE_CXX_STANDARD_LIBRARIES} ${C_STD_LIBRARY}"
  )
  
@@ -114,7 +118,7 @@ index f55771f99..8bcde261a 100644
  SET_AND_EXPOSE_TO_BUILD(HAVE_MAP_ALIGNED OFF)
  
  if (CMAKE_SYSTEM_NAME STREQUAL "PlayStation4")
-@@ -371,10 +401,20 @@ endif ()
+@@ -371,10 +405,20 @@ endif ()
  # for ranlib.
  set(PAL_LIBRARY_TYPE OBJECT)
  set(WebCore_LIBRARY_TYPE OBJECT)
@@ -138,7 +142,7 @@ index f55771f99..8bcde261a 100644
  
  # Enable multi process builds for Visual Studio
  if (NOT ${CMAKE_GENERATOR} MATCHES "Ninja")
-@@ -387,6 +427,9 @@ if (TARGET libdl::dl)
+@@ -387,6 +431,9 @@ if (TARGET libdl::dl)
      add_link_options("$<$<OR:$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>,$<STREQUAL:$<TARGET_PROPERTY:TYPE>,SHARED_LIBRARY>>:$<TARGET_PROPERTY:libdl::dl,INTERFACE_LINK_OPTIONS>>")
  endif ()
  
@@ -148,7 +152,7 @@ index f55771f99..8bcde261a 100644
  function(add_executable target)
      _add_executable(${ARGV})
      target_link_options(${target} PRIVATE "LINKER:--wrap=mmap")
-@@ -411,6 +454,9 @@ add_custom_target(playstation_tools_copy
+@@ -411,6 +458,9 @@ add_custom_target(playstation_tools_copy
          ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ebootparam.ini
  )
  set_target_properties(playstation_tools_copy PROPERTIES FOLDER "PlayStation")
