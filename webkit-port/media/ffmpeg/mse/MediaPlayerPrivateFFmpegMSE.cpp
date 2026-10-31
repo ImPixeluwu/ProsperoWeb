@@ -342,8 +342,10 @@ void MediaPlayerPrivateFFmpegMSE::enqueueSample(SourceBufferPrivateFFmpeg& sourc
             else if (parameters.extradata_size > 0) {
                 if (auto* data = av_packet_new_side_data(packet.get(), AV_PKT_DATA_NEW_EXTRADATA, parameters.extradata_size))
                     memcpy(data, parameters.extradata, parameters.extradata_size);
-                ffmpegMediaLog("mse: %s configuration change (init segment #%u, %dx%d)", pipeline.isVideo ? "video" : "audio",
-                    format.generation(), parameters.width, parameters.height);
+                // No decoder format: resent after a flush, not a change.
+                if (decoderFormat)
+                    ffmpegMediaLog("mse: %s configuration change (init segment #%u, %dx%d)", pipeline.isVideo ? "video" : "audio",
+                        format.generation(), parameters.width, parameters.height);
             }
         }
         pipeline.decoderFormat = const_cast<FFmpegMSETrackFormat*>(&format);
