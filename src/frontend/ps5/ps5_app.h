@@ -13,6 +13,7 @@
 
 #include "ps5browser/core/file_storage.h"
 #include "ps5browser/shell/shell_controller.h"
+#include "ps5_audio_server.h"
 #include "ps5_chrome_ui.h"
 #include "ps5_config.h"
 #include "ps5_engine_view.h"
@@ -49,6 +50,7 @@ class Ps5App {
 
   SDL_Window* window_ = nullptr;
   SDL_GameController* pad_ = nullptr;
+  std::unique_ptr<Ps5AudioServer> audio_server_;
 
   Ps5Config config_;
   std::unique_ptr<core::FileStorage> storage_;

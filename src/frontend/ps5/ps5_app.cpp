@@ -156,6 +156,7 @@ inline std::uint32_t blend_over(std::uint32_t src, std::uint32_t dst) {
 Ps5App::Ps5App() = default;
 
 Ps5App::~Ps5App() {
+  audio_server_.reset();  // before SDL_Quit
   if (pad_) {
     SDL_GameControllerClose(pad_);
   }
@@ -176,6 +177,13 @@ int Ps5App::run() {
   }
   log_printf("SDL_Init: ok, video driver %s",
              SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "(none)");
+
+  // Before the WebProcess is spawned, so its media can connect at once.
+  audio_server_ = Ps5AudioServer::start();
+  if (const char* test = std::getenv("PS5BROWSER_AUDIO_TEST");
+      audio_server_ && test && !std::strcmp(test, "1")) {
+    audio_server_->play_test_tone();
+  }
 
   storage_ = std::make_unique<core::FileStorage>(kBaseDir);
   config_ = Ps5Config::load(*storage_);

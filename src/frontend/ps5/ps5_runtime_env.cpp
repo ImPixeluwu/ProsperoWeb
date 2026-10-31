@@ -89,6 +89,9 @@ void setup_runtime_env(const std::string& base_dir) {
   set_default("SYSTEM_LANGUAGE", system_language_tag(""));
   set_default("TMPDIR", tmp);
   set_default("HOME", base_dir);
+  // The UI's audio server (ps5_audio_server.h); the WebProcess inherits it
+  // and forwards media audio there.
+  set_default("PS5BROWSER_AUDIO_PORT", "17772");
   apply_config_env(base_dir);
   // JavaScriptCore is built with the baseline/DFG JIT and WebAssembly, but
   // both stay off unless config.json "env" enables them: executable memory

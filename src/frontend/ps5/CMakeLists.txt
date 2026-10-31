@@ -67,6 +67,7 @@ pkg_check_modules(SDL2 REQUIRED sdl2)
 set(_frontend_sources
   main.cpp
   ps5_app.cpp
+  ps5_audio_server.cpp
   ps5_chrome_ui.cpp
   ps5_config.cpp
   ps5_diagnostics.cpp
@@ -97,7 +98,7 @@ target_include_directories(ps5browser_frontend_ps5_objs SYSTEM PRIVATE
   "${PS5BROWSER_THIRD_PARTY_DIR}")
 # ps5browser::core / ::shell provide the public headers the frontend consumes.
 target_link_libraries(ps5browser_frontend_ps5_objs PRIVATE ps5browser::core ps5browser::shell
-  ps5browser::spawn_util)  # ps5browser/spawn/spawn.h (the broker role entry)
+  ps5browser::spawn_util ps5browser::audio_server)  # ps5browser/spawn/spawn.h (the broker role entry)
 
 # The final executable. It cannot link until the WebKit archives exist, so it
 # is excluded from the default build: cmake --build <dir> --target ps5browser.
@@ -107,6 +108,7 @@ target_link_libraries(ps5browser PRIVATE
   ps5browser::shell
   ps5browser::core
   ps5browser::spawn
+  ps5browser::audio_server
   ${PS5WEBKIT_LINK_LIBRARIES}
   ${SDL2_LIBRARIES}
   SceImeDialog SceUserService)  # ps5_ime.cpp (also on SDL2's own link line)
