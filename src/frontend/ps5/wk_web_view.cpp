@@ -532,8 +532,12 @@ void WkWebView::run_javascript(const std::string& js) {
 void WkWebView::evaluate(const std::string& body, EvaluateDone done) {
   auto s = make_wk_string(body);
   auto* req = new EvaluateRequest{alive_, std::move(done)};
-  WKPageCallAsyncJavaScriptWithoutUserGesture(page_, s.get(), nullptr, nullptr, req,
+  // WebCore::ScriptController::callInWorld dereferences the argument
+  // dictionary unconditionally: a null one crashes the WebProcess (ud2).
+  WKDictionaryRef args = WKDictionaryCreate(nullptr, nullptr, 0);
+  WKPageCallAsyncJavaScriptWithoutUserGesture(page_, s.get(), args, nullptr, req,
                                               &evaluate_finished);
+  WKRelease(args);
 }
 
 // --- script-message bridge --------------------------------------------------
