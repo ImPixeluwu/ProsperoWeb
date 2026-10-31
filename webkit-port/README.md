@@ -23,7 +23,7 @@ Overlay that builds the upstream WebKit **PlayStation port** (`-DPORT=PlayStatio
 
 | Patch | Why |
 |---|---|
-| `0001-cmake-playstation-homebrew-options` | `OptionsPlayStation.cmake`: `PS5_HOMEBREW` option; no `-sce-stdlib=v2`, no forced `-g`, no libc/libkernel lookup, no `--wrap=mmap`/`sce_sys` copy, `ENABLE_RESOURCE_USAGE` off, `ENABLE_GAMEPAD` allowed without the WPE backend, static `libWebKit` and no auxiliary executables; the `USE_FFMPEG` option of patch 0900; `USE_THEME_ADWAITA` (patch 0012) |
+| `0001-cmake-playstation-homebrew-options` | `OptionsPlayStation.cmake`: `PS5_HOMEBREW` option; no `-sce-stdlib=v2`, no forced `-g`, no libc/libkernel lookup, no `--wrap=mmap`/`sce_sys` copy, `ENABLE_RESOURCE_USAGE` off, `ENABLE_GAMEPAD` allowed without the WPE backend, static `libWebKit` and no auxiliary executables; the `USE_FFMPEG` option of patch 0900; `USE_THEME_ADWAITA` (patch 0012); `ENABLE_USER_MESSAGE_HANDLERS` on (native `window.webkit.messageHandlers` for the shell's page bridge) |
 | `0002-wtf-posix-osallocator` | `OSAllocatorPOSIX.cpp` instead of the memory-extra based PlayStation allocator |
 | `0003-jsc-generic-shell` | generic `jsc.cpp` shell (no Sony libtestwrappers), MemoryExtra only if found |
 | `0004-webcore-curl-ca-bundle` | TLS roots from a PEM file (`$PS5BROWSER_CA_BUNDLE`, default `/data/ps5browser/cacert.pem`) instead of Sony's CertificateStore |

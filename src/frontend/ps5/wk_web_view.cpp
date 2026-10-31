@@ -61,6 +61,9 @@ constexpr std::uint64_t kBridgePollMs = 40;
 constexpr std::uint64_t kBridgePollTimeoutMs = 3000;
 // Name of the top frame's drain function (see bridge_script()).
 constexpr const char* kBridgeDrain = "__ps5browserBridge";
+// Poll answer when the page has native script message handlers (a drained
+// batch is a JSON array, so it cannot look like this).
+constexpr const char* kBridgeNative = "#native";
 
 // The document-start shim behind WkWebView::poll_all(). JS builtins are
 // captured before page scripts run, so a page cannot break the queue by
@@ -279,7 +282,7 @@ WKPageRef ui_create_new_page(WKPageRef, WKPageConfigurationRef,
 
 void script_message(WKScriptMessageRef message, WKCompletionListenerRef reply,
                      const void* ci) {
-  self_of(ci)->note_native_message();
+  self_of(ci)->note_native_message("message received");
   auto& cb = self_of(ci)->callbacks();
   if (cb.script_message && message) {
     // A string body is passed through as is (it is expected to hold JSON
@@ -570,10 +573,11 @@ void WkWebView::poll_all() {
   }
 }
 
-void WkWebView::note_native_message() {
+void WkWebView::note_native_message(const char* why) {
   if (!native_messages_) {
     native_messages_ = true;
-    log_printf("view %s: native script messages, bridge polling stops", name_.c_str());
+    log_printf("view %s: native script messages (%s), bridge polling stops", name_.c_str(),
+               why);
   }
 }
 
@@ -587,11 +591,18 @@ void WkWebView::poll_script_messages(std::uint64_t now) {
   last_poll_ms_ = now;
   poll_started_ms_ = now;
   poll_in_flight_ = true;
-  evaluate(std::string("return typeof window.") + kBridgeDrain + " === 'function' ? window." +
-               kBridgeDrain + "() : '';",
+  // Without the drain function the shim stood down because WebKit provides
+  // window.webkit.messageHandlers itself (ENABLE_USER_MESSAGE_HANDLERS):
+  // kBridgeNative says so, and polling stops for this view.
+  evaluate(std::string("var d = window.") + kBridgeDrain +
+               "; if (typeof d === 'function') return d();"
+               " var h = window.webkit && window.webkit.messageHandlers;"
+               " return h && h['" + name_ + "'] ? '" + kBridgeNative + "' : '';",
            [this](std::optional<std::string> batch) {
              poll_in_flight_ = false;
-             if (batch && !batch->empty()) {
+             if (batch && *batch == kBridgeNative) {
+               note_native_message("handler present");
+             } else if (batch && !batch->empty()) {
                deliver_bridged(*batch);
              }
            });

@@ -123,19 +123,20 @@ class WkWebView {
   // needs_display rect since the last call.
   DirtyRect take_dirty();
 
-  // Script-message bridge. The PlayStation WebKit port builds without
-  // ENABLE_USER_MESSAGE_HANDLERS, so window.webkit.messageHandlers does not
-  // exist there. Every view injects a document-start shim that provides
+  // Script-message bridge, the fallback for a WebKit built without
+  // ENABLE_USER_MESSAGE_HANDLERS (upstream PlayStation default; the PS5 build
+  // turns it on), where window.webkit.messageHandlers does not exist. Every
+  // view injects a document-start shim that provides
   // window.webkit.messageHandlers.<name>.postMessage() and queues the bodies
   // (subframes forward theirs to the top frame); poll_all() drains the
   // queues through evaluate() and delivers them to script_message. When
-  // native handlers do exist, the shim stands aside and polling stops after
-  // the first native message.
+  // native handlers do exist, the shim stands aside and polling stops at the
+  // first poll that finds them or the first native message.
   static void poll_all();
   // Marks the view as having started a navigation (polling starts then).
   void note_navigation() { navigated_ = true; }
   // Called by the native handler trampoline.
-  void note_native_message();
+  void note_native_message(const char* why);
 
  private:
   // C-API trampolines (clientInfo == this).
