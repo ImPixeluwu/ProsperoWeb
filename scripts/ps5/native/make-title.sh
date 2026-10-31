@@ -124,9 +124,10 @@ make_dds
 
 # --- 4. param.json from assets/app.json (single source of truth). -----------
 make_param() {
-    python3 -I - "${ROOT}/assets/app.json" "${WORK}/param.json" <<'PY'
+    python3 -I - "${ROOT}/assets/app.json" "${WORK}/param.json" "${NATIVE_FLEXIBLE_MB:-512}" <<'PY'
 import json, re, sys
 app = json.load(open(sys.argv[1], encoding="utf-8"))
+flexible_mb = int(sys.argv[3])
 tid = app["titleId"]
 assert re.fullmatch(r"[A-Z]{4}\d{5}", tid), f"bad titleId {tid!r}"
 assert re.fullmatch(r"[A-Z]{2}\d{4}-" + tid + r"_00-[A-Z0-9]{16}", app["contentId"])
@@ -145,6 +146,14 @@ param = {
     # browser profile itself lives at /data/prosperoweb (ShadowMountPlus
     # mounts /data writable via nullfs for a homebrew title).
     "downloadDataSize": 256,
+    # Flexible memory: the image, thread stacks, the system libc heap and
+    # anonymous mmap come from it (the UI's own heap is direct memory,
+    # src/frontend/ps5/native/native_memory.c). syobon-action-ps5 runs with
+    # 256 MiB (sce_sys/param.json, on fw 13.42); this image alone is about
+    # 130 MiB, hence 512 MiB by default (NATIVE_FLEXIBLE_MB). The largest
+    # value the system accepts is not known; docs/native-title.md says how
+    # to lower it on the console if the title does not start.
+    "kernel": {"flexibleMemorySize": flexible_mb << 20},
     "localizedParameters": {
         "defaultLanguage": app["language"],
         app["language"]: {"titleName": app["name"]},
