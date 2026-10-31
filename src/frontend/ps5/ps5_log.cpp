@@ -43,3 +43,17 @@ void log_printf(const char* fmt, ...) {
 }
 
 }  // namespace ps5browser::frontend
+
+// The C logging contract of the spawner (ps5browser/spawn/spawn.h).
+extern "C" void ps5_log_line(const char* line) {
+  ps5browser::frontend::log_line(line ? line : "");
+}
+
+extern "C" void ps5_log_printf(const char* fmt, ...) {
+  char buf[1024];
+  va_list ap;
+  va_start(ap, fmt);
+  std::vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  ps5browser::frontend::log_line(buf);
+}

@@ -28,6 +28,15 @@ int ps5_spawn_self(const char* const* argv, const int* fds, int nfds);
 // Returns 0 on success, -1 on failure. Safe for an already-dead pid.
 int ps5_terminate_process(int pid);
 
+// --- Logging, provided by the executable (src/frontend/ps5/ps5_log.cpp). ---
+//
+// The spawner reports every spawn and every child-side failure through these,
+// so they reach /data/ps5browser/log.txt and not only stderr. Thread-safe:
+// WebKit launches processes from a work queue thread.
+
+void ps5_log_line(const char* line);
+void ps5_log_printf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+
 // --- Pure helpers (compiled on host and target; unit-tested on host). ------
 
 // Maximum number of extra descriptors ps5_spawn_self() will forward. The IPC

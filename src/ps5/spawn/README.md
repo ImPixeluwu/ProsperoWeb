@@ -28,7 +28,12 @@ Changes made for ps5-browser (also noted in each file's header):
   child as zeros, an already open child descriptor replaced by `pt_dup2` is
   logged, and a child that fails during setup is reaped after `SIGKILL`.
   The `EVFILT_PROC`/`NOTE_EXEC` registration after `rfork_thread` is kept in
-  upstream's order (elfldr, shsrv and websrv all do the same).
+  upstream's order (elfldr, shsrv and websrv all do the same); a failed
+  registration (a child that already exited) no longer skips the `waitpid`.
+  A failing `sys_budget_set(0)` in the rfork child is not fatal (see
+  "Budget"), and every child-side failure (`open /dev/deci_std*`,
+  `ptrace(PT_TRACE_ME)`, `execve`) and parent-side failure is reported to
+  the caller through `elfldr_spawn_report_t`.
 
 Kernel read/write comes from the payload arguments parsed by the ps5-payload
 SDK crt; the loader uses `kernel_*` from `<ps5/kernel.h>` where upstream elfldr
@@ -43,3 +48,37 @@ second (never `waitpid(-1)`, which would also consume the loader's ptrace
 stops).
 `spawn_util.c` is pure (no ptrace/kernel) and is unit-tested on the host
 (`tests/ps5`).
+
+## Budget
+
+Upstream elfldr's rfork entry calls `sys_budget_set(0)` (syscall `0x23b`)
+in the child and aborts the spawn if it fails (`elfldr.c`, rfork entry;
+`selfldr.c` does the same). That is right for a payload started by elfldr,
+which runs where budget 0 exists. Started from the websrv tile, the UI is
+the hbldr big app (FAKE00000), and there the call fails with `ENOENT`: on
+the first console run (firmware 10.00) every WebProcess/NetworkProcess
+spawn died before `execve`, so nothing was ever painted.
+
+hbldr does not know a better budget id for a big app either: it issues the
+same `sys_budget_set(0)` on the big app itself through `pt_syscall` and
+ignores the result, and only when `kernel_get_fw_version() > 0x10000000`
+because on older firmware it can panic the kernel when the big app is
+restarted (websrv `src/ps5/hbldr.c:390-396`, commit `7748df9`). websrv's
+own elfldr copy keeps the fatal call in its rfork entry
+(`src/ps5/elfldr.c:626-631`). So the spawner tries budget 0 and, when that
+fails, keeps the budget the child inherited from the UI (the big app's).
+The result is logged for every spawn, e.g.
+
+    spawn: role=WebProcess pid=1120 fds=[25->3] ok in 41ms, budget_set(0) failed: ENOENT (continuing with inherited budget)
+
+Whether the inherited big-app budget gives WebProcess enough memory is
+still to be confirmed on the console.
+
+## Logging
+
+`spawn.c` writes through `ps5_log_line()`/`ps5_log_printf()` (declared in
+`ps5browser/spawn/spawn.h`, defined by the frontend's `ps5_log.cpp`), so
+spawn results, failed stages and child exits reach
+`/data/ps5browser/log.txt`. A spawn that fails makes WebKit's launcher
+(patch 0005) print its own line to stderr only; the `spawn: ... FAILED`
+line written just before it carries the same role and result.

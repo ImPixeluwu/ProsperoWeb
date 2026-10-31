@@ -19,6 +19,8 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 
+#include <ps5/kernel.h>
+
 #include "elfldr.h"
 
 // Our own ELF image, mapped (or, if mmap fails, read) once and kept for the
@@ -56,19 +58,19 @@ static uint8_t* read_whole_file(int fd, size_t size) {
 static int load_self_image(const char* argv0) {
   char path[1024];
   if (ps5_spawn_resolve_self_path(argv0, getenv_const, path, sizeof(path)) != 0) {
-    fprintf(stderr, "ps5_spawn: cannot resolve self ELF path\n");
+    ps5_log_line("spawn: cannot resolve the self ELF path");
     return -1;
   }
 
   int fd = open(path, O_RDONLY);
   if (fd < 0) {
-    fprintf(stderr, "ps5_spawn: cannot open %s: %s\n", path, strerror(errno));
+    ps5_log_printf("spawn: cannot open %s: %s", path, strerror(errno));
     return -1;
   }
 
   struct stat st;
   if (fstat(fd, &st) != 0 || st.st_size <= 0) {
-    fprintf(stderr, "ps5_spawn: cannot stat %s\n", path);
+    ps5_log_printf("spawn: cannot stat %s", path);
     close(fd);
     return -1;
   }
@@ -81,17 +83,17 @@ static int load_self_image(const char* argv0) {
     bytes = map;
     mapped = 1;
   } else {
-    fprintf(stderr, "ps5_spawn: mmap %s failed (%s), reading it\n", path, strerror(errno));
+    ps5_log_printf("spawn: mmap %s failed (%s), reading it", path, strerror(errno));
     bytes = read_whole_file(fd, size);
   }
   close(fd);
   if (!bytes) {
-    fprintf(stderr, "ps5_spawn: cannot read %s\n", path);
+    ps5_log_printf("spawn: cannot read %s", path);
     return -1;
   }
 
   if (elfldr_sanity_check(bytes, size) != 0) {
-    fprintf(stderr, "ps5_spawn: %s is not a valid ELF\n", path);
+    ps5_log_printf("spawn: %s is not a valid ELF", path);
     if (mapped) {
       munmap((void*)bytes, size);
     } else {
@@ -100,8 +102,9 @@ static int load_self_image(const char* argv0) {
     return -1;
   }
 
-  fprintf(stderr, "ps5_spawn: self ELF %s (%zu bytes, %s)\n", path, size,
-          mapped ? "mapped" : "read");
+  ps5_log_printf("spawn: self ELF %s (%zu bytes, %s), fw 0x%08x, ui pid %d",
+                 path, size, mapped ? "mapped" : "read",
+                 (unsigned)kernel_get_fw_version(), (int)getpid());
   g_image_bytes = bytes;
   g_image_size = size;
   return 0;
@@ -147,11 +150,14 @@ static void sleep_ms(long ms) {
 }
 
 // 1 if pid is gone (reaped now, or not our child any more), 0 if still alive.
-static int try_reap(pid_t pid) {
+// *status receives the wait status when it was reaped now, -1 otherwise.
+static int try_reap(pid_t pid, int* status) {
+  *status = -1;
   for (;;) {
-    int status = 0;
-    pid_t r = waitpid(pid, &status, WNOHANG);
+    int st = 0;
+    pid_t r = waitpid(pid, &st, WNOHANG);
     if (r == pid) {
+      *status = st;
       return 1;
     }
     if (r == 0) {
@@ -161,6 +167,45 @@ static int try_reap(pid_t pid) {
       continue;
     }
     return 1;  // ECHILD: already reaped
+  }
+}
+
+// Describes a wait status ("exit 1", "signal 9") into buf.
+static const char* describe_status(int status, char* buf, size_t len) {
+  if (status == -1) {
+    snprintf(buf, len, "status unknown");
+  } else if (WIFEXITED(status)) {
+    snprintf(buf, len, "exit %d", WEXITSTATUS(status));
+  } else if (WIFSIGNALED(status)) {
+    snprintf(buf, len, "signal %d", WTERMSIG(status));
+  } else {
+    snprintf(buf, len, "status 0x%x", status);
+  }
+  return buf;
+}
+
+// Symbolic name of the errno values a spawn is expected to hit.
+static const char* errno_name(int err) {
+  switch (err) {
+    case 0: return "0";
+    case EPERM: return "EPERM";
+    case ENOENT: return "ENOENT";
+    case ESRCH: return "ESRCH";
+    case EINTR: return "EINTR";
+    case EIO: return "EIO";
+    case E2BIG: return "E2BIG";
+    case ENOEXEC: return "ENOEXEC";
+    case EBADF: return "EBADF";
+    case ECHILD: return "ECHILD";
+    case EAGAIN: return "EAGAIN";
+    case ENOMEM: return "ENOMEM";
+    case EACCES: return "EACCES";
+    case EFAULT: return "EFAULT";
+    case EBUSY: return "EBUSY";
+    case EINVAL: return "EINVAL";
+    case EMFILE: return "EMFILE";
+    case ENOSYS: return "ENOSYS";
+    default: return "errno";
   }
 }
 
@@ -181,8 +226,11 @@ static void* reaper_main(void* arg) {
     sleep_ms(PS5_SPAWN_REAP_INTERVAL_MS);
     pthread_mutex_lock(&g_children_lock);
     for (int i = 0; i < g_nchildren;) {
-      if (try_reap(g_children[i])) {
-        fprintf(stderr, "ps5_spawn: child %d exited\n", (int)g_children[i]);
+      int status;
+      if (try_reap(g_children[i], &status)) {
+        char desc[32];
+        ps5_log_printf("spawn: child pid=%d exited (%s)", (int)g_children[i],
+                       describe_status(status, desc, sizeof(desc)));
         g_children[i] = g_children[--g_nchildren];
       } else {
         i++;
@@ -198,7 +246,7 @@ static void track_child(pid_t pid) {
   if (g_nchildren < PS5_SPAWN_MAX_CHILDREN) {
     g_children[g_nchildren++] = pid;
   } else {
-    fprintf(stderr, "ps5_spawn: too many children, %d is not reaped\n", (int)pid);
+    ps5_log_printf("spawn: too many children, %d is not reaped", (int)pid);
   }
   if (!g_reaper_started) {
     pthread_t thread;
@@ -206,22 +254,76 @@ static void track_child(pid_t pid) {
       pthread_detach(thread);
       g_reaper_started = 1;
     } else {
-      fprintf(stderr, "ps5_spawn: cannot start the reaper thread\n");
+      ps5_log_line("spawn: cannot start the reaper thread");
     }
   }
   pthread_mutex_unlock(&g_children_lock);
 }
 
+static long now_ms(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+// "12->3 13->4" for the log.
+static void describe_fds(const struct ps5_spawn_fd_entry* table, int n, char* buf,
+                         size_t len) {
+  size_t used = 0;
+  buf[0] = '\0';
+  for (int i = 0; i < n && used < len; i++) {
+    int w = snprintf(buf + used, len - used, "%s%d->%d", i ? " " : "",
+                     table[i].parent_fd, table[i].child_fd);
+    if (w < 0) {
+      break;
+    }
+    used += (size_t)w;
+  }
+}
+
+// One line per spawn with the outcome, the budget result and, on failure,
+// the stage that failed (child- or parent-side).
+static void log_spawn_result(const char* role, int pid, const char* fds,
+                             const elfldr_spawn_report_t* report, long elapsed_ms) {
+  char budget[96];
+  if (report->budget_errno == 0) {
+    snprintf(budget, sizeof(budget), "budget_set(0) ok");
+  } else {
+    snprintf(budget, sizeof(budget),
+             "budget_set(0) failed: %s (continuing with inherited budget)",
+             errno_name(report->budget_errno));
+  }
+  if (pid > 0) {
+    ps5_log_printf("spawn: role=%s pid=%d fds=[%s] ok in %ldms, %s", role, pid, fds,
+                   elapsed_ms, budget);
+    return;
+  }
+  char status[32] = "";
+  if (report->child_status) {
+    describe_status(report->child_status, status, sizeof(status));
+  }
+  ps5_log_printf("spawn: role=%s FAILED at %s: %s %d (%s)%s%s, %s", role,
+                 report->failed_stage ? report->failed_stage : "unknown stage",
+                 errno_name(report->failed_errno), report->failed_errno,
+                 report->failed_errno ? strerror(report->failed_errno) : "no errno",
+                 status[0] ? ", child " : "", status, budget);
+}
+
 int ps5_spawn_self(const char* const* argv, const int* fds, int nfds) {
   if (!argv || !argv[0]) {
+    ps5_log_line("spawn: called without a role");
     return -1;
   }
+  const char* role = argv[0];
 
   struct ps5_spawn_fd_entry table[PS5_SPAWN_MAX_FDS];
   int ntable = ps5_spawn_build_fd_table(fds, nfds, table, PS5_SPAWN_MAX_FDS);
   if (ntable < 0) {
+    ps5_log_printf("spawn: role=%s FAILED: invalid fd table (nfds=%d)", role, nfds);
     return -1;
   }
+  char fd_desc[96];
+  describe_fds(table, ntable, fd_desc, sizeof(fd_desc));
 
   // argv[0] is the child's role name, never a path: resolve the image from
   // PS5BROWSER_SELF_PATH (exported by main() from the UI's own argv[0]) or
@@ -229,6 +331,7 @@ int ps5_spawn_self(const char* const* argv, const int* fds, int nfds) {
   size_t image_size = 0;
   const uint8_t* image = self_image(NULL, &image_size);
   if (!image) {
+    ps5_log_printf("spawn: role=%s FAILED: no self ELF image", role);
     return -1;
   }
 
@@ -240,6 +343,7 @@ int ps5_spawn_self(const char* const* argv, const int* fds, int nfds) {
   }
   char** child_argv = calloc((size_t)argc + 1, sizeof(char*));
   if (!child_argv) {
+    ps5_log_printf("spawn: role=%s FAILED: out of memory", role);
     return -1;
   }
   int ok = 1;
@@ -250,7 +354,13 @@ int ps5_spawn_self(const char* const* argv, const int* fds, int nfds) {
 
   int pid = -1;
   if (ok) {
-    pid = elfldr_spawn_fds(child_argv, table, ntable, image, image_size);
+    elfldr_spawn_report_t report;
+    ps5_log_printf("spawn: role=%s starting, fds=[%s]", role, fd_desc);
+    const long t0 = now_ms();
+    pid = elfldr_spawn_fds(child_argv, table, ntable, image, image_size, &report);
+    log_spawn_result(role, pid, fd_desc, &report, now_ms() - t0);
+  } else {
+    ps5_log_printf("spawn: role=%s FAILED: out of memory", role);
   }
   if (pid > 0) {
     track_child(pid);
@@ -282,12 +392,13 @@ int ps5_terminate_process(int pid) {
   // SIGKILL is asynchronous: wait (bounded) for the child to become
   // reapable instead of a single WNOHANG that usually comes too early.
   for (int waited = 0; waited < PS5_SPAWN_KILL_TIMEOUT_MS; waited += 10) {
-    if (try_reap(pid)) {
+    int status;
+    if (try_reap(pid, &status)) {
       return 0;
     }
     sleep_ms(10);
   }
-  fprintf(stderr, "ps5_spawn: child %d did not exit after SIGKILL\n", pid);
+  ps5_log_printf("spawn: child pid=%d did not exit after SIGKILL", pid);
   track_child(pid);  // let the reaper collect it later
   return -1;
 }

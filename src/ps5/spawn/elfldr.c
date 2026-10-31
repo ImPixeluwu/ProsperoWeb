@@ -27,7 +27,11 @@ along with this program; see the file COPYING. If not, see
      - elfldr_read()/elfldr_find_pid() dropped (not used by ps5-browser).
      - the load mirror is calloc'ed (memsz gaps reach the child as zeros), a
        replaced child descriptor is logged, and a child that fails to set up
-       is reaped after SIGKILL. */
+       is reaped after SIGKILL.
+     - a failing sys_budget_set(0) in the rfork child is not fatal (under
+       hbldr the parent is a big app and budget 0 does not exist there), and
+       the child reports its stage/errno to the parent through the shared
+       elfldr_spawn_report_t (see README.md, "Budget"). */
 
 #include <elf.h>
 #include <fcntl.h>
@@ -587,27 +591,51 @@ sys_budget_set(long budget) {
 }
 
 
+/* Argument of elfldr_rfork_entry. The child runs on the parent's memory
+   (RFMEM), so it reports into *report directly; the parent reads the fields
+   only after waitpid() has seen the child stop at exec or die. */
+typedef struct elfldr_rfork_args {
+  char* const* argv;
+  elfldr_spawn_report_t* report;
+} elfldr_rfork_args_t;
+
+
+static int
+elfldr_rfork_fail(elfldr_rfork_args_t* args, const char* stage) {
+  args->report->failed_errno = errno;
+  args->report->failed_stage = stage;
+  klog_perror(stage);
+  return -1;
+}
+
+
 static int
 elfldr_rfork_entry(void* ctx) {
-  char** argv = (char**)ctx;
+  elfldr_rfork_args_t* args = (elfldr_rfork_args_t*)ctx;
 
+  /* Upstream treats this as fatal. A payload started by elfldr runs in a
+     process where budget 0 exists; a big app started by hbldr does not
+     (ENOENT), and the child then keeps the budget it inherited. hbldr itself
+     issues the same call on the big app and ignores its result. */
   if(sys_budget_set(0)) {
-    klog_perror("sys_budget_set");
-    return -1;
+    args->report->budget_errno = errno ? errno : -1;
+    klog_perror("sys_budget_set(0), keeping the inherited budget");
   }
-  if(open("/dev/deci_stdin", O_RDONLY) < 0 ||
-     open("/dev/deci_stdout", O_WRONLY) < 0 ||
-     open("/dev/deci_stderr", O_WRONLY) < 0) {
-    klog_perror("open");
-    return -1;
+  if(open("/dev/deci_stdin", O_RDONLY) < 0) {
+    return elfldr_rfork_fail(args, "child open /dev/deci_stdin");
+  }
+  if(open("/dev/deci_stdout", O_WRONLY) < 0) {
+    return elfldr_rfork_fail(args, "child open /dev/deci_stdout");
+  }
+  if(open("/dev/deci_stderr", O_WRONLY) < 0) {
+    return elfldr_rfork_fail(args, "child open /dev/deci_stderr");
   }
   if(ptrace(PT_TRACE_ME, 0, 0, 0)) {
-    klog_perror("ptrace");
-    return -1;
+    return elfldr_rfork_fail(args, "child ptrace(PT_TRACE_ME)");
   }
-  execve(SceSpZeroConf, argv, 0);
-  klog_perror("execve");
-  return -1;
+  args->report->failed_stage = "child execve";
+  execve(SceSpZeroConf, args->argv, 0);
+  return elfldr_rfork_fail(args, "child execve");
 }
 
 
@@ -620,58 +648,94 @@ elfldr_abort(pid_t pid) {
 }
 
 
+/* Records a parent-side failure in the report and returns -1. */
+static pid_t
+elfldr_spawn_fail(elfldr_spawn_report_t* report, const char* stage, int err) {
+  report->failed_stage = stage;
+  report->failed_errno = err;
+  return -1;
+}
+
+
 pid_t
 elfldr_spawn_fds(char* const argv[], const struct ps5_spawn_fd_entry* fds,
-		 int nfds, const uint8_t* elf, size_t elf_size) {
+		 int nfds, const uint8_t* elf, size_t elf_size,
+		 elfldr_spawn_report_t* report) {
+  elfldr_rfork_args_t args;
   intptr_t libkernel_entry;
   off_t need_reloc_offset;
   intptr_t eboot_entry;
   off_t main_offset;
   struct kevent evt;
+  int status = 0;
   void* stack;
   pid_t pid;
   int kq;
 
+  memset(report, 0, sizeof(*report));
+
   if(elfldr_sanity_check(elf, elf_size)) {
     LOG_PUTS("elfldr_sanity_check failed");
-    return -1;
+    return elfldr_spawn_fail(report, "elfldr_sanity_check", 0);
   }
 
   if((kq = kqueue()) < 0) {
     LOG_PERROR("kqueue");
-    return -1;
+    return elfldr_spawn_fail(report, "kqueue", errno);
   }
 
   if(!(stack = malloc(PAGE_SIZE))) {
     LOG_PERROR("malloc");
     close(kq);
-    return -1;
+    return elfldr_spawn_fail(report, "malloc stack", errno);
   }
 
+  args.argv = argv;
+  args.report = report;
   if((pid = rfork_thread(RFPROC | RFCFDG | RFMEM, stack+PAGE_SIZE-8,
-			 elfldr_rfork_entry, (void*)argv)) < 0) {
+			 elfldr_rfork_entry, &args)) < 0) {
+    int err = errno;
     LOG_PERROR("rfork_thread");
     free(stack);
     close(kq);
-    return -1;
+    return elfldr_spawn_fail(report, "rfork_thread", err);
   }
 
+  /* A child that already exited cannot be registered (ESRCH); waitpid()
+     still returns for both outcomes (exec trap stop, or exit), so a kevent
+     failure is logged but does not skip the wait. */
   EV_SET(&evt, pid, EVFILT_PROC, EV_ADD, NOTE_EXEC, 0, 0);
-  if(kevent(kq, &evt, 1, &evt, 1, 0) < 0 || waitpid(pid, 0, 0) < 0) {
-    LOG_PERROR("kevent/waitpid");
+  if(kevent(kq, &evt, 1, &evt, 1, 0) < 0) {
+    LOG_PERROR("kevent");
+  }
+  if(waitpid(pid, &status, 0) < 0) {
+    int err = errno;
+    LOG_PERROR("waitpid");
     free(stack);
     close(kq);
-    return -1;
+    return elfldr_spawn_fail(report, "waitpid", err);
   }
 
   free(stack);
   close(kq);
 
+  /* A child that failed before execve exited instead of stopping at the
+     exec trap; report_t already holds its stage and errno. */
+  if(!WIFSTOPPED(status)) {
+    report->child_status = status;
+    if(!report->failed_stage) {
+      report->failed_stage = "child exited before exec";
+    }
+    return -1;
+  }
+  report->failed_stage = NULL;
+  report->failed_errno = 0;
+
   if(!(libkernel_entry = kernel_dynlib_entry_addr(pid, 1)) ||
      !(eboot_entry = kernel_dynlib_entry_addr(pid, 0))) {
     LOG_PUTS("kernel_dynlib_entry_addr failed");
     elfldr_abort(pid);
-    return -1;
+    return elfldr_spawn_fail(report, "kernel_dynlib_entry_addr", 0);
   }
 
   if(kernel_get_fw_version() < 0x14000000) {
@@ -683,17 +747,19 @@ elfldr_spawn_fds(char* const argv[], const struct ps5_spawn_fd_entry* fds,
   }
 
   if(pt_breakat(pid, libkernel_entry + need_reloc_offset)) {
+    int err = errno;
     LOG_PERROR("pt_breakat");
     elfldr_abort(pid);
-    return -1;
+    return elfldr_spawn_fail(report, "pt_breakat libkernel", err);
   }
 
   elfldr_set_heap_size(pid, -1);
 
   if(pt_breakat(pid, eboot_entry + main_offset)) {
+    int err = errno;
     LOG_PERROR("pt_breakat");
     elfldr_abort(pid);
-    return -1;
+    return elfldr_spawn_fail(report, "pt_breakat main", err);
   }
 
   elfldr_set_procname(pid, argv[0]);
@@ -702,7 +768,7 @@ elfldr_spawn_fds(char* const argv[], const struct ps5_spawn_fd_entry* fds,
   if(elfldr_exec_fds(pid, fds, nfds, elf)) {
     kill(pid, SIGKILL);
     waitpid(pid, 0, 0);
-    return -1;
+    return elfldr_spawn_fail(report, "elfldr_exec_fds", 0);
   }
 
   return pid;

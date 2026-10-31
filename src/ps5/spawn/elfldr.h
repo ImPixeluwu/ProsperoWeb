@@ -16,7 +16,8 @@ along with this program; see the file COPYING. If not, see
 
 /* Derived from ps5-payload-dev/elfldr (commit 2a8da002), elfldr.h.
    Changes for ps5-browser: the spawn/exec entry points take a table of
-   extra descriptors to inject at child fd 3+i (see elfldr.c). */
+   extra descriptors to inject at child fd 3+i (see elfldr.c), and the spawn
+   reports what happened in the child through elfldr_spawn_report_t. */
 
 #pragma once
 
@@ -27,13 +28,27 @@ along with this program; see the file COPYING. If not, see
 
 
 /**
+ * What a spawn did, for the caller's log. The rfork child shares the
+ * parent's address space (RFMEM) and writes the child-side fields itself.
+ **/
+typedef struct elfldr_spawn_report {
+  int budget_errno;          /* 0 if sys_budget_set(0) succeeded in the child */
+  const char* failed_stage;  /* NULL on success, else a static stage name */
+  int failed_errno;          /* errno of the failed stage, 0 if none applies */
+  int child_status;          /* waitpid status if the child died before exec */
+} elfldr_spawn_report_t;
+
+
+/**
  * Spawn a new process that executes the given ELF image, forwarding the
  * descriptors described by fds[0..nfds) so that fds[i].parent_fd appears in
  * the child as fds[i].child_fd. argv is NUL-terminated; argv[0] becomes the
- * child's process name. Returns the child pid, or -1 on failure.
+ * child's process name. Returns the child pid, or -1 on failure. report
+ * (required) is filled in on success and on failure.
  **/
 pid_t elfldr_spawn_fds(char* const argv[], const struct ps5_spawn_fd_entry* fds,
-                       int nfds, const uint8_t* elf, size_t elf_size);
+                       int nfds, const uint8_t* elf, size_t elf_size,
+                       elfldr_spawn_report_t* report);
 
 
 /**
