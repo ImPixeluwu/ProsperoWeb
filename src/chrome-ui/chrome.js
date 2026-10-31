@@ -122,21 +122,43 @@
     $('notice-cancel').hidden = notice.kind !== 'drm';
   }
 
+  var OSK_SPECIAL = ['shift', 'layout', 'clear', 'left', 'space', 'right', 'backspace', 'enter'];
+
+  // Draws text with a blinking caret after caretIndex code points (the
+  // shell counts code points, so split with Array.from, not UTF-16 units)
+  // and scrolls the line so the caret stays visible in long URLs.
+  function renderOskText(box, text, caretIndex) {
+    var chars = Array.from(text);
+    var at = typeof caretIndex === 'number' ? caretIndex : chars.length;
+    at = Math.max(0, Math.min(chars.length, at));
+    box.textContent = '';
+    box.appendChild(el('span', 'osk-before', chars.slice(0, at).join('')));
+    var caret = box.appendChild(el('span', 'osk-caret'));
+    box.appendChild(el('span', 'osk-after', chars.slice(at).join('')));
+
+    var margin = 3 * parseFloat(getComputedStyle(document.documentElement).fontSize);
+    var x = caret.offsetLeft;
+    var view = box.clientWidth;
+    if (x - box.scrollLeft > view - margin) {
+      box.scrollLeft = x - view + margin;
+    } else if (x - box.scrollLeft < margin) {
+      box.scrollLeft = Math.max(0, x - margin);
+    }
+  }
+
   function renderOsk(state) {
     var osk = state.osk || {};
     $('osk').hidden = !osk.open;
     if (!osk.open) return;
     $('osk-target').textContent = osk.target === 'address' ? 'Address' : 'Text field';
-    var text = $('osk-text');
-    text.textContent = '';
-    text.appendChild(el('bdi', '', osk.text || ''));
+    renderOskText($('osk-text'), osk.text || '', osk.caret_index);
     var keys = $('osk-keys');
     keys.textContent = '';
     var cursor = osk.cursor || { row: 0, col: 0 };
     (osk.rows || []).forEach(function (row, r) {
       var rowEl = el('div', 'osk-row');
       row.forEach(function (key, c) {
-        var special = ['shift', 'layout', 'space', 'backspace', 'enter'].indexOf(key.code) >= 0;
+        var special = OSK_SPECIAL.indexOf(key.code) >= 0;
         var cls = 'osk-key' + (special ? ' special' : '');
         if (key.code === 'shift' && osk.shift) cls += ' shift-on';
         if (r === cursor.row && c === cursor.col) cls += ' focused';
@@ -144,6 +166,7 @@
         if (key.code === 'backspace') label = '⌫';
         if (key.code === 'enter') label = 'Go';
         if (key.code === 'shift') label = '⇧';
+        if (key.code === 'clear') cls += ' clear';
         var b = el('button', cls, label);
         b.style.flexGrow = String(key.width || 1);
         b.style.maxWidth = (8 * (key.width || 1)) + 'rem';
@@ -248,7 +271,10 @@
     latin.push([
       { label: 'Shift', code: 'shift', width: 1.5 },
       { label: '?123', code: 'layout', width: 1.5 },
-      { label: 'Space', code: 'space', width: 4 },
+      { label: 'Clear', code: 'clear', width: 1.5 },
+      { label: '←', code: 'left', width: 1 },
+      { label: 'Space', code: 'space', width: 3 },
+      { label: '→', code: 'right', width: 1 },
       { label: 'Backspace', code: 'backspace', width: 1.5 },
       { label: 'Enter', code: 'enter', width: 1.5 }
     ]);
@@ -264,13 +290,13 @@
       fullscreen_state: 'normal',
       content: { x: 0, y: 96, width: 1920, height: 984 },
       pointer: { x: 1180, y: 520, visible: true },
-      osk: { open: false, layout: 'latin', shift: false, text: '', target: 'address', cursor: { row: 0, col: 0 }, rows: [] },
+      osk: { open: false, layout: 'latin', shift: false, text: '', caret_index: 0, target: 'address', cursor: { row: 0, col: 0 }, rows: [] },
       notice: { kind: null, title: '', text: '' },
       menu: { open: false, section: 'main', items: [], selected: 0 },
       focus: 'page'
     };
     if (kind === 'osk') {
-      state.osk = { open: true, layout: 'latin', shift: false, text: 'ps5 homebrew', target: 'address', cursor: { row: 2, col: 3 }, rows: latin };
+      state.osk = { open: true, layout: 'latin', shift: false, text: 'ps5 homebrew', caret_index: 3, target: 'address', cursor: { row: 2, col: 3 }, rows: latin };
       state.address = { text: 'ps5 homebrew', editing: true };
       state.pointer.visible = false;
       state.focus = 'osk';

@@ -376,33 +376,35 @@ button {
   white-space: nowrap;
 }
 
+/* One line; chrome.js scrolls it so the caret stays in view. */
 .osk-text {
+  position: relative;      /* offsetParent for the caret */
   flex: 1;
+  min-width: 0;
   min-height: 3rem;
   padding: 0.5rem 1rem;
   border-radius: 0.625rem;
   background: var(--bg-3);
   font-size: 1.625rem;
-  white-space: nowrap;
+  white-space: pre;        /* keep repeated and trailing spaces */
   overflow: hidden;
-  direction: rtl;          /* keep the end of long text visible */
-  text-align: left;
+  direction: ltr;
 }
 
-.osk-text bdi { direction: ltr; }
-
-.osk-text::after {
-  content: "";
+/* Zero net width so moving the caret never shifts the text. */
+.osk-caret {
   display: inline-block;
-  width: 0.125rem;
-  height: 1.75rem;
-  margin-left: 0.125rem;
+  width: 0.1875rem;
+  height: 1.875rem;
+  margin: 0 -0.09375rem;
   vertical-align: middle;
+  border-radius: 0.09375rem;
   background: var(--accent-2);
-  animation: blink 1s steps(1) infinite;
+  animation: caret-blink 1s steps(1) infinite;
 }
 
-@keyframes blink { 50% { opacity: 0; } }
+/* Dims rather than hides, so the caret is never lost while moving it. */
+@keyframes caret-blink { 50% { opacity: 0.3; } }
 
 .osk-keys {
   display: flex;
@@ -425,6 +427,7 @@ button {
 
 .osk-key.special { font-size: 1.25rem; color: #cfd4dd; background: #20242b; }
 .osk-key.shift-on { color: var(--accent-2); }
+.osk-key.clear { color: var(--danger); }
 
 .osk-key.focused {
   background: var(--accent);
