@@ -14,6 +14,7 @@
 #include "compose.h"
 #include "damage_region.h"
 #include "frame_stats.h"
+#include "pointer.h"
 #include "splash.h"
 
 using namespace prosperobrowser::display;
@@ -347,5 +348,48 @@ TEST_SUITE("display_splash") {
     const SplashLayout tl = layout_splash(100, 50, nullptr, nullptr);
     const Rect tr = paint_splash_progress(SplashTarget{tiny.data(), 100, 50, 100, false}, tl, 1.0);
     CHECK(tr.w == 100);
+  }
+}
+
+TEST_SUITE("display_pointer") {
+  using namespace prosperobrowser::display;
+
+  TEST_CASE("the sprite is a white ring with a white dot over a translucent fill") {
+    const PointerSprite& s = pointer_sprite();
+    REQUIRE(s.size > 0);
+    REQUIRE(s.pixels.size() == static_cast<std::size_t>(s.size) * s.size);
+    const int c = s.size / 2;
+    auto at = [&](int x, int y) { return s.pixels[static_cast<std::size_t>(y) * s.size + x]; };
+    CHECK(at(c, c) == 0xFFFFFFFFu);                 // dot
+    CHECK(at(c + 16, c) == 0xFFFFFFFFu);            // border (radius 15..18)
+    const std::uint32_t fill = at(c + 9, c);        // fill: translucent blue
+    CHECK((fill >> 24) > 0u);
+    CHECK((fill >> 24) < 0x80u);
+    CHECK((fill & 0xFFu) > ((fill >> 16) & 0xFFu));  // more blue than red
+    CHECK(at(0, 0) == 0u);                          // corner: transparent
+  }
+
+  TEST_CASE("pointer_rect is centred on the position") {
+    const Rect r = pointer_rect(100, 50);
+    CHECK(r.x + r.w / 2 == 100);
+    CHECK(r.y + r.h / 2 == 50);
+  }
+
+  TEST_CASE("draw_pointer blends over ABGR pixels and stays inside the clip") {
+    constexpr int kW = 200;
+    constexpr int kH = 100;
+    std::vector<std::uint32_t> surface(kW * kH, 0xFF0000FFu);  // ABGR: opaque red
+    const Rect clip{0, 0, 100, kH};
+    draw_pointer(surface.data(), kW, clip, 98, 50);
+    CHECK(surface[50 * kW + 98] == 0xFFFFFFFFu);    // dot drawn
+    CHECK(surface[50 * kW + 101] == 0xFF0000FFu);   // right of the clip: untouched
+    CHECK(surface[0] == 0xFF0000FFu);               // far away: untouched
+    // Inside the fill the red shows through, tinted.
+    const std::uint32_t tinted = surface[50 * kW + 89];
+    CHECK((tinted & 0xFFu) > 0x80u);                // red (low byte in ABGR) stays strong
+    CHECK(((tinted >> 16) & 0xFFu) > 0u);           // some blue added
+    // Off-surface positions only touch what the clip allows.
+    draw_pointer(surface.data(), kW, Rect{0, 0, kW, kH}, -40, -40);
+    CHECK(surface[0] == 0xFF0000FFu);
   }
 }

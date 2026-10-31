@@ -38,7 +38,7 @@ window.ps5chrome = {
     document.getElementById('title').textContent = t.title || '';
     document.getElementById('url').textContent = (s.address || {}).text || t.url || '';
     var p = s.pointer || {}, n = document.getElementById('pointer');
-    n.hidden = !p.visible;
+    n.hidden = !p.visible || !!p.native;  // native: the compositor draws it
     n.style.transform = 'translate(' + Math.round(p.x || 0) + 'px,' + Math.round(p.y || 0) + 'px)';
   },
   click: function () {}

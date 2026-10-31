@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -16,6 +17,7 @@
 #include "prosperobrowser/core/file_storage.h"
 #include "damage_region.h"
 #include "frame_stats.h"
+#include "pointer.h"
 #include "splash.h"
 #include "prosperobrowser/shell/shell_controller.h"
 #include "ps5_audio_server.h"
@@ -107,6 +109,8 @@ class Ps5App {
   display::Region pending_chrome_damage_;
   // The chrome rects the surface was last composed with.
   std::vector<display::Rect> composed_chrome_rects_;
+  // Where the pointer was last drawn into the surface (none: hidden).
+  std::optional<display::Rect> composed_pointer_;
   int width_ = 1920;
   int height_ = 1080;
 

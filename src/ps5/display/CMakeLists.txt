@@ -6,6 +6,7 @@ add_library(prosperobrowser_display STATIC
   compose.cpp
   damage_region.cpp
   frame_stats.cpp
+  pointer.cpp
   scale.cpp
   splash.cpp
 )

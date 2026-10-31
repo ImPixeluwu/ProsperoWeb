@@ -239,6 +239,9 @@ int Ps5App::run() {
   cfg.width = width_;
   cfg.height = height_;
   cfg.home_url = config_.home_url;
+  // The compositor draws the pointer (display/pointer.h): moving it never
+  // repaints the chrome view.
+  cfg.native_pointer = true;
   cfg.user_agent = config_.user_agent;
   cfg.language = config_.language;
   cfg.diagnostics_url = "file://" + config_.chrome_dir + "/diag.html";
@@ -840,6 +843,24 @@ void Ps5App::composite_and_present() {
     }
     return;
   }
+  // The pointer goes over everything: recompose where it was and where it
+  // is now when it moved, appeared or went away.
+  std::optional<display::Rect> pointer;
+  const core::Vec2 pointer_pos = controller_->pointer();
+  const int pointer_x = static_cast<int>(pointer_pos.x);
+  const int pointer_y = static_cast<int>(pointer_pos.y);
+  if (controller_->pointer_visible()) {
+    pointer = display::pointer_rect(pointer_x, pointer_y);
+  }
+  if (pointer != composed_pointer_) {
+    if (composed_pointer_) {
+      pending_damage_.add(*composed_pointer_);
+    }
+    if (pointer) {
+      pending_damage_.add(*pointer);
+    }
+    composed_pointer_ = pointer;
+  }
   const display::Region damage = take_frame_damage(chrome_rects);
   if (damage.empty()) {
     if (screenshot_pending_) {
@@ -880,6 +901,10 @@ void Ps5App::composite_and_present() {
     }
     display::compose_rect(layers, chrome_rects, clipped, static_cast<std::uint32_t*>(surface->pixels),
                           surface->pitch / 4, videos);
+    if (pointer) {
+      display::draw_pointer(static_cast<std::uint32_t*>(surface->pixels), surface->pitch / 4,
+                            clipped, pointer_x, pointer_y);
+    }
     present_rects.push_back(SDL_Rect{clipped.x, clipped.y, clipped.w, clipped.h});
   }
   video_frames.reset();
