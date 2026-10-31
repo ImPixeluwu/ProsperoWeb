@@ -22,6 +22,7 @@
 #include "ps5_engine_view.h"
 #include "ps5_ime.h"
 #include "ps5_presenter.h"
+#include "ps5_video_overlay.h"
 
 namespace ps5browser::frontend {
 
@@ -64,6 +65,7 @@ class Ps5App {
   SDL_Window* window_ = nullptr;
   SDL_GameController* pad_ = nullptr;
   std::unique_ptr<Ps5AudioServer> audio_server_;
+  std::unique_ptr<Ps5VideoOverlay> video_overlay_;
   std::unique_ptr<Ps5Presenter> presenter_;
   std::atomic<bool> frame_queued_{false};
 
@@ -77,7 +79,9 @@ class Ps5App {
   std::unique_ptr<shell::ShellController> controller_;
 
   // Content cache: ARGB32 (what WKPagePaint writes), the active view painted
-  // at y = content_top(); only dirty areas are repainted. The composed frame
+  // at y = content_top(); only dirty areas are repainted. With the video
+  // overlay, pixels a video element left transparent (its hole) keep alpha
+  // 0 here, and the compositor puts the video under them. The composed frame
   // goes straight to the SDL window surface (ABGR8888), never back here, and
   // only the damaged rects are composed and presented.
   std::vector<std::uint32_t> page_buffer_;

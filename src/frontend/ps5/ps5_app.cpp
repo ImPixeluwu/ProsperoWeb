@@ -134,6 +134,7 @@ Ps5App::Ps5App() = default;
 
 Ps5App::~Ps5App() {
   WkWebView::set_damage_hook(nullptr, nullptr);
+  video_overlay_.reset();  // its thread calls request_frame()
   presenter_.reset();     // before the window goes
   audio_server_.reset();  // before SDL_Quit
   if (pad_) {
@@ -159,6 +160,7 @@ int Ps5App::run() {
 
   // Before the WebProcess is spawned, so its media can connect at once.
   audio_server_ = Ps5AudioServer::start();
+  video_overlay_ = Ps5VideoOverlay::start([this] { request_frame(); });
   if (const char* test = std::getenv("PS5BROWSER_AUDIO_TEST");
       audio_server_ && test && !std::strcmp(test, "1")) {
     audio_server_->play_test_tone();
@@ -628,6 +630,14 @@ void Ps5App::paint_content() {
   auto* origin = reinterpret_cast<unsigned char*>(page_buffer_.data() +
                                                   static_cast<size_t>(top) * width_);
   for (const display::Rect& r : dirty.rects()) {
+    if (video_overlay_) {
+      // WebKit blends its backing store over the target (source-over): a
+      // video's transparent hole must replace what was there, not show it.
+      for (int y = r.y; y < r.bottom(); y++) {
+        std::uint32_t* row = &page_buffer_[static_cast<size_t>(top + y) * width_];
+        std::fill(row + r.x, row + r.right(), 0u);
+      }
+    }
     const std::uint64_t t0 = SDL_GetPerformanceCounter();
     view->web().paint(origin, width_, content_height, r);
     stats_.page_paint.add(ms_since(t0), r.area());
@@ -704,6 +714,16 @@ void Ps5App::composite_and_present() {
   paint_content();
   paint_chrome();
   const std::vector<display::Rect> chrome_rects = derive_chrome_rects();
+  // Video overlay frames of the active page: their rects need recomposing
+  // whenever a new frame arrived or a player moved (no WebKit paint).
+  const int top = std::clamp(controller_->content_top(), 0, height_);
+  video::PageKey video_page;
+  if (video_overlay_) {
+    if (auto* view = static_cast<Ps5EngineView*>(controller_->active_view())) {
+      video_page = Ps5VideoOverlay::page_key(view->web().page());
+    }
+    pending_damage_.add(video_overlay_->take_damage(video_page, top, width_, height_));
+  }
 
   // Keep the splash until WebKit has painted something real; composing the
   // still empty caches would replace it with black.
@@ -743,6 +763,20 @@ void Ps5App::composite_and_present() {
   const display::Layers layers{page_buffer_.data(), chrome_buffer_.data(), width_, height_};
   const int out_w = std::min(width_, surface->w);
   const int out_h = std::min(height_, surface->h);
+  // The overlay's frames stay locked (not swapped by its thread) while used.
+  std::optional<video::VideoServer::Frames> video_frames;
+  std::vector<display::VideoLayer> videos;
+  if (video_overlay_ && video_page.pid) {
+    video_frames.emplace(video_overlay_->acquire(video_page));
+    videos = Ps5VideoOverlay::layers(*video_frames, top, width_, height_);
+    if (video_frames->new_frames()) {
+      std::uint64_t area = 0;
+      for (const auto& v : videos) {
+        area += display::intersect(v.rect, v.clip).area();
+      }
+      stats_.video_frames.add(area);
+    }
+  }
   std::vector<SDL_Rect> present_rects;
   for (const display::Rect& r : damage.rects()) {
     const display::Rect clipped = display::intersect(r, display::Rect{0, 0, out_w, out_h});
@@ -750,9 +784,10 @@ void Ps5App::composite_and_present() {
       continue;
     }
     display::compose_rect(layers, chrome_rects, clipped, static_cast<std::uint32_t*>(surface->pixels),
-                          surface->pitch / 4);
+                          surface->pitch / 4, videos);
     present_rects.push_back(SDL_Rect{clipped.x, clipped.y, clipped.w, clipped.h});
   }
+  video_frames.reset();
   stats_.compose.add(ms_since(compose_t0), damage.area());
   // The composed frame, before the flip hands the buffer to the display.
   if (screenshot_pending_) {
