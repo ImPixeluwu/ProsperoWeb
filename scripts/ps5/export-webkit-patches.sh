@@ -19,6 +19,7 @@ TOPICS=(
     "0003-jsc-generic-shell|Source/JavaScriptCore/PlatformPlayStation.cmake Source/JavaScriptCore/shell/PlatformPlayStation.cmake"
     "0004-webcore-curl-ca-bundle|Source/WebCore/platform/network/playstation/CurlSSLHandlePlayStation.cpp"
     "0005-webkit-static-multicall-processes|Source/WebKit/CMakeLists.txt Source/WebKit/PlatformPlayStation.cmake Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp Source/WebKit/WebProcess/EntryPoint/playstation/WebProcessMain.cpp Source/WebKit/NetworkProcess/EntryPoint/playstation/NetworkProcessMain.cpp"
+    "0006-wtf-payload-sdk-compat|Source/WTF/wtf/Compiler.h Source/WTF/wtf/AvailableMemory.cpp Source/WTF/wtf/RAMSize.cpp Source/WTF/wtf/unix/MemoryPressureHandlerUnix.cpp Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp Source/WTF/wtf/playstation/LanguagePlayStation.cpp"
 )
 
 mkdir -p "${PATCH_DIR}"

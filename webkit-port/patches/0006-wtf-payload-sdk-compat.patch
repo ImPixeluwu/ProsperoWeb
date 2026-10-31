@@ -1,0 +1,126 @@
+Subject: WTF: build with the payload SDK's FreeBSD libc and clang 18
+
+Sony's libc provides extensions that the open payload SDK does not
+(getenv_np, SO_NBIO, a one-argument pthread_setname_np, <sys/sysinfo.h>
+on FreeBSD), and upstream WTF assumes clang >= 19 accepts
+[[clang::suppress]] on functions. With PS5_HOMEBREW:
+ - LanguagePlayStation reads SYSTEM_LANGUAGE with getenv(),
+ - setNonBlock() uses fcntl(O_NONBLOCK),
+ - AvailableMemory/RAMSize/MemoryPressureHandlerUnix do not include
+   <sys/sysinfo.h>/<malloc.h>; available memory is the generic 1.5 GB
+   guess instead of the console's physical RAM,
+ - [[clang::suppress]] (static analyzer only) is dropped on clang 18.
+(HAVE_PTHREAD_SETNAME_NP is turned off in patch 0001.)
+diff --git a/Source/WTF/wtf/AvailableMemory.cpp b/Source/WTF/wtf/AvailableMemory.cpp
+index a76d16e86..18a5ba646 100644
+--- a/Source/WTF/wtf/AvailableMemory.cpp
++++ b/Source/WTF/wtf/AvailableMemory.cpp
+@@ -33,7 +33,7 @@
+ #include <mach/mach.h>
+ #include <wtf/RAMSize.h>
+ #elif OS(UNIX)
+-#if OS(FREEBSD) || OS(LINUX)
++#if (OS(FREEBSD) && !defined(PS5_HOMEBREW)) || OS(LINUX)
+ #include <sys/sysinfo.h>
+ #endif
+ #include <unistd.h>
+@@ -83,6 +83,10 @@ static size_t computeAvailableMemory()
+     // Round up the memory size to a multiple of 128MB because max_mem may not be exactly 512MB
+     // (for example) and we have code that depends on those boundaries.
+     return roundUpToMultipleOf<128 * MB>(sizeAccordingToKernel);
++#elif defined(PS5_HOMEBREW)
++    // No <sys/sysinfo.h> in the payload SDK, and the console's physical RAM
++    // says little about what a homebrew process may use.
++    return availableMemoryGuess;
+ #elif OS(FREEBSD) || OS(LINUX)
+     struct sysinfo info;
+     if (!sysinfo(&info))
+diff --git a/Source/WTF/wtf/Compiler.h b/Source/WTF/wtf/Compiler.h
+index dfdc9f986..28aaec9b2 100644
+--- a/Source/WTF/wtf/Compiler.h
++++ b/Source/WTF/wtf/Compiler.h
+@@ -512,7 +512,9 @@
+ 
+ /* IGNORE_CLANG_STATIC_ANALYZER_WARNINGS_BEGIN() - whether the compiler supports suppressing static analysis warnings. */
+ /* https://clang.llvm.org/docs/AttributeReference.html#suppress */
+-#if COMPILER_HAS_ATTRIBUTE(suppress)
++/* Clang 18 accepts [[clang::suppress]] only on statements and variables, but WebKit also puts
++   SUPPRESS_* on functions (e.g. Seconds::operator<=>). It only affects the static analyzer. */
++#if COMPILER_HAS_ATTRIBUTE(suppress) && (COMPILER(APPLE_CLANG) || defined(CLANG_WEBKIT_BRANCH) || !defined(__clang_major__) || __clang_major__ >= 19)
+ #define IGNORE_CLANG_STATIC_ANALYZER_WARNINGS_ATTRIBUTE(warning, ...) [[clang::suppress]]
+ #define IGNORE_CLANG_STATIC_ANALYZER_WARNINGS_BEGIN(warning, ...) [[clang::suppress]] {
+ #else
+diff --git a/Source/WTF/wtf/RAMSize.cpp b/Source/WTF/wtf/RAMSize.cpp
+index 7dec13c44..0dfbc6d1d 100644
+--- a/Source/WTF/wtf/RAMSize.cpp
++++ b/Source/WTF/wtf/RAMSize.cpp
+@@ -30,7 +30,7 @@
+ 
+ #if OS(WINDOWS)
+ #include <windows.h>
+-#elif OS(LINUX) || OS(FREEBSD)
++#elif OS(LINUX) || (OS(FREEBSD) && !defined(PS5_HOMEBREW))
+ #include <sys/sysinfo.h>
+ #elif OS(UNIX) || OS(HAIKU)
+ #endif
+diff --git a/Source/WTF/wtf/playstation/LanguagePlayStation.cpp b/Source/WTF/wtf/playstation/LanguagePlayStation.cpp
+index e869451aa..5a031de66 100644
+--- a/Source/WTF/wtf/playstation/LanguagePlayStation.cpp
++++ b/Source/WTF/wtf/playstation/LanguagePlayStation.cpp
+@@ -34,9 +34,15 @@ Vector<String> platformUserPreferredLanguages(ShouldMinimizeLanguages)
+ {
+     Vector<String> languages;
+ 
++#if defined(PS5_HOMEBREW)
++    // getenv_np() is a Sony libc extension.
++    if (const char* language = getenv("SYSTEM_LANGUAGE"); language && *language)
++        languages.append(String::fromLatin1(language));
++#else
+     char buffer[16];
+     if (!getenv_np("SYSTEM_LANGUAGE", buffer, sizeof(buffer)))
+         languages.append(String::fromLatin1(buffer));
++#endif
+ 
+     return languages;
+ }
+diff --git a/Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp b/Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp
+index 2f8fdd858..e39728144 100644
+--- a/Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp
++++ b/Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp
+@@ -26,6 +26,7 @@
+ #include "config.h"
+ #include <wtf/UniStdExtras.h>
+ 
++#include <fcntl.h>
+ #include <sys/socket.h>
+ 
+ namespace WTF {
+@@ -53,8 +54,14 @@ int dupCloseOnExec(int fileDescriptor)
+ 
+ bool setNonBlock(int fileDescriptor)
+ {
++#if defined(PS5_HOMEBREW)
++    // SO_NBIO is a Sony libc extension; homebrew uses the FreeBSD way.
++    int flags = fcntl(fileDescriptor, F_GETFL, 0);
++    return flags != -1 && fcntl(fileDescriptor, F_SETFL, flags | O_NONBLOCK) != -1;
++#else
+     int nonBlocking = 1;
+     return setsockopt(fileDescriptor, SOL_SOCKET, SO_NBIO, &nonBlocking, sizeof(int)) != -1;
++#endif
+ }
+ 
+ } // namespace WTF
+diff --git a/Source/WTF/wtf/unix/MemoryPressureHandlerUnix.cpp b/Source/WTF/wtf/unix/MemoryPressureHandlerUnix.cpp
+index 97b0e3dec..13fc47e65 100644
+--- a/Source/WTF/wtf/unix/MemoryPressureHandlerUnix.cpp
++++ b/Source/WTF/wtf/unix/MemoryPressureHandlerUnix.cpp
+@@ -28,7 +28,9 @@
+ #include "config.h"
+ #include <wtf/MemoryPressureHandler.h>
+ 
++#if !defined(PS5_HOMEBREW)
+ #include <malloc.h>
++#endif
+ #include <unistd.h>
+ #include <wtf/Logging.h>
+ #include <wtf/MainThread.h>

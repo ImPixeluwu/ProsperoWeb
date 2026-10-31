@@ -13,10 +13,11 @@ With -DPS5_HOMEBREW=ON (defines PS5_HOMEBREW=1 for C/C++) this patch:
    ENABLE_GAMEPAD without the WPE PlayStation backend,
  - builds WebKit as a STATIC library and no WebProcess/NetworkProcess
    executables (WebKit_NO_AUXILIARY_EXECUTABLES, see patch 0005),
- - skips the mmap wrapping and the sce_sys/ copy.
+ - skips the mmap wrapping and the sce_sys/ copy,
+ - turns HAVE_PTHREAD_SETNAME_NP off (Sony-only one-argument variant).
 Without PS5_HOMEBREW the behaviour is unchanged.
 diff --git a/Source/cmake/OptionsPlayStation.cmake b/Source/cmake/OptionsPlayStation.cmake
-index f55771f99..9a69cb5af 100644
+index f55771f99..c77af0af3 100644
 --- a/Source/cmake/OptionsPlayStation.cmake
 +++ b/Source/cmake/OptionsPlayStation.cmake
 @@ -1,7 +1,14 @@
@@ -85,7 +86,21 @@ index f55771f99..9a69cb5af 100644
  endif ()
  
  # Enable variation fonts when cairo >= 1.16, fontconfig >= 2.13.0, freetype >= 2.9.0 and harfbuzz >= 1.4.2
-@@ -371,10 +391,20 @@ endif ()
+@@ -254,7 +274,12 @@ set(CMAKE_CXX_STANDARD_LIBRARIES
+     "${CMAKE_CXX_STANDARD_LIBRARIES} ${C_STD_LIBRARY}"
+ )
+ 
+-SET_AND_EXPOSE_TO_BUILD(HAVE_PTHREAD_SETNAME_NP ON)
++if (PS5_HOMEBREW)
++    # Sony's one-argument pthread_setname_np() is not in the payload SDK.
++    SET_AND_EXPOSE_TO_BUILD(HAVE_PTHREAD_SETNAME_NP OFF)
++else ()
++    SET_AND_EXPOSE_TO_BUILD(HAVE_PTHREAD_SETNAME_NP ON)
++endif ()
+ SET_AND_EXPOSE_TO_BUILD(HAVE_MAP_ALIGNED OFF)
+ 
+ if (CMAKE_SYSTEM_NAME STREQUAL "PlayStation4")
+@@ -371,10 +396,20 @@ endif ()
  # for ranlib.
  set(PAL_LIBRARY_TYPE OBJECT)
  set(WebCore_LIBRARY_TYPE OBJECT)
@@ -109,7 +124,7 @@ index f55771f99..9a69cb5af 100644
  
  # Enable multi process builds for Visual Studio
  if (NOT ${CMAKE_GENERATOR} MATCHES "Ninja")
-@@ -387,6 +417,9 @@ if (TARGET libdl::dl)
+@@ -387,6 +422,9 @@ if (TARGET libdl::dl)
      add_link_options("$<$<OR:$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>,$<STREQUAL:$<TARGET_PROPERTY:TYPE>,SHARED_LIBRARY>>:$<TARGET_PROPERTY:libdl::dl,INTERFACE_LINK_OPTIONS>>")
  endif ()
  
@@ -119,7 +134,7 @@ index f55771f99..9a69cb5af 100644
  function(add_executable target)
      _add_executable(${ARGV})
      target_link_options(${target} PRIVATE "LINKER:--wrap=mmap")
-@@ -411,6 +444,9 @@ add_custom_target(playstation_tools_copy
+@@ -411,6 +449,9 @@ add_custom_target(playstation_tools_copy
          ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ebootparam.ini
  )
  set_target_properties(playstation_tools_copy PROPERTIES FOLDER "PlayStation")

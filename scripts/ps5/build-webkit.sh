@@ -58,6 +58,7 @@ configure() {
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_FLAGS_RELEASE="${release_flags}" \
         -DCMAKE_CXX_FLAGS_RELEASE="${release_flags}" \
+        -DCMAKE_CXX_FLAGS="-include ${PORT_DIR}/compat/libcxx18-compat.h" \
         -DPORT=PlayStation \
         -DPLAYSTATION=ON \
         -DPS5_HOMEBREW=ON \
