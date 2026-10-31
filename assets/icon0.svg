@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- ProsperoBrowser launch icon (sce_sys/icon0.png, 512x512). Original artwork:
+     a web globe with a moon on a tilted orbit (Prospero is a moon of Uranus),
+     in the browser chrome palette (src/chrome-ui/chrome.css).
+     Rendered by scripts/assets/render.sh. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="bg" cx="0.30" cy="0.22" r="1.0">
+      <stop offset="0" stop-color="#262a32"/>
+      <stop offset="0.55" stop-color="#1b1e24"/>
+      <stop offset="1" stop-color="#0b0c0f"/>
+    </radialGradient>
+    <linearGradient id="globe-fill" x1="0.2" y1="0.1" x2="0.8" y2="0.95">
+      <stop offset="0" stop-color="#7cb3ff"/>
+      <stop offset="1" stop-color="#2f6fd6"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#3d8bff" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#3d8bff" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="globe"><circle cx="248" cy="264" r="138"/></clipPath>
+  </defs>
+
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <circle cx="248" cy="264" r="220" fill="url(#glow)"/>
+
+  <!-- Orbit, back part (drawn before the globe, so the globe covers it). -->
+  <path d="M 40 264 A 208 70 0 0 1 456 264" transform="rotate(-24 248 264)"
+        fill="none" stroke="#9aa2b1" stroke-opacity="0.6" stroke-width="12"/>
+
+  <!-- Globe: solid sphere with dark grid lines. -->
+  <circle cx="248" cy="264" r="138" fill="url(#globe-fill)"/>
+  <g clip-path="url(#globe)" fill="none" stroke="#121418" stroke-opacity="0.55"
+     stroke-width="11" stroke-linecap="round">
+    <ellipse cx="248" cy="264" rx="58" ry="138"/>
+    <line x1="248" y1="120" x2="248" y2="408"/>
+    <path d="M 104 212 Q 248 244 392 212"/>
+    <path d="M 104 316 Q 248 284 392 316"/>
+  </g>
+  <circle cx="248" cy="264" r="138" fill="none" stroke="#121418" stroke-opacity="0.35" stroke-width="6"/>
+
+  <!-- Orbit, front part, over the globe, with a dark gap where it crosses it. -->
+  <path d="M 40 264 A 208 70 0 0 0 456 264" transform="rotate(-24 248 264)" clip-path="url(#globe)"
+        fill="none" stroke="#121418" stroke-opacity="0.6" stroke-width="30"/>
+  <path d="M 40 264 A 208 70 0 0 0 456 264" transform="rotate(-24 248 264)"
+        fill="none" stroke="#eef0f4" stroke-width="14" stroke-linecap="round"/>
+
+  <!-- The moon, on the front of the orbit at the right. -->
+  <circle cx="436" cy="206" r="36" fill="#eef0f4"/>
+  <circle cx="436" cy="206" r="36" fill="none" stroke="#121418" stroke-opacity="0.25" stroke-width="4"/>
+</svg>
