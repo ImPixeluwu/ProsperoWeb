@@ -7,14 +7,17 @@
 // third_party/ps5-native-tool): _start(process_parameters, teardown)
 // initialises the platform runtime, runs the static constructors and main.
 //
-// ProsperoWeb additions, after the first console run died before main()
+// ProsperoWeb additions, after the first console runs died before main()
 // (klog: "page fault ... fault address: 0 rip: 0" with return addresses in
 // _init, i.e. a constructor reached an import the system left at 0):
-// - breadcrumbs on the system debug output (klog) at every stage;
+// - breadcrumbs at every stage, on the system debug output (klog) and in
+//   /data/prosperoweb/boot.txt (libkernel's own file calls);
 // - before anything else, the image's import slots are checked: every slot
 //   at 0 is reported with its symbol (from /app0/imports.txt, written by
-//   scripts/ps5/native/check-eboot.py) and pointed at a stand-in that logs
-//   the call and its caller instead of jumping to address 0;
+//   scripts/ps5/native/check-eboot.py), looked up by name in the system
+//   modules (sceKernelDlsym) and, if found there, filled in; otherwise it
+//   points at a stand-in that logs the call and its caller instead of
+//   jumping to address 0;
 // - every init_array entry is checked before it is called.
 // Nothing here may itself depend on an import that could be missing: each
 // libkernel function is checked before use.
@@ -33,9 +36,14 @@ int application_main(int argc, char** argv, char** envp) __asm__("main");
 
 int sceKernelDebugOutText(int channel, const char* text);
 int sceKernelMprotect(const void* address, std::size_t length, int protection);
-int open(const char* path, int flags, ...);
-long read(int fd, void* buffer, std::size_t length);
-int close(int fd);
+int sceKernelOpen(const char* path, int flags, int mode);
+long sceKernelRead(int fd, void* buffer, std::size_t length);
+long sceKernelWrite(int fd, const void* buffer, std::size_t length);
+int sceKernelClose(int fd);
+int sceKernelMkdir(const char* path, int mode);
+int sceKernelLoadStartModule(const char* path, std::size_t args, const void* argp,
+                             std::uint32_t flags, void* option, int* result);
+int sceKernelDlsym(int handle, const char* symbol, void** address);
 
 extern Initializer __preinit_array_start[] __attribute__((weak));
 extern Initializer __preinit_array_end[] __attribute__((weak));
@@ -60,10 +68,38 @@ bool present(F* function) {
   return address != nullptr;
 }
 
+constexpr int kOpenRead = 0x0;
+constexpr int kOpenWriteCreateTruncate = 0x1 | 0x200 | 0x400;  // O_WRONLY|O_CREAT|O_TRUNC
+int g_boot_fd = -1;
+
+std::size_t length_of(const char* text) {
+  std::size_t n = 0;
+  while (text[n]) {
+    n++;
+  }
+  return n;
+}
+
 void say(const char* text) {
   if (present(&sceKernelDebugOutText)) {
     sceKernelDebugOutText(0, text);
   }
+  if (g_boot_fd >= 0 && present(&sceKernelWrite)) {
+    sceKernelWrite(g_boot_fd, text, length_of(text));
+  }
+}
+
+// /data/prosperoweb/boot.txt, rewritten every start: the breadcrumbs reach
+// it even when klog does not show them.
+void open_boot_file() {
+  if (!present(&sceKernelOpen)) {
+    return;
+  }
+  if (present(&sceKernelMkdir)) {
+    sceKernelMkdir("/data/prosperoweb", 0755);
+  }
+  const int fd = sceKernelOpen("/data/prosperoweb/boot.txt", kOpenWriteCreateTruncate, 0644);
+  g_boot_fd = fd >= 0 ? fd : -1;
 }
 
 // Minimal formatting without libc (snprintf may be one of the missing ones).
@@ -117,20 +153,59 @@ char g_imports[kImportsMax];
 std::size_t g_imports_len = 0;
 
 void load_imports() {
-  if (!present(&open) || !present(&read) || !present(&close)) {
+  if (!present(&sceKernelOpen) || !present(&sceKernelRead) || !present(&sceKernelClose)) {
     return;
   }
-  const int fd = open("/app0/imports.txt", 0 /* O_RDONLY */);
+  const int fd = sceKernelOpen("/app0/imports.txt", kOpenRead, 0);
   if (fd < 0) {
     return;
   }
   long n;
   while (g_imports_len + 1 < kImportsMax &&
-         (n = read(fd, g_imports + g_imports_len, kImportsMax - 1 - g_imports_len)) > 0) {
+         (n = sceKernelRead(fd, g_imports + g_imports_len, kImportsMax - 1 - g_imports_len)) >
+             0) {
     g_imports_len += static_cast<std::size_t>(n);
   }
   g_imports[g_imports_len] = 0;
-  close(fd);
+  sceKernelClose(fd);
+}
+
+// Looks a symbol up by name in the system modules: the ones whose names
+// the title imports from, then every module handle up to 64.
+void* lookup_by_name(const char* symbol) {
+  static int handles[8];
+  static int handle_count = -1;
+  if (!present(&sceKernelDlsym)) {
+    return nullptr;
+  }
+  if (handle_count < 0) {
+    handle_count = 0;
+    static const char* const kModules[] = {"libSceLibcInternal.sprx", "libkernel.sprx",
+                                           "libc.prx", "libSceNet.sprx"};
+    for (const char* module : kModules) {
+      int result = 0;
+      const int handle = present(&sceKernelLoadStartModule)
+                             ? sceKernelLoadStartModule(module, 0, nullptr, 0, nullptr, &result)
+                             : -1;
+      Line().add("[prosperoweb] crt: module ").add(module).add(" handle ").hex(
+          static_cast<std::uint32_t>(handle)).out();
+      if (handle >= 0) {
+        handles[handle_count++] = handle;
+      }
+    }
+  }
+  void* address = nullptr;
+  for (int i = 0; i < handle_count; i++) {
+    if (sceKernelDlsym(handles[i], symbol, &address) == 0 && address) {
+      return address;
+    }
+  }
+  for (int handle = 0; handle < 64; handle++) {
+    if (sceKernelDlsym(handle, symbol, &address) == 0 && address) {
+      return address;
+    }
+  }
+  return nullptr;
 }
 
 // The symbol of the import slot at offset, or nullptr if none is listed
@@ -212,9 +287,16 @@ void check_imports() {
         writable = sceKernelMprotect(reinterpret_cast<void*>(first), last - first, 0x3) == 0;
       }
       if (writable) {
-        __prwb_got_start[i] = reinterpret_cast<void*>(&prwb_unresolved_import);
+        void* found = lookup_by_name(symbol);
+        __prwb_got_start[i] = found ? found : reinterpret_cast<void*>(&prwb_unresolved_import);
         patched++;
-        line.add(" (pointed at the stand-in)");
+        if (found) {
+          line.add(" (found by name at ").hex(reinterpret_cast<std::uintptr_t>(found)).add(")");
+        } else {
+          line.add(" (not found by name: pointed at the stand-in)");
+        }
+      } else {
+        line.add(" (GOT not writable: left at 0)");
       }
     }
     line.out();
@@ -267,6 +349,7 @@ extern "C" void _fini() { run_reverse(__fini_array_start, __fini_array_end); }
 
 extern "C" [[noreturn]] __attribute__((visibility("default"))) void _start(
     void* process_parameters, Destructor loader_teardown) {
+  open_boot_file();
   say("[prosperoweb] crt: _start\n");
   check_imports();
   const int argc = *static_cast<const int*>(process_parameters);

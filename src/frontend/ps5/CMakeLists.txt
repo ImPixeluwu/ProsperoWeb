@@ -224,7 +224,11 @@ if(PROSPEROWEB_NATIVE_TITLE_TARGET)
     "${PS5_PAYLOAD_SDK}/target/lib/libc++abi.a"
     "${PS5_PAYLOAD_SDK}/target/lib/libunwind.a"
     "${_libc_native}"
-    kernel_web SceLibcInternal SceNet SceSysmodule)
+    # libkernel, as the working native titles bind it (syobon-action-ps5 and
+    # the Stremio port link the SDK's stubs in name order, libkernel.so
+    # first). Imports bound to libkernel_web stayed at 0 in the title on the
+    # console (run 15: clock_gettime, sceKernelDebugOutText).
+    kernel SceLibcInternal SceNet SceSysmodule)
   target_link_directories(prosperoweb_native PRIVATE ${SDL2_LIBRARY_DIRS})
   set(_native_wraps pthread_create pthread_exit
     malloc free calloc realloc posix_memalign aligned_alloc malloc_usable_size
