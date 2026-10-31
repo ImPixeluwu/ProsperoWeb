@@ -401,8 +401,10 @@ void MediaPlayerPrivateFFmpeg::onMetadataLoaded()
     if (!player || !demuxer)
         return;
 
-    if (auto* stream = demuxer->videoStream())
-        m_videoDecoder = FFmpegVideoDecoder::create(*stream, demuxer->videoQueue());
+    if (auto* stream = demuxer->videoStream()) {
+        createOverlayIfNeeded();
+        m_videoDecoder = FFmpegVideoDecoder::create(*stream, demuxer->videoQueue(), m_overlay.get());
+    }
     if (auto* stream = demuxer->audioStream())
         m_audioDecoder = FFmpegAudioDecoder::create(*stream, demuxer->audioQueue(), AudioSink::sampleRate, AudioSink::channels);
     if (!m_videoDecoder && !m_audioDecoder) {
@@ -802,17 +804,22 @@ void MediaPlayerPrivateFFmpeg::handlePresenterEvents(unsigned events)
         player->repaint();
 }
 
+void MediaPlayerPrivateFFmpeg::createOverlayIfNeeded()
+{
+    if (std::exchange(m_overlayCreated, true))
+        return;
+    m_overlay = FFmpegVideoOverlay::createIfEnabled();
+    if (RefPtr presenter = m_presenter)
+        presenter->setOverlay(m_overlay.get());
+    if (m_overlay)
+        m_overlayTimer.startOneShot(overlayGeometryTick);
+}
+
 void MediaPlayerPrivateFFmpeg::updateOverlay()
 {
     if (!m_hasVideo || !m_videoDecoder)
         return;
-    if (!std::exchange(m_overlayCreated, true)) {
-        m_overlay = FFmpegVideoOverlay::createIfEnabled();
-        if (RefPtr presenter = m_presenter)
-            presenter->setOverlay(m_overlay.get());
-        if (m_overlay)
-            m_overlayTimer.startOneShot(overlayGeometryTick);
-    }
+    createOverlayIfNeeded();
     if (!m_overlay)
         return;
     RefPtr player = m_player.get();
@@ -955,9 +962,9 @@ void MediaPlayerPrivateFFmpeg::logStats(double now, double position, uint64_t by
     std::optional<double> audioClock;
     if (audio && m_audioSink)
         audioClock = audio->clockTime(m_audioSink->latency());
-    ffmpegMediaLog("stats: t=%.2f%s video %u decoded %u dropped (+%u presenter) %zu queued, pts %.2f | packets v %zu/%.1fs a %zu/%.1fs %zu KiB | audio %s clock %.2f buffered %.2fs | net %llu KiB%s%s",
+    ffmpegMediaLog("stats: t=%.2f%s video (%s) %u decoded %u dropped (+%u presenter) %zu queued, pts %.2f | packets v %zu/%.1fs a %zu/%.1fs %zu KiB | audio %s clock %.2f buffered %.2fs | net %llu KiB%s%s",
         position, m_seeking ? makeString(" SEEKING #"_s, m_serial, " for "_s, static_cast<int>((now - m_seekStartedAt) * 1000), "ms"_s).utf8().legacyCStringPointer() : "",
-        video ? video->decodedFrames() : 0, video ? video->droppedFrames() : 0, presenterDroppedFrames(), video ? video->queuedFrames() : 0,
+        video ? video->decodeMode() : "none", video ? video->decodedFrames() : 0, video ? video->droppedFrames() : 0, presenterDroppedFrames(), video ? video->queuedFrames() : 0,
         currentFrame() ? currentFrame()->pts : -1.0,
         videoLevel.packets, videoLevel.seconds, audioLevel.packets, audioLevel.seconds,
         demuxer ? (demuxer->videoQueue().bytes() + demuxer->audioQueue().bytes()) >> 10 : 0,
@@ -1042,6 +1049,10 @@ RefPtr<NativeImage> MediaPlayerPrivateFFmpeg::createNativeImage(FFmpegVideoFrame
 {
     // The SkImage wraps the frame's pixels without copying and keeps the
     // frame alive; the decoder's pool only reuses frames nobody references.
+    // The UI process holds a remotely decoded frame's pixels: nothing to
+    // paint here (the overlay shows it).
+    if (videoFrame.isRemote())
+        return nullptr;
     Ref frame = videoFrame;
     auto info = SkImageInfo::Make(frame->width(), frame->height(), kBGRA_8888_SkColorType, kOpaque_SkAlphaType, SkColorSpace::MakeSRGB());
     SkPixmap pixmap(info, frame->data(), frame->stride());

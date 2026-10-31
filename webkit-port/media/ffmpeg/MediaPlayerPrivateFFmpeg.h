@@ -153,6 +153,9 @@ private:
     void logStats(double now, double position, uint64_t bytesReceived, bool readerWaiting, bool endOfStream);
     void applyGain();
     void updateOverlay();
+    // Creates the video overlay once (before the video decoder, which may
+    // ask the UI to decode through it).
+    void createOverlayIfNeeded();
     void setAudioSink(std::unique_ptr<AudioSink>&&);
 
     void setNetworkState(MediaPlayer::NetworkState);

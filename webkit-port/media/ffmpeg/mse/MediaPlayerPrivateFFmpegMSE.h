@@ -155,6 +155,9 @@ private:
     void createAudioSink(bool forceNull);
     void applyGain();
     void updateOverlay();
+    // Creates the video overlay once (before the video decoder, which may
+    // ask the UI to decode through it).
+    void createOverlayIfNeeded();
     void overlayTick();
     void setAudioSink(std::unique_ptr<AudioSink>&&);
     void startPresenter();

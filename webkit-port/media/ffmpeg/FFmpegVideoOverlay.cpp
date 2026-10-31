@@ -190,6 +190,11 @@ bool FFmpegVideoOverlay::update(MediaPlayer& player, bool pageVisible, bool hasF
 
 void FFmpegVideoOverlay::submit(FFmpegVideoFrame& frame)
 {
+    if (frame.isRemote()) {
+        // Also while hidden: showing releases the older pictures in the UI.
+        m_client->showRemote(frame.remoteStream, frame.serial, frame.remotePts);
+        return;
+    }
     if (!m_client->usable() || !m_acceptsFrames)
         return;
     Ref protectedFrame = frame;
@@ -204,6 +209,13 @@ void FFmpegVideoOverlay::submit(FFmpegVideoFrame& frame)
         held->deref();
     };
     m_client->submit(WTF::move(wireFrame));
+}
+
+std::shared_ptr<Wire::RemoteVideoStream> FFmpegVideoOverlay::openRemoteStream(const Wire::StreamOpen& open)
+{
+    auto stream = m_client->openStream(open);
+    ffmpegMediaLog("video overlay: player %u: asking the UI to decode %s %ux%u (stream %u)", m_player, Wire::codecName(open.codec), open.width, open.height, stream->id());
+    return stream;
 }
 
 void FFmpegVideoOverlay::clear()

@@ -28,6 +28,7 @@
 #include "FFmpegVideoOverlayWire.h"
 #include <atomic>
 #include <memory>
+#include <string>
 #include <optional>
 #include <wtf/TZoneMalloc.h>
 
@@ -38,6 +39,7 @@ class MediaPlayer;
 
 namespace FFmpegMedia {
 namespace VideoWire {
+class RemoteVideoStream;
 class VideoOverlayClient;
 }
 }
@@ -56,7 +58,11 @@ public:
     // paint() clears the video box instead of drawing the frame.
     bool punchesHole() const { return m_punching; }
     // The frame to show now (the player's A/V clock decided). Any thread.
+    // A remotely decoded frame is named to the UI by its pts.
     void submit(FFmpegVideoFrame&);
+    // Asks the UI to decode a stream (FFmpegVideoDecoder's remote mode).
+    // Any thread.
+    std::shared_ptr<FFmpegMedia::VideoWire::RemoteVideoStream> openRemoteStream(const FFmpegMedia::VideoWire::StreamOpen&);
     // The picture is gone (new load, decoder reset).
     void clear();
     // One "video overlay: player N: <transport> sent N/s ..." line covering

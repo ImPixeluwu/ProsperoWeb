@@ -287,7 +287,8 @@ bool MediaPlayerPrivateFFmpegMSE::createPipeline(Pipeline& pipeline, SourceBuffe
     double position = playbackPosition();
     auto codec = format.codecName().utf8();
     if (pipeline.isVideo) {
-        m_videoDecoder = FFmpegVideoDecoder::create(stream, *pipeline.queue);
+        createOverlayIfNeeded();
+        m_videoDecoder = FFmpegVideoDecoder::create(stream, *pipeline.queue, m_overlay.get());
         if (!m_videoDecoder)
             pipeline.failed = true;
         else {
@@ -924,17 +925,22 @@ void MediaPlayerPrivateFFmpegMSE::handlePresenterEvents(unsigned events)
         player->repaint();
 }
 
+void MediaPlayerPrivateFFmpegMSE::createOverlayIfNeeded()
+{
+    if (std::exchange(m_overlayCreated, true))
+        return;
+    m_overlay = FFmpegVideoOverlay::createIfEnabled();
+    if (RefPtr presenter = m_presenter)
+        presenter->setOverlay(m_overlay.get());
+    if (m_overlay)
+        m_overlayTimer.startOneShot(MediaPlayerPrivateFFmpeg::overlayGeometryTick);
+}
+
 void MediaPlayerPrivateFFmpegMSE::updateOverlay()
 {
     if (!m_videoDecoder)
         return;
-    if (!std::exchange(m_overlayCreated, true)) {
-        m_overlay = FFmpegVideoOverlay::createIfEnabled();
-        if (RefPtr presenter = m_presenter)
-            presenter->setOverlay(m_overlay.get());
-        if (m_overlay)
-            m_overlayTimer.startOneShot(MediaPlayerPrivateFFmpeg::overlayGeometryTick);
-    }
+    createOverlayIfNeeded();
     if (!m_overlay)
         return;
     RefPtr player = m_player.get();
@@ -1070,10 +1076,10 @@ void MediaPlayerPrivateFFmpegMSE::logStats(double now, double position)
         audioClock = audio->clockTime(m_audioSink->latency());
     double ahead = mediaSource ? toRangeSet(mediaSource->buffered()).bufferedAhead(position) : 0;
     auto timing = video ? video->takeTiming() : FFmpegVideoDecoder::Timing { };
-    ffmpegMediaLog("mse stats: t=%.2f%s %s | video %u decoded %u dropped (+%u presenter) %zu queued, pts %.2f, decode %.1f ms convert %.1f ms per frame (%d threads) | queues v %zu/%.1fs a %zu/%.1fs | audio %s clock %.2f ring %.2fs | buffered ahead %.1fs, %llu KiB appended",
+    ffmpegMediaLog("mse stats: t=%.2f%s %s | video %u decoded %u dropped (+%u presenter) %zu queued, pts %.2f, decode %.1f ms convert %.1f ms per frame (%d threads, %s) | queues v %zu/%.1fs a %zu/%.1fs | audio %s clock %.2f ring %.2fs | buffered ahead %.1fs, %llu KiB appended",
         position, m_seeking ? " SEEKING" : "", readyStateName(m_readyState),
         video ? video->decodedFrames() : 0, video ? video->droppedFrames() : 0, presenterDroppedFrames(), video ? video->queuedFrames() : 0,
-        currentFrame() ? currentFrame()->pts : -1.0, timing.decodeMilliseconds, timing.convertMilliseconds, video ? video->threadCount() : 0,
+        currentFrame() ? currentFrame()->pts : -1.0, timing.decodeMilliseconds, timing.convertMilliseconds, video ? video->threadCount() : 0, video ? video->decodeMode() : "none",
         videoLevel.packets, videoLevel.seconds, audioLevel.packets, audioLevel.seconds,
         m_audioSink ? m_audioSink->name() : "none", audioClock ? *audioClock : -1.0, audio ? audio->bufferedSeconds() : 0.0,
         ahead, static_cast<unsigned long long>(m_bytesAppended >> 10));
