@@ -1,10 +1,11 @@
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>ps5browser video test</title>
-<style>body{background:#111;color:#eee;font:26px/1.4 sans-serif;margin:20px}video{width:1280px;height:720px;background:#000;display:block}button{font-size:26px;padding:10px 20px;margin:6px}#s{font-size:22px;white-space:pre-wrap}</style></head>
+<style>body{background:#111;color:#eee;font:26px/1.4 sans-serif;margin:20px}video{width:1280px;height:720px;background:#000;display:block}button{font-size:26px;padding:10px 20px;margin:6px}#s{font-size:22px;white-space:pre-wrap}#log{font:18px/1.3 monospace;white-space:pre-wrap;max-height:300px;overflow:auto;color:#9c9}</style></head>
 <body>
-<div><button id="mp4">Load MP4 (Big Buck Bunny)</button><button id="hls">Load HLS (mux test)</button><button id="play">Play</button><button id="pause">Pause</button><button id="fs">Fullscreen</button><button id="mute">Mute</button></div>
+<div><button id="mp4">Load MP4 (Big Buck Bunny)</button><button id="hls">Load HLS (mux test)</button><button id="mse">Load MSE (fMP4)</button><button id="seek">Seek +10s</button><button id="play">Play</button><button id="pause">Pause</button><button id="fs">Fullscreen</button><button id="mute">Mute</button></div>
 <video id="v" controls playsinline></video>
 <div id="s">status:</div>
+<div id="log"></div>
 <script>
 var v=document.getElementById('v'), s=document.getElementById('s');
 function st(m){ s.textContent='status: '+m+' | readyState='+v.readyState+' net='+v.networkState+' t='+v.currentTime.toFixed(1)+' dur='+(isFinite(v.duration)?v.duration.toFixed(1):'-')+' size='+v.videoWidth+'x'+v.videoHeight+' err='+(v.error?v.error.code+':'+v.error.message:'none'); }
@@ -16,5 +17,39 @@ document.getElementById('play').onclick=function(){ v.play().then(function(){st(
 document.getElementById('pause').onclick=function(){ v.pause(); };
 document.getElementById('mute').onclick=function(){ v.muted=!v.muted; st('muted='+v.muted); };
 document.getElementById('fs').onclick=function(){ var f=v.requestFullscreen||v.webkitRequestFullscreen; if(f){ try{ var p=f.call(v); if(p&&p.then)p.then(function(){st('fullscreen ok')},function(e){st('fullscreen rejected: '+e)}); else st('fullscreen called'); }catch(e){st('fullscreen threw: '+e);} } else st('no fullscreen API'); };
+// MSE: DASH test content from dash.akamaized.net (CORS: *), separate init and
+// 4 s media segments: H.264 640x360 + HE-AAC, two SourceBuffers.
+var logEl=document.getElementById('log'), t0=Date.now();
+function log(m){ logEl.textContent+=((Date.now()-t0)/1000).toFixed(2)+'s '+m+'\n'; logEl.scrollTop=logEl.scrollHeight; }
+function ranges(b){ var r=[]; for(var i=0;i<b.length;i++) r.push(b.start(i).toFixed(2)+'-'+b.end(i).toFixed(2)); return r.join(',')||'none'; }
+document.getElementById('mse').onclick=function(){
+  if(!window.MediaSource){ log('no MediaSource API'); st('no MediaSource'); return; }
+  var base='https://dash.akamaized.net/akamai/bbb_30fps/';
+  var tracks=[{type:'video/mp4; codecs="avc1.64001e"', rep:'bbb_30fps_640x360_800k', ext:'.m4v'},
+              {type:'audio/mp4; codecs="mp4a.40.5"', rep:'bbb_a64k', ext:'.m4a'}];
+  ['video/mp4; codecs="avc1.64001e"','audio/mp4; codecs="mp4a.40.5"','video/webm; codecs="vp9"','video/mp4; codecs="av01.0.05M.08"','video/webm; codecs="vp9"; width=99999'].forEach(function(ty){ log('isTypeSupported('+ty+') = '+MediaSource.isTypeSupported(ty)); });
+  var segments=8, ms=new MediaSource(), done=0;
+  ['sourceopen','sourceended','sourceclose'].forEach(function(e){ ms.addEventListener(e,function(){ log('MediaSource '+e+' readyState='+ms.readyState); }); });
+  v.src=URL.createObjectURL(ms);
+  ms.addEventListener('sourceopen',function(){
+    tracks.forEach(function(tr){
+      var sb; try{ sb=ms.addSourceBuffer(tr.type); }catch(e){ log('addSourceBuffer '+tr.type+' threw '+e); return; }
+      var n=0, name=tr.rep.indexOf('a64k')>0?'audio':'video';
+      sb.addEventListener('error',function(){ log(name+' SourceBuffer error'); });
+      function next(){
+        if(n>segments){ if(++done==tracks.length && ms.readyState=='open'){ ms.endOfStream(); log('endOfStream, duration='+ms.duration.toFixed(2)); } return; }
+        var url=base+tr.rep+'/'+tr.rep+'_'+n+tr.ext; n++;
+        fetch(url).then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.arrayBuffer(); }).then(function(buf){
+          sb.addEventListener('updateend',function once(){ sb.removeEventListener('updateend',once); log(name+' appended '+buf.byteLength+' B, buffered '+ranges(sb.buffered)); next(); });
+          try{ sb.appendBuffer(buf); }catch(e){ log(name+' appendBuffer threw '+e); }
+        }).catch(function(e){ log(name+' fetch '+url+' failed: '+e); });
+      }
+      next();
+    });
+  });
+  st('mse set');
+};
+document.getElementById('seek').onclick=function(){ v.currentTime=v.currentTime+10; log('seek to '+v.currentTime.toFixed(2)); };
+['seeking','seeked','waiting','playing','canplaythrough','ended','error'].forEach(function(e){ v.addEventListener(e,function(){ log('video '+e+' t='+v.currentTime.toFixed(2)+' rs='+v.readyState+(v.error?' err='+v.error.code:'')+' buffered '+ranges(v.buffered)); }); });
 st('ready');
 </script></body></html>
