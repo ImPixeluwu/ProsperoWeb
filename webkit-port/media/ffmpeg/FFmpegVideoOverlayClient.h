@@ -8,11 +8,19 @@
 // and frame whenever they change. Only the latest frame matters: a frame
 // submitted while the previous one is still being sent replaces it.
 //
+// Remote decoding (RemoteVideoStream below): instead of frames the player's
+// video decoder sends the compressed packets over the same connection, and
+// the UI decodes them; the presenter then only names the frame to show.
+// Once connected, a reader thread receives the server's answers (shm
+// results, stream answers, decoded-frame notices).
+//
 // Engine-independent (POSIX, the C++ library; no WebCore/WTF) so the host
-// tests drive the same code as the engine (FFmpegVideoOverlay.cpp).
+// tests drive the same code as the engine (FFmpegVideoOverlay.cpp,
+// FFmpegVideoDecoder.cpp).
 //
 // Threading: start(), stop() on the owner's thread; setGeometry(), submit(),
-// clear(), state queries and takeStats() from any thread.
+// clear(), openStream(), showRemote(), state queries and takeStats() from
+// any thread. RemoteVideoStream: any thread.
 
 #pragma once
 
@@ -24,6 +32,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdarg>
+#include <deque>
+#include <memory>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -85,6 +95,201 @@ inline double overlayMonotonicSeconds()
     return duration<double>(steady_clock::now().time_since_epoch()).count();
 }
 
+class VideoOverlayClient;
+
+// One stream the UI decodes for a player (FFmpegVideoDecoder's remote mode).
+// Created by VideoOverlayClient::openStream(); it stays valid (shared) after
+// the client is gone, then everything fails softly.
+class RemoteVideoStream {
+public:
+    enum class State : uint8_t { Opening, Hardware, Rejected, Failed, Closed };
+
+    // Flow control: packets sent but not yet consumed by the UI's decoder.
+    static constexpr uint32_t maxPacketsInFlight = 32;
+    static constexpr size_t maxBytesInFlight = 8u << 20;
+
+    explicit RemoteVideoStream(uint32_t id)
+        : m_id(id)
+    {
+    }
+
+    uint32_t id() const { return m_id; }
+
+    State state() const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return m_state;
+    }
+
+    std::string reason() const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return m_reason;
+    }
+
+    static const char* stateName(State state)
+    {
+        switch (state) {
+        case State::Opening:
+            return "opening";
+        case State::Hardware:
+            return "hardware";
+        case State::Rejected:
+            return "rejected";
+        case State::Failed:
+            return "failed";
+        case State::Closed:
+            return "closed";
+        }
+        return "?";
+    }
+
+    // Waits for the UI's answer to the stream-open. A stream that is still
+    // opening when `timeoutSeconds` pass is closed (reason "no answer").
+    State waitForAnswer(double timeoutSeconds, const std::atomic<bool>& abort)
+    {
+        double deadline = overlayMonotonicSeconds() + timeoutSeconds;
+        {
+            std::unique_lock<std::mutex> lock(m_lock);
+            while (m_state == State::Opening && !abort.load()) {
+                double left = deadline - overlayMonotonicSeconds();
+                if (left <= 0)
+                    break;
+                m_changed.wait_for(lock, std::chrono::milliseconds(std::max(1, std::min(50, static_cast<int>(left * 1000)))));
+            }
+            if (m_state != State::Opening)
+                return m_state;
+        }
+        close(abort.load() ? "aborted" : "no answer from the UI");
+        return state();
+    }
+
+    bool usable() const { return state() == State::Hardware; }
+
+    // Room for one more packet of `bytes` (always for the first one).
+    bool hasCredit(size_t bytes) const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return creditLocked(bytes);
+    }
+
+    // Waits up to `seconds` for a notice, an answer or credit.
+    void waitForEvent(double seconds)
+    {
+        std::unique_lock<std::mutex> lock(m_lock);
+        if (!m_notices.empty() || m_state != State::Hardware)
+            return;
+        uint32_t consumed = m_consumed;
+        m_changed.wait_for(lock, std::chrono::microseconds(static_cast<int64_t>(seconds * 1e6)), [&] {
+            return !m_notices.empty() || m_state != State::Hardware || m_consumed != consumed;
+        });
+    }
+
+    // False when the stream is not (or no longer) decoded by the UI.
+    bool sendPacket(const PacketHeader& header, const uint8_t* data, size_t bytes);
+    void reconfigure(StreamOpen open);
+    void flush(uint32_t serial) { control(Type::Flush, { m_id, serial, 0 }); }
+    void drain(uint32_t serial) { control(Type::Drain, { m_id, serial, 0 }); }
+    void show(uint32_t serial, int64_t pts) { control(Type::Show, { m_id, serial, pts }); }
+    void discard(uint32_t serial, int64_t pts) { control(Type::Discard, { m_id, serial, pts }); }
+    // Ends the stream on the UI (stream-close); no more messages.
+    void close(const std::string& reason);
+
+    // Frames decoded and end-of-stream notices, oldest first.
+    std::deque<Decoded> takeNotices()
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        std::deque<Decoded> notices;
+        notices.swap(m_notices);
+        return notices;
+    }
+
+    uint32_t packetsInFlight() const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return static_cast<uint32_t>(m_inFlight.size());
+    }
+
+    uint32_t maxFrames() const
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return m_maxFrames;
+    }
+
+private:
+    friend class VideoOverlayClient;
+
+    bool creditLocked(size_t bytes) const
+    {
+        return m_inFlight.empty() || (m_inFlight.size() < maxPacketsInFlight && m_inFlightBytes + bytes <= maxBytesInFlight);
+    }
+
+    void control(Type type, const StreamControl& control);
+
+    // Reader thread of the client.
+    void received(Type type, const uint8_t* payload, size_t bytes)
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        switch (type) {
+        case Type::StreamOk:
+            if (auto ok = decodeStreamOk(payload, bytes); ok && ok->stream == m_id && m_state == State::Opening) {
+                m_state = State::Hardware;
+                m_maxFrames = ok->maxFrames;
+            }
+            break;
+        case Type::StreamReject:
+        case Type::StreamError:
+            if (auto failure = decodeStreamFailure(payload, bytes); failure && failure->stream == m_id && (m_state == State::Opening || m_state == State::Hardware)) {
+                m_state = type == Type::StreamReject ? State::Rejected : State::Failed;
+                m_reason = failure->reason;
+                m_client = nullptr;
+            }
+            break;
+        case Type::Decoded:
+            if (auto decoded = decodeDecoded(payload, bytes); decoded && decoded->stream == m_id) {
+                // Counts may arrive out of order (two UI threads send them).
+                while (static_cast<int32_t>(decoded->consumed - m_consumed) > 0 && !m_inFlight.empty()) {
+                    m_inFlightBytes -= m_inFlight.front();
+                    m_inFlight.pop_front();
+                    ++m_consumed;
+                }
+                if (static_cast<int32_t>(decoded->consumed - m_consumed) > 0)
+                    m_consumed = decoded->consumed;
+                if (decoded->hasFrame() || decoded->drained())
+                    m_notices.push_back(*decoded);
+            }
+            break;
+        default:
+            return;
+        }
+        m_changed.notify_all();
+    }
+
+    // The client is going away (or lost its connection).
+    void detach(const char* reason)
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        m_client = nullptr;
+        if (m_state == State::Opening || m_state == State::Hardware) {
+            m_state = State::Failed;
+            m_reason = reason;
+        }
+        m_changed.notify_all();
+    }
+
+    const uint32_t m_id;
+    mutable std::mutex m_lock;
+    std::condition_variable m_changed;
+    VideoOverlayClient* m_client { nullptr };
+    State m_state { State::Opening };
+    std::string m_reason;
+    uint32_t m_maxFrames { 0 };
+    uint32_t m_consumed { 0 };
+    std::deque<size_t> m_inFlight;
+    size_t m_inFlightBytes { 0 };
+    std::deque<Decoded> m_notices;
+};
+
 class VideoOverlayClient {
 public:
     static constexpr uint32_t slotCount = 3;
@@ -141,6 +346,43 @@ public:
         if (m_thread.joinable())
             m_thread.join();
         releasePending();
+        detachStream("the overlay closed");
+    }
+
+    // Asks the UI to decode a stream (the answer arrives asynchronously:
+    // RemoteVideoStream::waitForAnswer). Replaces the previous stream.
+    std::shared_ptr<RemoteVideoStream> openStream(StreamOpen open)
+    {
+        auto stream = std::make_shared<RemoteVideoStream>(m_nextStream.fetch_add(1));
+        open.stream = stream->id();
+        detachStream("replaced by a new stream");
+        if (m_state.load() == State::Failed || m_state.load() == State::Stopped) {
+            stream->detach("no overlay server");
+            return stream;
+        }
+        {
+            std::lock_guard<std::mutex> streamLock(stream->m_lock);
+            stream->m_client = this;
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_lock);
+            m_stream = stream;
+            appendStreamOpen(m_streamOut, open);
+        }
+        m_wake.notify_all();
+        return stream;
+    }
+
+    // The presenter shows a remotely decoded frame.
+    void showRemote(uint32_t stream, uint32_t serial, int64_t pts)
+    {
+        std::shared_ptr<RemoteVideoStream> current;
+        {
+            std::lock_guard<std::mutex> lock(m_lock);
+            current = m_stream;
+        }
+        if (current && current->id() == stream)
+            current->show(serial, pts);
     }
 
     State state() const { return m_state.load(); }
@@ -211,6 +453,33 @@ public:
     uint32_t key() const { return m_key.load(); }
 
 private:
+    friend class RemoteVideoStream;
+
+    // From a RemoteVideoStream, holding its lock (lock order: stream, then
+    // client).
+    void enqueueStream(const std::vector<uint8_t>& bytes, const uint8_t* data = nullptr, size_t dataBytes = 0)
+    {
+        {
+            std::lock_guard<std::mutex> lock(m_lock);
+            m_streamOut.insert(m_streamOut.end(), bytes.begin(), bytes.end());
+            if (dataBytes)
+                m_streamOut.insert(m_streamOut.end(), data, data + dataBytes);
+        }
+        m_wake.notify_all();
+    }
+
+    void detachStream(const char* reason)
+    {
+        std::shared_ptr<RemoteVideoStream> stream;
+        {
+            std::lock_guard<std::mutex> lock(m_lock);
+            stream = std::move(m_stream);
+            m_stream = nullptr;
+        }
+        if (stream)
+            stream->detach(reason);
+    }
+
     void log(const std::string& line)
     {
         if (m_config.log)
@@ -247,9 +516,13 @@ private:
             m_state = State::Failed;
             closeSocket();
             releasePending();
+            detachStream("no overlay server");
             return;
         }
         m_state = State::Connected;
+        m_readerStop = false;
+        m_reader = std::thread([this] { readLoop(); });
+        std::vector<uint8_t> streamBytes;
         while (true) {
             Frame frame;
             bool haveFrame = false;
@@ -259,10 +532,12 @@ private:
             {
                 std::unique_lock<std::mutex> lock(m_lock);
                 m_wake.wait_for(lock, std::chrono::milliseconds(200), [this] {
-                    return m_stopping || m_geometryDirty || m_havePending || m_clearRequested;
+                    return m_stopping || m_geometryDirty || m_havePending || m_clearRequested || !m_streamOut.empty() || m_peerGone;
                 });
                 if (m_stopping)
                     break;
+                streamBytes.clear();
+                streamBytes.swap(m_streamOut);
                 if (m_geometryDirty) {
                     geometry = m_geometry;
                     sendGeometry = true;
@@ -278,20 +553,22 @@ private:
                     haveFrame = true;
                 }
             }
-            bool ok = true;
+            bool ok = !m_peerGone.load();
+            if (!ok)
+                errno = ECONNRESET;
             m_out.clear();
             if (sendGeometry)
                 appendGeometry(m_out, geometry);
             if (sendClear)
                 appendMessage(m_out, Type::Clear);
-            if (!m_out.empty())
+            if (ok && !m_out.empty())
                 ok = sendAll(m_out.data(), m_out.size(), overlayMonotonicSeconds() + 2);
+            if (ok && !streamBytes.empty())
+                ok = sendAll(streamBytes.data(), streamBytes.size(), overlayMonotonicSeconds() + 2);
             if (ok && haveFrame)
                 ok = sendFrame(frame);
             if (frame.release)
                 frame.release();
-            if (ok && !haveFrame && !sendGeometry && !sendClear)
-                ok = checkAlive();
             if (!ok) {
                 logf("video overlay: player %u: connection lost (%s)", m_config.player, strerror(errno));
                 m_state = State::Failed;
@@ -304,9 +581,75 @@ private:
             sendAll(m_out.data(), m_out.size(), overlayMonotonicSeconds() + 0.2);
             m_state = State::Stopped;
         }
+        m_readerStop = true;
+        if (m_reader.joinable())
+            m_reader.join();
+        detachStream(m_state.load() == State::Failed ? "connection lost" : "the overlay closed");
         unmapSegment();
         closeSocket();
         releasePending();
+    }
+
+    // Reader thread: everything the server sends after the hello.
+    void readLoop()
+    {
+        Parser parser;
+        while (!m_readerStop.load()) {
+            pollfd descriptor { m_fd, POLLIN, 0 };
+            int ready = ::poll(&descriptor, 1, 100);
+            if (ready < 0 && errno != EINTR)
+                break;
+            if (ready <= 0)
+                continue;
+            bool gone = false;
+            while (true) {
+                uint8_t* buffer = parser.writable(16384);
+                ssize_t got = ::recv(m_fd, buffer, 16384, 0);
+                if (got > 0) {
+                    parser.commit(static_cast<size_t>(got));
+                    continue;
+                }
+                if (!got || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+                    gone = true;
+                break;
+            }
+            while (true) {
+                auto result = parser.next();
+                if (result == Parser::Result::Error) {
+                    gone = true;
+                    break;
+                }
+                if (result != Parser::Result::Message)
+                    break;
+                dispatch(parser.message());
+            }
+            if (gone) {
+                m_peerGone = true;
+                m_wake.notify_all();
+                detachStream("connection lost");
+                return;
+            }
+        }
+    }
+
+    void dispatch(const Parser::Message& message)
+    {
+        if (message.type == Type::ShmResult) {
+            {
+                std::lock_guard<std::mutex> lock(m_lock);
+                m_shmResult = decodeShmResult(message.payload, message.bytes);
+                m_shmAnswered = true;
+            }
+            m_wake.notify_all();
+            return;
+        }
+        std::shared_ptr<RemoteVideoStream> stream;
+        {
+            std::lock_guard<std::mutex> lock(m_lock);
+            stream = m_stream;
+        }
+        if (stream)
+            stream->received(message.type, message.payload, message.bytes);
     }
 
     bool connect()
@@ -430,22 +773,6 @@ private:
                 m_parser.commit(static_cast<size_t>(got));
             else if (!got || (errno != EAGAIN && errno != EINTR))
                 return std::nullopt;
-        }
-    }
-
-    // Idle: notices a server that went away (EOF), drains anything it sent.
-    bool checkAlive()
-    {
-        uint8_t buffer[256];
-        while (true) {
-            ssize_t got = ::recv(m_fd, buffer, sizeof(buffer), 0);
-            if (got > 0)
-                continue;
-            if (!got) {
-                errno = ECONNRESET;
-                return false;
-            }
-            return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
         }
     }
 
@@ -575,13 +902,22 @@ private:
         appendShmOffer(m_out, ShmOffer { kind == Transport::Shm ? ShmKind::Named : ShmKind::File, layout.slots, layout.slotBytes, name });
         double deadline = overlayMonotonicSeconds() + 2;
         std::optional<ShmResult> result;
+        {
+            std::lock_guard<std::mutex> lock(m_lock);
+            m_shmAnswered = false;
+            m_shmResult.reset();
+        }
         if (sendAll(m_out.data(), m_out.size(), deadline)) {
-            while (auto message = receiveMessage(deadline)) {
-                if (message->type == Type::ShmResult) {
-                    result = decodeShmResult(message->payload, message->bytes);
+            // The reader thread receives the answer.
+            std::unique_lock<std::mutex> lock(m_lock);
+            while (!m_shmAnswered && !m_peerGone.load() && !m_stopping) {
+                double left = deadline - overlayMonotonicSeconds();
+                if (left <= 0)
                     break;
-                }
+                m_wake.wait_for(lock, std::chrono::milliseconds(std::max(1, static_cast<int>(left * 1000))));
             }
+            if (m_shmAnswered)
+                result = m_shmResult;
         }
         // Mapped on both sides (or refused): the name is no longer needed,
         // so nothing is left behind even if a process dies.
@@ -631,6 +967,15 @@ private:
     unsigned m_replaced { 0 };
     double m_copySeconds { 0 };
 
+    std::vector<uint8_t> m_streamOut;
+    std::shared_ptr<RemoteVideoStream> m_stream;
+    std::atomic<uint32_t> m_nextStream { 1 };
+    bool m_shmAnswered { false };
+    std::optional<ShmResult> m_shmResult;
+    std::thread m_reader;
+    std::atomic<bool> m_readerStop { false };
+    std::atomic<bool> m_peerGone { false };
+
     // Sender thread only.
     int m_fd { -1 };
     Parser m_parser;
@@ -640,6 +985,60 @@ private:
     uint32_t m_nextSlot { 0 };
     uint32_t m_generation { 0 };
 };
+
+inline bool RemoteVideoStream::sendPacket(const PacketHeader& header, const uint8_t* data, size_t bytes)
+{
+    std::lock_guard<std::mutex> lock(m_lock);
+    if (m_state != State::Hardware || !m_client)
+        return false;
+    std::vector<uint8_t> message;
+    PacketHeader packet = header;
+    packet.stream = m_id;
+    // Header only; the data is appended straight into the client's outbox.
+    appendPacket(message, packet, nullptr, 0);
+    putU32(message.data() + 4, static_cast<uint32_t>(packetHeaderBytes + bytes));
+    m_client->enqueueStream(message, data, bytes);
+    m_inFlight.push_back(bytes);
+    m_inFlightBytes += bytes;
+    return true;
+}
+
+inline void RemoteVideoStream::reconfigure(StreamOpen open)
+{
+    std::lock_guard<std::mutex> lock(m_lock);
+    if (m_state != State::Hardware || !m_client)
+        return;
+    open.stream = m_id;
+    std::vector<uint8_t> message;
+    appendStreamOpen(message, open);
+    m_client->enqueueStream(message);
+}
+
+inline void RemoteVideoStream::control(Type type, const StreamControl& control)
+{
+    std::lock_guard<std::mutex> lock(m_lock);
+    if (m_state != State::Hardware || !m_client)
+        return;
+    std::vector<uint8_t> message;
+    appendStreamControl(message, type, control);
+    m_client->enqueueStream(message);
+}
+
+inline void RemoteVideoStream::close(const std::string& reason)
+{
+    std::lock_guard<std::mutex> lock(m_lock);
+    if (m_client) {
+        std::vector<uint8_t> message;
+        appendStreamControl(message, Type::StreamClose, { m_id, 0, 0 });
+        m_client->enqueueStream(message);
+        m_client = nullptr;
+    }
+    if (m_state == State::Opening || m_state == State::Hardware) {
+        m_state = State::Closed;
+        m_reason = reason;
+    }
+    m_changed.notify_all();
+}
 
 } // namespace VideoWire
 } // namespace FFmpegMedia

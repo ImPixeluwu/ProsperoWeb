@@ -35,6 +35,45 @@
 //       0x80 accepted    u32 player key (unique in the server)
 //       0x81 shm-result  u8 ok, u8[3], u32 errno of the failed open/mmap
 //
+// Remote decoding (PROSPEROWEB_VIDEO_DECODE=ui): instead of pixels the
+// player sends the compressed stream, the UI decodes it (sceVideodec2) and
+// keeps the decoded pictures; the player's presenter still decides which
+// frame is due and names it by its pts. Every message carries the stream id
+// of the stream-open it belongs to, so late messages of a closed stream are
+// ignored. Timestamps are integers in the stream's timebase, echoed
+// unchanged, so the frame the player presents is matched exactly.
+//     client -> server:
+//       7  stream-open  u32 stream, u8 codec, u8 matrix (0 unknown, 1 BT.601,
+//                       2 BT.709, 3 BT.2020), u8 full range, u8, i32 profile,
+//                       i32 level, u32 width, u32 height, i32 timebase num,
+//                       den, then the extradata (avcC/hvcC as the container
+//                       has it, Annex-B, or nothing). Sent again with the same
+//                       stream id when the extradata changes (new avcC on a
+//                       quality switch): the UI reconfigures, no answer.
+//       8  packet       u32 stream, u32 serial, i64 pts, i64 dts, u8 flags
+//                       (1 = keyframe), u8[3], then the packet's bytes as the
+//                       demuxer produced them (length-prefixed or Annex-B;
+//                       the UI converts, see stream-open)
+//       9  flush        u32 stream, u32 serial: a seek; drop everything queued
+//                       and decoded, reset the decoder, continue with `serial`
+//       10 show         u32 stream, u32 serial, i64 pts: present the newest
+//                       decoded frame at or before pts; older ones are released
+//       11 discard      u32 stream, u32 serial, i64 pts: the player dropped
+//                       that frame (late, before a seek target): release it
+//       12 drain        u32 stream, u32 serial: end of stream, output what the
+//                       decoder still holds, then answer decoded(drained)
+//       13 stream-close u32 stream
+//     server -> client:
+//       0x82 stream-ok     u32 stream, u8 mode (1 = hardware), u8[3],
+//                          u32 frames the UI holds at most
+//       0x83 stream-reject u32 stream, reason text: the player decodes itself
+//       0x84 decoded       u32 stream, u32 serial, u32 packets consumed (total
+//                          for the stream, decoded or dropped), u8 flags
+//                          (1 = frame, 2 = drained), u8[3], u32 width,
+//                          u32 height, i64 pts
+//       0x85 stream-error  u32 stream, reason text: decoding failed at run
+//                          time; the player falls back to its own decoder
+//
 // Pixels are BGRA bytes (premultiplied ARGB32 words on little-endian; video
 // is opaque), the layout the decoder's swscale writes.
 //
@@ -79,8 +118,19 @@ enum class Type : uint8_t {
     Frame = 4,
     Clear = 5,
     Close = 6,
+    StreamOpen = 7,
+    Packet = 8,
+    Flush = 9,
+    Show = 10,
+    Discard = 11,
+    Drain = 12,
+    StreamClose = 13,
     Accepted = 0x80,
     ShmResult = 0x81,
+    StreamOk = 0x82,
+    StreamReject = 0x83,
+    Decoded = 0x84,
+    StreamError = 0x85,
 };
 
 enum class ShmKind : uint8_t {
@@ -372,6 +422,261 @@ inline std::optional<FrameInfo> decodeFrame(const uint8_t* payload, size_t bytes
         return std::nullopt;
     *pixels = payload + frameHeaderBytes;
     return frame;
+}
+
+// MARK: Remote decoding
+
+enum class Codec : uint8_t { Other = 0, H264 = 1, Hevc = 2, Vp9 = 3, Av1 = 4 };
+
+inline const char* codecName(Codec codec)
+{
+    switch (codec) {
+    case Codec::H264:
+        return "h264";
+    case Codec::Hevc:
+        return "hevc";
+    case Codec::Vp9:
+        return "vp9";
+    case Codec::Av1:
+        return "av1";
+    case Codec::Other:
+        break;
+    }
+    return "other";
+}
+
+constexpr uint32_t maxExtradata = 64 * 1024;
+constexpr uint32_t maxPacketBytes = 16u << 20;
+constexpr size_t maxReasonBytes = 256;
+
+enum class Matrix : uint8_t { Unknown = 0, Bt601 = 1, Bt709 = 2, Bt2020 = 3 };
+
+struct StreamOpen {
+    uint32_t stream { 0 };
+    Codec codec { Codec::Other };
+    Matrix matrix { Matrix::Unknown };
+    bool fullRange { false };
+    int32_t profile { -1 };
+    int32_t level { -1 };
+    uint32_t width { 0 };
+    uint32_t height { 0 };
+    int32_t timeBaseNum { 1 };
+    int32_t timeBaseDen { 1000000 };
+    std::vector<uint8_t> extradata;
+};
+
+constexpr size_t streamOpenHeaderBytes = 32;
+// The payload: u32 stream @0, codec @4, matrix @5, range @6, profile @8,
+// level @12, width @16, height @20, timebase @24/@28, extradata @32.
+
+inline void appendStreamOpen(std::vector<uint8_t>& out, const StreamOpen& open)
+{
+    std::vector<uint8_t> payload(streamOpenHeaderBytes + open.extradata.size());
+    putU32(payload.data(), open.stream);
+    payload[4] = static_cast<uint8_t>(open.codec);
+    payload[5] = static_cast<uint8_t>(open.matrix);
+    payload[6] = open.fullRange ? 1 : 0;
+    putU32(payload.data() + 8, static_cast<uint32_t>(open.profile));
+    putU32(payload.data() + 12, static_cast<uint32_t>(open.level));
+    putU32(payload.data() + 16, open.width);
+    putU32(payload.data() + 20, open.height);
+    putU32(payload.data() + 24, static_cast<uint32_t>(open.timeBaseNum));
+    putU32(payload.data() + 28, static_cast<uint32_t>(open.timeBaseDen));
+    if (!open.extradata.empty())
+        memcpy(payload.data() + streamOpenHeaderBytes, open.extradata.data(), open.extradata.size());
+    appendMessage(out, Type::StreamOpen, payload.data(), payload.size());
+}
+
+inline std::optional<StreamOpen> decodeStreamOpen(const uint8_t* payload, size_t bytes)
+{
+    if (bytes < streamOpenHeaderBytes || bytes - streamOpenHeaderBytes > maxExtradata)
+        return std::nullopt;
+    StreamOpen open;
+    open.stream = getU32(payload);
+    if (payload[4] > static_cast<uint8_t>(Codec::Av1))
+        return std::nullopt;
+    open.codec = static_cast<Codec>(payload[4]);
+    open.matrix = payload[5] <= static_cast<uint8_t>(Matrix::Bt2020) ? static_cast<Matrix>(payload[5]) : Matrix::Unknown;
+    open.fullRange = payload[6] == 1;
+    open.profile = static_cast<int32_t>(getU32(payload + 8));
+    open.level = static_cast<int32_t>(getU32(payload + 12));
+    open.width = getU32(payload + 16);
+    open.height = getU32(payload + 20);
+    open.timeBaseNum = static_cast<int32_t>(getU32(payload + 24));
+    open.timeBaseDen = static_cast<int32_t>(getU32(payload + 28));
+    if (open.timeBaseNum <= 0 || open.timeBaseDen <= 0)
+        return std::nullopt;
+    open.extradata.assign(payload + streamOpenHeaderBytes, payload + bytes);
+    return open;
+}
+
+struct PacketHeader {
+    uint32_t stream { 0 };
+    uint32_t serial { 0 };
+    int64_t pts { 0 };
+    int64_t dts { 0 };
+    bool keyframe { false };
+};
+
+constexpr size_t packetHeaderBytes = 28;
+
+// Header and data in one message, written straight into `out` (no
+// intermediate copy of the data).
+inline void appendPacket(std::vector<uint8_t>& out, const PacketHeader& packet, const uint8_t* data, size_t bytes)
+{
+    size_t offset = out.size();
+    out.resize(offset + headerSize + packetHeaderBytes + bytes);
+    uint8_t* message = out.data() + offset;
+    encodeHeader(Type::Packet, static_cast<uint32_t>(packetHeaderBytes + bytes), message);
+    uint8_t* header = message + headerSize;
+    putU32(header, packet.stream);
+    putU32(header + 4, packet.serial);
+    putU64(header + 8, static_cast<uint64_t>(packet.pts));
+    putU64(header + 16, static_cast<uint64_t>(packet.dts));
+    header[24] = packet.keyframe ? 1 : 0;
+    header[25] = header[26] = header[27] = 0;
+    if (bytes)
+        memcpy(header + packetHeaderBytes, data, bytes);
+}
+
+// The header; the data is the rest of the payload (`*data`, `*dataBytes`).
+inline std::optional<PacketHeader> decodePacket(const uint8_t* payload, size_t bytes, const uint8_t** data, size_t* dataBytes)
+{
+    if (bytes < packetHeaderBytes || bytes - packetHeaderBytes > maxPacketBytes)
+        return std::nullopt;
+    PacketHeader packet;
+    packet.stream = getU32(payload);
+    packet.serial = getU32(payload + 4);
+    packet.pts = static_cast<int64_t>(getU64(payload + 8));
+    packet.dts = static_cast<int64_t>(getU64(payload + 16));
+    packet.keyframe = payload[24] & 1;
+    *data = payload + packetHeaderBytes;
+    *dataBytes = bytes - packetHeaderBytes;
+    return packet;
+}
+
+// flush, drain, stream-close (pts unused), show, discard.
+struct StreamControl {
+    uint32_t stream { 0 };
+    uint32_t serial { 0 };
+    int64_t pts { 0 };
+};
+
+inline void appendStreamControl(std::vector<uint8_t>& out, Type type, const StreamControl& control)
+{
+    uint8_t payload[16];
+    putU32(payload, control.stream);
+    putU32(payload + 4, control.serial);
+    putU64(payload + 8, static_cast<uint64_t>(control.pts));
+    size_t bytes = (type == Type::Show || type == Type::Discard) ? 16 : (type == Type::StreamClose ? 4 : 8);
+    appendMessage(out, type, payload, bytes);
+}
+
+inline std::optional<StreamControl> decodeStreamControl(Type type, const uint8_t* payload, size_t bytes)
+{
+    size_t expected = (type == Type::Show || type == Type::Discard) ? 16 : (type == Type::StreamClose ? 4 : 8);
+    if (bytes != expected)
+        return std::nullopt;
+    StreamControl control;
+    control.stream = getU32(payload);
+    if (bytes >= 8)
+        control.serial = getU32(payload + 4);
+    if (bytes >= 16)
+        control.pts = static_cast<int64_t>(getU64(payload + 8));
+    return control;
+}
+
+struct StreamOk {
+    uint32_t stream { 0 };
+    uint8_t mode { 1 };
+    uint32_t maxFrames { 0 };
+};
+
+inline void appendStreamOk(std::vector<uint8_t>& out, const StreamOk& ok)
+{
+    uint8_t payload[12] = { };
+    putU32(payload, ok.stream);
+    payload[4] = ok.mode;
+    putU32(payload + 8, ok.maxFrames);
+    appendMessage(out, Type::StreamOk, payload, sizeof(payload));
+}
+
+inline std::optional<StreamOk> decodeStreamOk(const uint8_t* payload, size_t bytes)
+{
+    if (bytes != 12)
+        return std::nullopt;
+    return StreamOk { getU32(payload), payload[4], getU32(payload + 8) };
+}
+
+// stream-reject and stream-error: the stream and a reason.
+struct StreamFailure {
+    uint32_t stream { 0 };
+    std::string reason;
+};
+
+inline void appendStreamFailure(std::vector<uint8_t>& out, Type type, const StreamFailure& failure)
+{
+    std::string reason = failure.reason.substr(0, maxReasonBytes);
+    std::vector<uint8_t> payload(4 + reason.size());
+    putU32(payload.data(), failure.stream);
+    memcpy(payload.data() + 4, reason.data(), reason.size());
+    appendMessage(out, type, payload.data(), payload.size());
+}
+
+inline std::optional<StreamFailure> decodeStreamFailure(const uint8_t* payload, size_t bytes)
+{
+    if (bytes < 4 || bytes > 4 + maxReasonBytes)
+        return std::nullopt;
+    StreamFailure failure;
+    failure.stream = getU32(payload);
+    failure.reason.assign(reinterpret_cast<const char*>(payload + 4), bytes - 4);
+    return failure;
+}
+
+struct Decoded {
+    enum Flags : uint8_t { HasFrame = 1, Drained = 2 };
+    uint32_t stream { 0 };
+    uint32_t serial { 0 };
+    uint32_t consumed { 0 };
+    uint8_t flags { 0 };
+    uint32_t width { 0 };
+    uint32_t height { 0 };
+    int64_t pts { 0 };
+
+    bool hasFrame() const { return flags & HasFrame; }
+    bool drained() const { return flags & Drained; }
+};
+
+constexpr size_t decodedBytes = 32;
+
+inline void appendDecoded(std::vector<uint8_t>& out, const Decoded& decoded)
+{
+    uint8_t payload[decodedBytes] = { };
+    putU32(payload, decoded.stream);
+    putU32(payload + 4, decoded.serial);
+    putU32(payload + 8, decoded.consumed);
+    payload[12] = decoded.flags;
+    putU32(payload + 16, decoded.width);
+    putU32(payload + 20, decoded.height);
+    putU64(payload + 24, static_cast<uint64_t>(decoded.pts));
+    appendMessage(out, Type::Decoded, payload, sizeof(payload));
+}
+
+inline std::optional<Decoded> decodeDecoded(const uint8_t* payload, size_t bytes)
+{
+    if (bytes != decodedBytes)
+        return std::nullopt;
+    Decoded decoded;
+    decoded.stream = getU32(payload);
+    decoded.serial = getU32(payload + 4);
+    decoded.consumed = getU32(payload + 8);
+    decoded.flags = payload[12];
+    decoded.width = getU32(payload + 16);
+    decoded.height = getU32(payload + 20);
+    decoded.pts = static_cast<int64_t>(getU64(payload + 24));
+    if (decoded.hasFrame() && (!decoded.width || !decoded.height || decoded.width > 8192 || decoded.height > 8192))
+        return std::nullopt;
+    return decoded;
 }
 
 // Shared memory segment: header page, then the slots.
