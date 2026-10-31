@@ -19,6 +19,11 @@
 #   WEBKIT_BUILD_DIR  build directory                 (build-wk-ps5)
 #   JOBS              parallel compile jobs           (4)
 #   USE_FFMPEG        ffmpeg <video> engine (0900)    (ON)
+#   ENABLE_JIT        baseline + DFG JIT compiled in  (ON; FTL stays off)
+#   ENABLE_WEBASSEMBLY WebAssembly (IPInt, no BBQ/OMG) (ON)
+#                     Both are compiled in but off at run time: the shell
+#                     sets JSC_useJIT=false and JSC_useWasm=false unless
+#                     config.json "env" says otherwise (docs/ps5-runtime.md).
 #   WEBKIT_CMAKE_ARGS extra arguments for cmake
 #
 # Requires third_party/webkit fetched and patched (scripts/ps5/fetch-webkit.sh)
@@ -81,8 +86,8 @@ configure() {
         -DUSE_THIN_ARCHIVES=OFF \
         -DENABLE_UNIFIED_BUILDS=ON \
         -DENABLE_STATIC_JSC=ON \
-        -DENABLE_JIT=OFF -DENABLE_DFG_JIT=OFF -DENABLE_FTL_JIT=OFF \
-        -DENABLE_WEBASSEMBLY=OFF \
+        -DENABLE_JIT="${ENABLE_JIT:-ON}" -DENABLE_DFG_JIT="${ENABLE_JIT:-ON}" -DENABLE_FTL_JIT=OFF \
+        -DENABLE_WEBASSEMBLY="${ENABLE_WEBASSEMBLY:-ON}" \
         -DENABLE_VIDEO=ON \
         -DENABLE_MEDIA_SOURCE=OFF \
         -DUSE_FFMPEG="${USE_FFMPEG:-ON}" \
