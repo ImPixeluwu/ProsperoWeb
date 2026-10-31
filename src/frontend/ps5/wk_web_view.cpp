@@ -352,8 +352,15 @@ void WkWebView::pointer_button(int x, int y, int wk_mouse_button, bool pressed) 
 }
 
 void WkWebView::scroll(int x, int y, int dx, int dy) {
+  if (dx == 0 && dy == 0) {
+    return;
+  }
+  // dx/dy are pixels, positive = scroll the content right/down (EngineView).
+  // WebKit's wheel delta is the opposite (positive scrolls up/left, as in the
+  // WPE Wayland seat, which negates wl_pointer axis values), hence the sign
+  // flip. Patch 0011 sends it as one precise-pixel 2D wheel event.
   WKWheelEvent e = WKWheelEventMake(kWKEventWheel, WKPointMake(x, y),
-                                    WKSizeMake(dx, dy), WKSizeMake(0, 0), 0);
+                                    WKSizeMake(-dx, -dy), WKSizeMake(0, 0), 0);
   WKPageHandleWheelEvent(page_, e);
 }
 

@@ -33,7 +33,7 @@ Overlay that builds the upstream WebKit **PlayStation port** (`-DPORT=PlayStatio
 | `0008-skia-freebsd-malloc-usable-size` | `malloc_usable_size()` from `<malloc_np.h>` on FreeBSD |
 | `0009-webkit-static-injected-bundle` | injected bundle = weak `WKBundleInitialize` linked into the executable (no Sony `library-bundle.h`) |
 | `0010-webcore-timing-function-destructors` | out-of-line `*TimingFunction` destructors: clang 18 / PS5 target leaves the vtable-referenced destructors undefined |
-| `0011-webkit-playstation-page-api` | `WKPagePrivatePlayStation`: `WKPageSetDrawsTransparentBackground()` (transparent chrome view); the Skia background fill in `WKPagePaint` clipped to the unpainted rect; `WKPageHandleKeyboardEvent` forwards modifiers and event text (keysym in `virtualKeyCode`) |
+| `0011-webkit-playstation-page-api` | `WKPagePrivatePlayStation`: `WKPageSetDrawsTransparentBackground()` (transparent chrome view); the Skia background fill in `WKPagePaint` clipped to the unpainted rect; `WKPageHandleKeyboardEvent` forwards modifiers and event text (keysym in `virtualKeyCode`); `WKPageHandleWheelEvent` sends one precise-pixel 2D event, none for a zero delta |
 | `0900-ffmpeg-media-player` | `MediaPlayerPrivateFFmpeg` (`USE_FFMPEG`): software `<video>`/`<audio>` (progressive + HLS) on the SDK's ffmpeg; generated from `media/ffmpeg/`, edit there and run `media/sync-to-tree.sh` |
 
 Editing patches: change files in `third_party/webkit/`, then run `scripts/ps5/export-webkit-patches.sh`, which rewrites `patches/*.patch` (keeping each patch's header text) from the tree. Every changed path must belong to one topic listed in that script.

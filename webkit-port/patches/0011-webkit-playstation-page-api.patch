@@ -10,8 +10,12 @@ whole surface.
 WKPageHandleKeyboardEvent forwards the WKKeyboardEvent modifiers and
 text (so Return fires keypress and submits forms); virtualKeyCode is a
 WPE keysym, as before.
+
+WKPageHandleWheelEvent sends one precise-pixel 2D (smooth) wheel event
+and nothing for a zero delta. Before, each axis became a separate line
+tick: the magnitude was lost and a 0 delta still scrolled one line.
 diff --git a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp b/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
-index 8a0972133..9b7bd65b5 100644
+index 8a0972133..02404a9ae 100644
 --- a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
 +++ b/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
 @@ -62,10 +62,28 @@ static void drawPageBackground(WebKit::PlatformPaintContextPtr ctx, const std::o
@@ -81,6 +85,35 @@ index 8a0972133..9b7bd65b5 100644
  }
  
  void WKPageHandleMouseEvent(WKPageRef pageRef, WKMouseEvent event)
+@@ -153,6 +193,20 @@ void WKPageHandleWheelEvent(WKPageRef pageRef, WKWheelEvent event)
+     int positionX = event.position.x;
+     int positionY = event.position.y;
+ 
++#if defined(PS5_HOMEBREW)
++    // One precise (pixel) 2D event instead of a line tick per axis: libwpe's
++    // per-axis motion event ignores the magnitude and turns a 0 delta into a
++    // +1 tick, so every scroll also scrolled the other axis. WebKit's sign
++    // convention applies: a positive delta scrolls up/left.
++    if (!event.delta.width && !event.delta.height)
++        return;
++    struct wpe_input_axis_2d_event smoothEvent = {
++        { static_cast<enum wpe_input_axis_event_type>(wpe_input_axis_event_type_mask_2d | wpe_input_axis_event_type_motion_smooth),
++            0, positionX, positionY, 0, 0, 0 },
++        event.delta.width, event.delta.height
++    };
++    WebKit::toImpl(pageRef)->handleNativeWheelEvent(NativeWebWheelEvent::create(&smoothEvent.base, deviceScaleFactor, WebWheelEvent::Phase::None, WebWheelEvent::Phase::None));
++#else
+     struct wpe_input_axis_event xEvent = {
+         wpe_input_axis_event_type_motion,
+         0, positionX, positionY,
+@@ -168,6 +222,7 @@ void WKPageHandleWheelEvent(WKPageRef pageRef, WKWheelEvent event)
+     };
+ 
+     WebKit::toImpl(pageRef)->handleNativeWheelEvent(NativeWebWheelEvent::create(&yEvent, deviceScaleFactor, WebWheelEvent::Phase::None, WebWheelEvent::Phase::None));
++#endif
+ }
+ 
+ void WKPagePaint(WKPageRef pageRef, unsigned char* surfaceData, WKSize wkSurfaceSize, WKRect wkPaintRect)
 diff --git a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.h b/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.h
 index 674924662..74ea890ea 100644
 --- a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.h
