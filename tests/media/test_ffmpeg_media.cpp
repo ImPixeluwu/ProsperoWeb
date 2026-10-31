@@ -237,19 +237,36 @@ TEST_SUITE("media_ring") {
 TEST_SUITE("media_policy") {
   TEST_CASE("network read-ahead is capped with and without Range or a size") {
     const uint64_t mib = 1u << 20;
-    // Range support, known size: the 16 MiB high water mark.
-    CHECK_FALSE(networkShouldSuspend(16 * mib, 100 * mib, 1000 * mib, true));
-    CHECK(networkShouldSuspend(16 * mib + 1, 100 * mib, 1000 * mib, true));
+    const uint64_t high = networkHighWaterBytes;
+    const uint64_t noRange = networkNoRangeHighWaterBytes;
+    CHECK(high == 8 * mib);
+    CHECK(noRange > high);
+    // Range support, known size: the high water mark.
+    CHECK_FALSE(networkShouldSuspend(high, 100 * mib, 1000 * mib, true));
+    CHECK(networkShouldSuspend(high + 1, 100 * mib, 1000 * mib, true));
     // Unknown size (chunked) is capped the same way.
-    CHECK(networkShouldSuspend(17 * mib, 100 * mib, -1, true));
+    CHECK(networkShouldSuspend(high + mib, 100 * mib, -1, true));
     // No Range support: a higher cap, but still a cap.
-    CHECK_FALSE(networkShouldSuspend(17 * mib, 100 * mib, -1, false));
-    CHECK(networkShouldSuspend(64 * mib + 1, 100 * mib, -1, false));
-    CHECK(networkShouldSuspend(64 * mib + 1, 100 * mib, 1000 * mib, false));
+    CHECK_FALSE(networkShouldSuspend(high + mib, 100 * mib, -1, false));
+    CHECK(networkShouldSuspend(noRange + 1, 100 * mib, -1, false));
+    CHECK(networkShouldSuspend(noRange + 1, 100 * mib, 1000 * mib, false));
     // The whole resource is here: never suspend.
     CHECK_FALSE(networkShouldSuspend(100 * mib, 1000 * mib, 1000 * mib, true));
-    CHECK(networkShouldResume(4 * mib - 1));
-    CHECK_FALSE(networkShouldResume(4 * mib));
+    CHECK(networkShouldResume(networkLowWaterBytes - 1));
+    CHECK_FALSE(networkShouldResume(networkLowWaterBytes));
+  }
+
+  TEST_CASE("video frame rows leave room for swscale's 8-pixel stores") {
+    for (int width : { 2, 426, 480, 640, 854, 1278, 1280, 1366, 1920 }) {
+      const size_t stride = videoFrameStride(width);
+      const size_t rounded = static_cast<size_t>((width + 7) & ~7) * 4;
+      CHECK(stride % 64 == 0);
+      CHECK(stride >= rounded);
+      // The last row's overrun stays inside the buffer.
+      CHECK(videoFrameBytes(width, 270) >= stride * 269 + rounded);
+    }
+    CHECK(videoFrameStride(0) == 0);
+    CHECK(videoFrameBytes(1920, 0) == 0);
   }
 
   TEST_CASE("demuxer read-ahead") {

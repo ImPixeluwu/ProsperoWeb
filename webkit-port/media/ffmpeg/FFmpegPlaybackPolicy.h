@@ -15,8 +15,8 @@ namespace FFmpegMedia {
 // Demuxer read-ahead limits. Reading pauses (networkState IDLE) when either
 // the total queued bytes reach maxQueuedBytes or every enabled stream has at
 // least maxQueuedSeconds queued; it resumes once that is no longer true.
-inline constexpr size_t maxQueuedBytes = 48u << 20;
-inline constexpr double maxQueuedSeconds = 15.0;
+inline constexpr size_t maxQueuedBytes = 24u << 20;
+inline constexpr double maxQueuedSeconds = 10.0;
 // A stream with fewer packets than this is never considered "full" (sparse
 // streams or broken durations must not stall the other stream).
 inline constexpr size_t minQueuedPackets = 25;
@@ -47,9 +47,9 @@ inline bool demuxerShouldWait(size_t totalBytes, const QueueLevel& video, const 
 // restarting the download and skipping to the position, which is expensive,
 // so it gets a higher (but still finite) cap: buffering it without limit
 // could take the whole body of a long progressive video into memory.
-inline constexpr uint64_t networkHighWaterBytes = 16u << 20;
-inline constexpr uint64_t networkLowWaterBytes = 4u << 20;
-inline constexpr uint64_t networkNoRangeHighWaterBytes = 64u << 20;
+inline constexpr uint64_t networkHighWaterBytes = 8u << 20;
+inline constexpr uint64_t networkLowWaterBytes = 2u << 20;
+inline constexpr uint64_t networkNoRangeHighWaterBytes = 32u << 20;
 
 // unreadBytes: received data at or after the read position. size: total
 // resource size, or < 0 when unknown (no Content-Length, chunked).
@@ -64,6 +64,32 @@ inline bool networkShouldSuspend(uint64_t unreadBytes, uint64_t receivedEnd, int
 inline bool networkShouldResume(uint64_t unreadBytes)
 {
     return unreadBytes < networkLowWaterBytes;
+}
+
+// Layout of a decoded BGRA video frame. libswscale's x86 output loops store
+// 8 pixels per iteration (REAL_WRITEBGR32 in libswscale/x86/
+// swscale_template.c: "add $8, index; cmp dstw, index; jb"), so a row is
+// written up to the next multiple of 8 pixels: a tightly packed buffer
+// (stride = width * 4) is overrun by up to 28 bytes after its last row,
+// into the allocator's metadata. Rows are therefore padded to 64 bytes
+// (which is also what libswscale's SIMD paths want for alignment) and the
+// buffer gets a spare tail.
+inline constexpr size_t videoFrameAlignment = 64;
+inline constexpr size_t videoFrameTailPadding = 256;
+
+inline size_t videoFrameStride(int width)
+{
+    if (width <= 0)
+        return 0;
+    size_t bytes = static_cast<size_t>(width) * 4;
+    return (bytes + videoFrameAlignment - 1) & ~(videoFrameAlignment - 1);
+}
+
+inline size_t videoFrameBytes(int width, int height)
+{
+    if (width <= 0 || height <= 0)
+        return 0;
+    return videoFrameStride(width) * static_cast<size_t>(height) + videoFrameTailPadding;
 }
 
 // Thresholds on contiguous data ahead of the current position.

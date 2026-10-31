@@ -6,7 +6,10 @@
 #if ENABLE(VIDEO) && USE(FFMPEG)
 
 #include "FFmpegDemuxer.h"
+#include "FFmpegLog.h"
 #include "Logging.h"
+#include <cstdlib>
+#include <cstring>
 
 extern "C" {
 #include <libavutil/imgutils.h>
@@ -23,13 +26,23 @@ constexpr Seconds outputWaitTimeout = 20_ms;
 // Decoded frames waiting for presentation. Small: each 1080p BGRA frame is
 // 8 MiB, and the presentation tick only ever needs the next one or two.
 constexpr size_t maxOutputFrames = 3;
-constexpr size_t maxPooledFrames = 6;
+constexpr size_t maxPooledFrames = 5;
 // Output is capped at 1080p; anything bigger is downscaled by swscale.
 constexpr int maxOutputWidth = 1920;
 constexpr int maxOutputHeight = 1080;
 // Decoder threads. The WebProcess shares the Zen 2 cores with the UI
-// process and the audio decoder; 4 leaves headroom.
+// process and the audio decoder; 4 leaves headroom. Slice threading only:
+// frame threading keeps a picture per thread in flight (more memory, more
+// latency), and its worker threads ("av:h264:df*") are where the console
+// crashes of run 4/5 surfaced. One Zen 2 core decodes 1080p30 H.264 in
+// real time; PS5BROWSER_MEDIA_FRAME_THREADS=1 turns frame threading back on.
 constexpr int decoderThreads = 4;
+
+bool frameThreadsRequested()
+{
+    const char* value = getenv("PS5BROWSER_MEDIA_FRAME_THREADS");
+    return value && !strcmp(value, "1");
+}
 // A frame this far behind the clock is dropped before conversion; one in
 // lateFrameKeepInterval late frames is still shown so the picture moves.
 constexpr double lateThreshold = 0.08;
@@ -67,12 +80,15 @@ RefPtr<FFmpegVideoDecoder> FFmpegVideoDecoder::create(const FFmpegStreamInfo& st
         return nullptr;
     context->pkt_timebase = stream.timeBase;
     context->thread_count = decoderThreads;
-    context->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+    context->thread_type = frameThreadsRequested() ? (FF_THREAD_FRAME | FF_THREAD_SLICE) : FF_THREAD_SLICE;
     int result = avcodec_open2(context.get(), codec, nullptr);
     if (result < 0) {
-        LOG(Media, "FFmpegVideoDecoder: cannot open %s: %s", codec->name, ffmpegErrorString(result).utf8().legacyCStringPointer());
+        ffmpegMediaLog("video decoder %s: open failed: %s", codec->name, ffmpegErrorString(result).utf8().legacyCStringPointer());
         return nullptr;
     }
+    ffmpegMediaLog("video decoder %s: %dx%d %s, %d threads (%s)", codec->name, context->width, context->height,
+        av_get_pix_fmt_name(context->pix_fmt) ? av_get_pix_fmt_name(context->pix_fmt) : "?", context->thread_count,
+        (context->active_thread_type & FF_THREAD_FRAME) ? "frame+slice" : (context->active_thread_type & FF_THREAD_SLICE) ? "slice" : "none");
     return adoptRef(*new FFmpegVideoDecoder(stream, queue, WTF::move(context)));
 }
 
@@ -194,7 +210,8 @@ bool FFmpegVideoDecoder::handlePacket(AVPacket* packet)
     }
     if (result < 0 && result != AVERROR(EAGAIN) && result != AVERROR_EOF) {
         // Corrupt packets are routine in live streams; keep going.
-        LOG(Media, "FFmpegVideoDecoder: send_packet: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
+        if (!(m_sendErrors++ % 100))
+            ffmpegMediaLog("video decoder: send_packet: %s (%u errors)", ffmpegErrorString(result).utf8().legacyCStringPointer(), m_sendErrors);
     }
     receiveFrames();
     return !m_stopping;
@@ -207,7 +224,8 @@ void FFmpegVideoDecoder::receiveFrames()
         if (result == AVERROR(EAGAIN) || result == AVERROR_EOF)
             return;
         if (result < 0) {
-            LOG(Media, "FFmpegVideoDecoder: receive_frame: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
+            if (!(m_sendErrors++ % 100))
+                ffmpegMediaLog("video decoder: receive_frame: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
             return;
         }
         ++m_decodedFrames;
@@ -227,9 +245,16 @@ RefPtr<FFmpegVideoFrame> FFmpegVideoDecoder::takePoolFrame(int width, int height
         if (frame->hasOneRef())
             return frame.ptr();
     }
-    auto frame = FFmpegVideoFrame::create(width, height);
-    if (m_pool.size() < maxPooledFrames)
-        m_pool.append(frame);
+    RefPtr frame = FFmpegVideoFrame::create(width, height);
+    if (!frame) {
+        ffmpegMediaLog("video decoder: cannot allocate a %dx%d frame", width, height);
+        return nullptr;
+    }
+    if (m_pool.size() < maxPooledFrames) {
+        m_pool.append(Ref { *frame });
+        ffmpegMediaLog("video decoder: frame pool %zu x %dx%d (stride %zu, %zu KiB each)", m_pool.size(), width, height,
+            frame->stride(), frame->sizeInBytes() >> 10);
+    }
     return frame;
 }
 
@@ -280,10 +305,14 @@ void FFmpegVideoDecoder::emitFrame(AVFrame* frame)
     int width = m_outputWidth;
     int height = m_outputHeight;
     RefPtr output = takePoolFrame(width, height);
+    if (!output) {
+        ++m_droppedFrames;
+        return;
+    }
     m_sws = sws_getCachedContext(m_sws, frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
         width, height, AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr, nullptr, nullptr);
     if (!m_sws) {
-        LOG(Media, "FFmpegVideoDecoder: no swscale path from %s", av_get_pix_fmt_name(static_cast<AVPixelFormat>(frame->format)));
+        ffmpegMediaLog("video decoder: no swscale path from %s", av_get_pix_fmt_name(static_cast<AVPixelFormat>(frame->format)));
         m_fatalError = true;
         return;
     }

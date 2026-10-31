@@ -14,6 +14,7 @@
 
 #if ENABLE(VIDEO) && USE(FFMPEG)
 
+#include "FFmpegPlaybackPolicy.h"
 #include "FFmpegUtilities.h"
 #include <atomic>
 #include <wtf/Condition.h>
@@ -29,35 +30,50 @@ namespace WebCore {
 
 class FFmpegPacketQueue;
 
+// Pixels live in an av_malloc() block (64-byte aligned) with rows padded to
+// videoFrameStride(): libswscale's SIMD stores run past the row end (see
+// FFmpegPlaybackPolicy.h), which overran a tightly packed buffer into the
+// heap allocator's metadata.
 class FFmpegVideoFrame final : public ThreadSafeRefCounted<FFmpegVideoFrame> {
 public:
-    static Ref<FFmpegVideoFrame> create(int width, int height)
+    // nullptr when the allocation fails.
+    static RefPtr<FFmpegVideoFrame> create(int width, int height)
     {
-        return adoptRef(*new FFmpegVideoFrame(width, height));
+        size_t bytes = FFmpegMedia::videoFrameBytes(width, height);
+        if (!bytes)
+            return nullptr;
+        auto* pixels = static_cast<uint8_t*>(av_malloc(bytes));
+        if (!pixels)
+            return nullptr;
+        return adoptRef(*new FFmpegVideoFrame(width, height, pixels, bytes));
     }
+
+    ~FFmpegVideoFrame() { av_free(m_pixels); }
 
     int width() const { return m_width; }
     int height() const { return m_height; }
-    size_t stride() const { return static_cast<size_t>(m_width) * 4; }
-    uint8_t* data() { return m_pixels.mutableSpan().data(); }
-    const uint8_t* data() const { return m_pixels.span().data(); }
-    size_t sizeInBytes() const { return m_pixels.size(); }
+    size_t stride() const { return FFmpegMedia::videoFrameStride(m_width); }
+    uint8_t* data() { return m_pixels; }
+    const uint8_t* data() const { return m_pixels; }
+    size_t sizeInBytes() const { return m_bytes; }
 
     double pts { 0 };
     double duration { 0 };
     unsigned serial { 0 };
 
 private:
-    FFmpegVideoFrame(int width, int height)
+    FFmpegVideoFrame(int width, int height, uint8_t* pixels, size_t bytes)
         : m_width(width)
         , m_height(height)
-        , m_pixels(static_cast<size_t>(width) * height * 4)
+        , m_pixels(pixels)
+        , m_bytes(bytes)
     {
     }
 
-    int m_width;
-    int m_height;
-    Vector<uint8_t> m_pixels;
+    const int m_width;
+    const int m_height;
+    uint8_t* const m_pixels;
+    const size_t m_bytes;
 };
 
 class FFmpegVideoDecoder final : public ThreadSafeRefCounted<FFmpegVideoDecoder> {
@@ -123,6 +139,7 @@ private:
     bool m_waitingForKeyframe { false };
     bool m_skippingLoopFilter { false };
     unsigned m_lateFrames { 0 };
+    unsigned m_sendErrors { 0 };
     Vector<Ref<FFmpegVideoFrame>> m_pool;
 
     mutable Lock m_lock;
