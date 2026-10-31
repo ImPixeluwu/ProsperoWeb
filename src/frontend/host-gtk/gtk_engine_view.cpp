@@ -9,33 +9,6 @@ namespace ps5browser::host {
 
 namespace {
 
-// Host-only helper script: reports focus changes of editable elements so the
-// shell can offer the on-screen keyboard (EngineViewClient::text_input_focused).
-constexpr const char* kFocusReporterScript = R"JS((function () {
-  'use strict';
-  function editable(e) {
-    if (!e) return false;
-    if (e.isContentEditable) return true;
-    var tag = e.tagName;
-    if (tag === 'TEXTAREA') return !e.readOnly && !e.disabled;
-    if (tag === 'INPUT') {
-      var type = (e.getAttribute('type') || 'text').toLowerCase();
-      return ['text', 'search', 'email', 'url', 'tel', 'password', 'number'].indexOf(type) >= 0 &&
-             !e.readOnly && !e.disabled;
-    }
-    return false;
-  }
-  function post(value) {
-    try {
-      window.webkit.messageHandlers.ps5browser.postMessage({ type: 'focus', editable: value });
-    } catch (e) {
-    }
-  }
-  document.addEventListener('focusin', function (ev) { post(editable(ev.target)); }, true);
-  document.addEventListener('focusout', function () { post(false); }, true);
-})();
-)JS";
-
 std::string js_string(const std::string& s) {
   return nlohmann::json(s).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
@@ -55,7 +28,7 @@ GtkEngineView::GtkEngineView(shell::EngineViewClient& client, WebKitNetworkSessi
     : client_(client), stack_(stack) {
   content_manager_ = webkit_user_content_manager_new();
   add_user_script(content_manager_, core::kEmeDetectorScript);
-  add_user_script(content_manager_, kFocusReporterScript);
+  add_user_script(content_manager_, core::kFocusReporterScript);
   webkit_user_content_manager_register_script_message_handler(content_manager_, "ps5browser",
                                                               nullptr);
   g_signal_connect(content_manager_, "script-message-received::ps5browser",

@@ -10,6 +10,8 @@
 #include <WebKit/WKWebsiteDataStoreRef.h>
 #include <wpe/wpe.h>  // WPE_KEY_* keysyms
 
+#include <nlohmann/json.hpp>
+
 #include "wk_helpers.h"
 
 namespace ps5browser::frontend {
@@ -111,7 +113,19 @@ Ps5EngineView::Ps5EngineView(shell::EngineViewClient& client, WKContextRef conte
   cb.create_new_page = [this](const std::string& url) {
     client_.new_window_requested(url);
   };
-  cb.script_message = [this](const std::string& json) { client_.script_message(json); };
+  cb.script_message = [this](const std::string& json) {
+    // Focus reports from core::kFocusReporterScript drive the OSK auto-open;
+    // everything else (EME reports, ...) goes to the shell as is.
+    const auto msg = nlohmann::json::parse(json, nullptr, /*allow_exceptions=*/false);
+    const auto type = msg.is_object() ? msg.find("type") : msg.end();
+    if (type != msg.end() && *type == "focus") {
+      const auto editable = msg.find("editable");
+      client_.text_input_focused(editable != msg.end() && editable->is_boolean() &&
+                                 editable->get<bool>());
+    } else {
+      client_.script_message(json);
+    }
+  };
 
   web_ = std::make_unique<WkWebView>(context, data_store, "ps5browser", user_scripts,
                                      /*fullscreen_enabled=*/true, std::move(cb));

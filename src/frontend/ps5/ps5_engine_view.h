@@ -53,7 +53,8 @@ class Ps5EngineView final : public shell::EngineView {
 class Ps5EngineFactory final : public shell::EngineFactory {
  public:
   // base_dir is the persistence root (/data/ps5browser). user_scripts are
-  // injected into every content view (the EME detector and gamepad bridge).
+  // injected into every content view (EME detector, focus reporter, gamepad
+  // bridge).
   Ps5EngineFactory(const std::string& base_dir,
                    std::vector<std::string> user_scripts,
                    std::string user_agent);

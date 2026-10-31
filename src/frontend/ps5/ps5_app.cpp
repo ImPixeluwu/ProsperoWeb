@@ -158,6 +158,7 @@ int Ps5App::run() {
   WKRunLoopInitializeMain();
 
   std::vector<std::string> user_scripts = {core::kEmeDetectorScript,
+                                           core::kFocusReporterScript,
                                            core::kGamepadKeyBridgeScript};
   factory_ = std::make_unique<Ps5EngineFactory>(kBaseDir, user_scripts,
                                                 config_.user_agent);

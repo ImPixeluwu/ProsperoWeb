@@ -92,6 +92,35 @@ constexpr const char* kEmeDetectorScript = R"JS((function () {
 })();
 )JS";
 
+// Reports focus changes of editable elements through the "ps5browser" script
+// message handler as {type: 'focus', editable}, so the shell can offer the
+// on-screen keyboard (EngineViewClient::text_input_focused). Frontends route
+// these messages to text_input_focused() instead of script_message().
+constexpr const char* kFocusReporterScript = R"JS((function () {
+  'use strict';
+  function editable(e) {
+    if (!e) return false;
+    if (e.isContentEditable) return true;
+    var tag = e.tagName;
+    if (tag === 'TEXTAREA') return !e.readOnly && !e.disabled;
+    if (tag === 'INPUT') {
+      var type = (e.getAttribute('type') || 'text').toLowerCase();
+      return ['text', 'search', 'email', 'url', 'tel', 'password', 'number'].indexOf(type) >= 0 &&
+             !e.readOnly && !e.disabled;
+    }
+    return false;
+  }
+  function post(value) {
+    try {
+      window.webkit.messageHandlers.ps5browser.postMessage({ type: 'focus', editable: value });
+    } catch (e) {
+    }
+  }
+  document.addEventListener('focusin', function (ev) { post(editable(ev.target)); }, true);
+  document.addEventListener('focusout', function () { post(false); }, true);
+})();
+)JS";
+
 // Maps DualSense input to DOM keyboard events for pages that expect a
 // keyboard (e.g. video players). Intentionally empty for now.
 constexpr const char* kGamepadKeyBridgeScript = R"JS((function () {
