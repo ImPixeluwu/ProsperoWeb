@@ -1,10 +1,14 @@
-# ps5-browser
+# ProsperoBrowser
 
 A homebrew web browser for the PlayStation 5. It ports upstream WebKit's PlayStation port to the open [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk), adds an ffmpeg media engine and an elfldr-style process spawner, and runs a 10-foot browser shell (tabs, address bar, on-screen keyboard, gamepad pointer) that is shared with a WebKitGTK host frontend for development.
 
+Source: https://github.com/kvaps/ProsperoBrowser (formerly ps5-browser).
+
+ProsperoBrowser is an independent homebrew project and is not affiliated with or endorsed by Sony Interactive Entertainment.
+
 ## Status
 
-- The PS5 build compiles, links (`ps5browser.elf`, about 162 MB shipped) and packages.
+- The PS5 build compiles, links (`prosperobrowser.elf`, about 162 MB shipped) and packages.
 - **It has not been run on a PS5 yet.** Every console-side behaviour is unverified; the operator checklist is [docs/console-verification.md](docs/console-verification.md).
 - The shell, chrome and core run on the host with WebKitGTK and are covered by unit tests and [host screenshots](docs/screenshots/README.md).
 
@@ -59,37 +63,37 @@ scripts/ps5/build-deps.sh          # third_party/ps5-prefix: ICU, HarfBuzz, Free
 scripts/ps5/fetch-webkit.sh        # third_party/webkit at the pinned commit + webkit-port/patches
 scripts/ps5/build-webkit.sh all    # build-wk-ps5/: libWebKitPS5.a + ps5webkit-link.cmake
 cmake -S . -B build-ps5 -DCMAKE_TOOLCHAIN_FILE=/opt/ps5-payload-sdk/toolchain/prospero.cmake \
-      -DPS5BROWSER_FRONTEND=ps5 -DPS5BROWSER_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
-cmake --build build-ps5 -j4 --target ps5browser
-scripts/ps5/package.sh             # dist/ps5browser/ + dist/homebrew/ps5browser/
+      -DPROSPEROBROWSER_FRONTEND=ps5 -DPROSPEROBROWSER_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build build-ps5 -j4 --target prosperobrowser
+scripts/ps5/package.sh             # dist/prosperobrowser/ + dist/homebrew/prosperobrowser/
 ```
 
 All scripts are idempotent and resumable; their headers list the environment variables (`JOBS`, `PS5_DEPS_PREFIX`, `WEBKIT_BUILD_DIR`, `USE_FFMPEG`, ...). `package.sh` also needs `curl` and ImageMagick (`convert`). Details: [webkit-port/README.md](webkit-port/README.md).
 
 ## Install on the PS5
 
-Copy `dist/ps5browser/` to `/data/ps5browser/` (and optionally `dist/homebrew/ps5browser/` to `/data/homebrew/ps5browser/` for the websrv tile) over FTP, then launch from the websrv tile or with `echo file:/data/ps5browser/ps5browser.elf | nc -q0 PS5_IP 9021`. The full steps are in `dist/ps5browser/README-install.txt`; the first-run test plan, with what to capture on failure, is [docs/console-verification.md](docs/console-verification.md).
+Copy `dist/prosperobrowser/` to `/data/prosperobrowser/` (and optionally `dist/homebrew/prosperobrowser/` to `/data/homebrew/prosperobrowser/` for the websrv tile) over FTP, then launch from the websrv tile or with `echo file:/data/prosperobrowser/prosperobrowser.elf | nc -q0 PS5_IP 9021`. The full steps are in `dist/prosperobrowser/README-install.txt`; the first-run test plan, with what to capture on failure, is [docs/console-verification.md](docs/console-verification.md).
 
 ## Host build, tests and screenshots
 
 The host frontend runs the same shell and chrome on a desktop. It needs CMake 3.20+, a C++20 compiler, GTK 4, WebKitGTK 6.0 and, optionally, SDL2 for a game controller (on Ubuntu 24.04: `libgtk-4-dev libwebkitgtk-6.0-dev libsdl2-dev`, plus `gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav` for video).
 
 ```sh
-cmake -S . -B build-gtk -DPS5BROWSER_FRONTEND=host-gtk
+cmake -S . -B build-gtk -DPROSPEROBROWSER_FRONTEND=host-gtk
 cmake --build build-gtk -j4
 ctest --test-dir build-gtk            # core, shell, spawn helper and media unit tests
-build-gtk/src/frontend/host-gtk/ps5browser-host --url https://en.wikipedia.org/wiki/PlayStation_5
+build-gtk/src/frontend/host-gtk/prosperobrowser-host --url https://en.wikipedia.org/wiki/PlayStation_5
 ```
 
-Options: `--size WxH` (default 1920x1080), `--profile DIR` (default `$XDG_DATA_HOME/ps5browser`; session, history and bookmarks live in `DIR/state`), `--url URL`, `--screenshot PATH --after-ms N` (save a PNG and exit), `--demo[=KIND]` (chrome demo state over `about:blank`), `--lang en|ru`, `--user-agent UA`, `--chrome-dir DIR`, `--input LIST` (press gamepad buttons after start, for automation). `--help` lists them all.
+Options: `--size WxH` (default 1920x1080), `--profile DIR` (default `$XDG_DATA_HOME/prosperobrowser`; session, history and bookmarks live in `DIR/state`), `--url URL`, `--screenshot PATH --after-ms N` (save a PNG and exit), `--demo[=KIND]` (chrome demo state over `about:blank`), `--lang en|ru`, `--user-agent UA`, `--chrome-dir DIR`, `--input LIST` (press gamepad buttons after start, for automation). `--help` lists them all.
 
-The chrome is loaded from `--chrome-dir`, `$PS5BROWSER_CHROME_DIR`, the install location (`share/ps5browser/chrome-ui`) or the source tree, whichever has `chrome.html` first. `cmake --install` installs the binary and the chrome.
+The chrome is loaded from `--chrome-dir`, `$PROSPEROBROWSER_CHROME_DIR`, the install location (`share/prosperobrowser/chrome-ui`) or the source tree, whichever has `chrome.html` first. `cmake --install` installs the binary and the chrome.
 
 Headless, for example in CI or a container (`WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` only where bubblewrap cannot create namespaces):
 
 ```sh
 WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 xvfb-run -a -s "-screen 0 1920x1080x24" \
-  build-gtk/src/frontend/host-gtk/ps5browser-host --demo --screenshot /tmp/chrome.png --after-ms 3000
+  build-gtk/src/frontend/host-gtk/prosperobrowser-host --demo --screenshot /tmp/chrome.png --after-ms 3000
 ```
 
 See [docs/screenshots/](docs/screenshots/README.md) for screenshots and the commands that produced them.
@@ -115,7 +119,7 @@ The keyboard stands in for a DualSense; an SDL2 game controller, if connected, w
 | W A S D (held) | Left stick | Move the pointer |
 | I J K L (held) | Right stick | Scroll |
 
-On the PS5, Triangle, Square and a click into a text field open the console's own keyboard dialog, pre-filled with the URL or the field's value; confirming navigates or replaces the field's value, cancelling changes nothing. The built-in OSK below is the fallback when the dialog fails, and the only keyboard with `PS5BROWSER_OSK=builtin` (or `"osk": "builtin"` in `config.json`) and on the host; see docs/ps5-runtime.md, "Text input".
+On the PS5, Triangle, Square and a click into a text field open the console's own keyboard dialog, pre-filled with the URL or the field's value; confirming navigates or replaces the field's value, cancelling changes nothing. The built-in OSK below is the fallback when the dialog fails, and the only keyboard with `PROSPEROBROWSER_OSK=builtin` (or `"osk": "builtin"` in `config.json`) and on the host; see docs/ps5-runtime.md, "Text input".
 
 In the OSK: D-pad moves between keys, Cross types the key at the caret, L1/R1 move the caret, Square deletes before the caret, Triangle inserts a space, L2 is Shift, Touchpad (or the on-screen layout key) switches the layout, Options commits, Circle cancels. Holding the D-pad, Square, L1 or R1 repeats; the on-screen Clear key empties the text. In the menu: D-pad up/down selects, Cross activates, Circle goes back.
 

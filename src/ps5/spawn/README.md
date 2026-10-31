@@ -1,4 +1,4 @@
-# ps5browser_spawn
+# prosperobrowser_spawn
 
 The process spawner for the PS5 frontend. It defines the WebKit spawn contract
 (`webkit-port/include/ps5webkit/spawn.h`): `ps5_spawn_self()` starts another
@@ -10,7 +10,7 @@ socket at child fd 3, and `ps5_terminate_process()` kills and reaps it.
 The UI runs as the hbldr big app, and `rfork` + `ptrace` + `execve` from a
 big app panics the console kernel (console run of 2026-10-31: panic right
 after `spawn: role=WebProcess starting`). The same code works from a plain
-payload. So by default (`PS5BROWSER_SPAWN_MODE=broker`) the UI does not
+payload. So by default (`PROSPEROBROWSER_SPAWN_MODE=broker`) the UI does not
 spawn itself: it asks the **spawn broker**, the same ELF in the
 `spawn-broker` role, which websrv starts as a daemon payload on the first
 spawn (`GET /hbldr?...&daemon=1`, see `docs/ps5-runtime.md`, "Launch
@@ -23,10 +23,10 @@ Transport selection. The console refuses to bind an AF_UNIX socket under
 `/data` (`bind: Operation not supported`, console run 3 of 2026-10-31), so
 both sides walk the same list:
 
-1. AF_UNIX `$PS5BROWSER_SPAWN_SOCK` (if set),
-2. AF_UNIX `/tmp/ps5browser-spawn.sock`,
-3. AF_UNIX `/data/ps5browser/tmp/spawn.sock`,
-4. TCP `127.0.0.1:$PS5BROWSER_SPAWN_PORT` (default `17771`).
+1. AF_UNIX `$PROSPEROBROWSER_SPAWN_SOCK` (if set),
+2. AF_UNIX `/tmp/prosperobrowser-spawn.sock`,
+3. AF_UNIX `/data/prosperobrowser/tmp/spawn.sock`,
+4. TCP `127.0.0.1:$PROSPEROBROWSER_SPAWN_PORT` (default `17771`).
 
 The broker binds the first AF_UNIX path that works (mode `0666`; every
 failed bind is logged with its errno) and **also** listens on loopback TCP,
@@ -46,7 +46,7 @@ reply arrives: `ps5_spawn_self()` is synchronous and WebKit's launcher
 
 | Direction | Frame | Reply |
 |---|---|---|
-| UI → broker (AF_UNIX) | `{"op":"spawn","elf":"/data/ps5browser/ps5browser.elf","argv":[...],"env":[...],"nfds":1}` + fds | `{"ok":true,"pid":N}` or `{"ok":false,"stage":"...","errno":N,"error":"..."}` |
+| UI → broker (AF_UNIX) | `{"op":"spawn","elf":"/data/prosperobrowser/prosperobrowser.elf","argv":[...],"env":[...],"nfds":1}` + fds | `{"ok":true,"pid":N}` or `{"ok":false,"stage":"...","errno":N,"error":"..."}` |
 | UI → broker (TCP) | `{"op":"spawn","elf":...,"argv":[...],"env":[...],"nfds":0,"src_pid":93,"src_fds":[13]}` | same; a refused rdup is `"stage":"rdup"` with its errno |
 | UI → broker | `{"op":"terminate","pid":N}` | `{"ok":true}` (also for an already reaped pid) |
 | UI → broker | `{"op":"ping"}` | `{"ok":true,"pid":<broker pid>}` |
@@ -73,15 +73,15 @@ actual spawn is a hook (`broker_set_spawn_hook`): `ps5_spawn_elfldr()` from
 Client (`broker_client.{h,cpp}`, used by `spawn_glue.cpp`): one connection
 with a reader thread that hands replies to the waiting request and logs
 `exited` events; the raw HTTP/1.0 GET that asks websrv to start the broker
-(`PS5BROWSER_WEBSRV`, default `127.0.0.1:8080`; it forwards
-`PS5BROWSER_SPAWN_SOCK` if set and `PS5BROWSER_SPAWN_PORT`). After asking
+(`PROSPEROBROWSER_WEBSRV`, default `127.0.0.1:8080`; it forwards
+`PROSPEROBROWSER_SPAWN_SOCK` if set and `PROSPEROBROWSER_SPAWN_PORT`). After asking
 websrv the UI polls every endpoint for up to 5 s. If the broker cannot be
-reached the spawn fails, unless `PS5BROWSER_SPAWN_FALLBACK=direct`. After two
+reached the spawn fails, unless `PROSPEROBROWSER_SPAWN_FALLBACK=direct`. After two
 such failures in a row the UI waits 30 s before the next attempt (WebKit
 relaunches a failed process immediately and forever, and each attempt would
 ask websrv for another broker); a success clears the back-off.
 
-`PS5BROWSER_SPAWN_MODE=direct` keeps the in-process spawner
+`PROSPEROBROWSER_SPAWN_MODE=direct` keeps the in-process spawner
 (`ps5_spawn_direct()` in `spawn.c`, with its own reaper thread). Use it only
 when the UI itself is a plain payload (an elfldr launch).
 
@@ -89,11 +89,11 @@ Expected `log.txt` lines on the first spawn when no AF_UNIX path binds
 (the console as of run 3; UI pid 92):
 
     [ 95 UI] spawn: mode broker
-    [ 95 UI] spawn: broker connecting, trying unix /tmp/ps5browser-spawn.sock, unix /data/ps5browser/tmp/spawn.sock, tcp 127.0.0.1:17771
-    [ 96 UI] spawn: broker not running (unix /tmp/ps5browser-spawn.sock: No such file or directory; unix /data/ps5browser/tmp/spawn.sock: No such file or directory; tcp 127.0.0.1:17771: Connection refused), asking websrv
+    [ 95 UI] spawn: broker connecting, trying unix /tmp/prosperobrowser-spawn.sock, unix /data/prosperobrowser/tmp/spawn.sock, tcp 127.0.0.1:17771
+    [ 96 UI] spawn: broker not running (unix /tmp/prosperobrowser-spawn.sock: No such file or directory; unix /data/prosperobrowser/tmp/spawn.sock: No such file or directory; tcp 127.0.0.1:17771: Connection refused), asking websrv
     [ 12 broker] main: pid=101 ppid=93 argv0=spawn-broker
-    [ 14 broker] broker: bind unix /tmp/ps5browser-spawn.sock: errno 45 (Operation not supported)
-    [ 15 broker] broker: bind unix /data/ps5browser/tmp/spawn.sock: errno 45 (Operation not supported)
+    [ 14 broker] broker: bind unix /tmp/prosperobrowser-spawn.sock: errno 45 (Operation not supported)
+    [ 15 broker] broker: bind unix /data/prosperobrowser/tmp/spawn.sock: errno 45 (Operation not supported)
     [ 16 broker] broker: listening on tcp 127.0.0.1:17771
     [ 16 broker] broker: ready, pid 101
     [900 UI] websrv: GET http://127.0.0.1:8080/hbldr?path=... -> HTTP 200 in 800ms
@@ -101,7 +101,7 @@ Expected `log.txt` lines on the first spawn when no AF_UNIX path binds
     [ 20 broker] broker: client connected over tcp, 0 children alive
     [906 UI] spawn: broker ready pid=101 in 810ms
     [ 21 broker] broker: role=WebProcess takes fds [13] from pid 92 (rdup)
-    [ 21 broker] spawn: self ELF /data/ps5browser/ps5browser.elf (... bytes, mapped), fw 0x..., pid 101
+    [ 21 broker] spawn: self ELF /data/prosperobrowser/prosperobrowser.elf (... bytes, mapped), fw 0x..., pid 101
     [ 22 broker] spawn: role=WebProcess starting, fds=[92:13->3]
     [ 58 broker] spawn: rdup(src_pid=92, fd=13) -> child fd 3
     [ 60 broker] spawn: role=WebProcess pid=102 fds=[92:13->3] ok in 38ms, budget_set(0) ok
@@ -123,7 +123,7 @@ rdup source is the broker's own pid.
 `2a8da002e5292481ea964daa7342bbf4855f4c33`, Copyright (C) 2024 John Törnblom,
 GPL-3.0-or-later. The original copyright headers are kept verbatim.
 
-Changes made for ps5-browser (also noted in each file's header):
+Changes made for ProsperoBrowser (also noted in each file's header):
 
 - `pt.c`, `pt.h`, `log.h`: copied verbatim.
 - `elfldr.c` / `elfldr.h`: trimmed to the spawn path and extended for
@@ -137,7 +137,7 @@ Changes made for ps5-browser (also noted in each file's header):
   its errno and a failed one is reported as stage `rdup`/`dup2`. The child's
   environment is an `envp` argument (`elfldr_set_environ`, taken from the
   shsrv variant of elfldr): the UI's environment, forwarded by the broker,
-  so the role process sees the `PS5BROWSER_*` variables. `elfldr_read()` and `elfldr_find_pid()` were dropped as unused.
+  so the role process sees the `PROSPEROBROWSER_*` variables. `elfldr_read()` and `elfldr_find_pid()` were dropped as unused.
   The load mirror is `calloc`ed so the `p_filesz`..`p_memsz` gaps reach the
   child as zeros, an already open child descriptor replaced by `pt_dup2` is
   logged, and a child that fails during setup is reaped after `SIGKILL`.
@@ -154,7 +154,7 @@ SDK crt; the loader uses `kernel_*` from `<ps5/kernel.h>` where upstream elfldr
 used its own kernel helpers.
 
 `spawn.c`, `spawn_util.c`, `spawn_glue.cpp`, `spawn_backend.h` and
-`broker_*` are original to ps5-browser (GPL-3.0-or-later).
+`broker_*` are original to ProsperoBrowser (GPL-3.0-or-later).
 `spawn.c` maps the ELF once (read-only `MAP_PRIVATE`, read into memory
 only if `mmap` fails), and, in direct mode, tracks every child until it is reaped: by
 `ps5_terminate_process()` (`SIGKILL`, then a bounded wait) or, for children
@@ -194,8 +194,8 @@ still to be confirmed on the console.
 ## Logging
 
 `spawn.c` writes through `ps5_log_line()`/`ps5_log_printf()` (declared in
-`ps5browser/spawn/spawn.h`, defined by the frontend's `ps5_log.cpp`), so
+`prosperobrowser/spawn/spawn.h`, defined by the frontend's `ps5_log.cpp`), so
 spawn results, failed stages and child exits reach
-`/data/ps5browser/log.txt`. A spawn that fails makes WebKit's launcher
+`/data/prosperobrowser/log.txt`. A spawn that fails makes WebKit's launcher
 (patch 0005) print its own line to stderr only; the `spawn: ... FAILED`
 line written just before it carries the same role and result.

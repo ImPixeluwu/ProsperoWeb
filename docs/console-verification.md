@@ -1,16 +1,16 @@
 # Console verification checklist
 
-ps5-browser builds, links and packages, and the shell has been exercised on the host with WebKitGTK ([screenshots](screenshots/README.md)). The first console run (2026-10-31, firmware 10.00) is summarised in [§6](#6-first-console-run-2026-10-31). This checklist is for the operator with a real console: run the steps in order, because each one depends on the previous. For every failure, capture what the step lists and stop; later steps are meaningless until it is fixed.
+ProsperoBrowser builds, links and packages, and the shell has been exercised on the host with WebKitGTK ([screenshots](screenshots/README.md)). The first console run (2026-10-31, firmware 10.00) is summarised in [§6](#6-first-console-run-2026-10-31). This checklist is for the operator with a real console: run the steps in order, because each one depends on the previous. For every failure, capture what the step lists and stop; later steps are meaningless until it is fixed.
 
 Background: [architecture.md](architecture.md) (what runs where), [ps5-runtime.md](ps5-runtime.md) (layout, environment, spawn contract).
 
 ## What to capture on any failure
 
-- **`/data/ps5browser/log.txt`** (fetch it over FTP). Every role (UI, WebProcess, NetworkProcess) appends to it, one line per startup stage, fsync'ed line by line so it survives a crash. Each line starts with `[<ms since that process started> <role>]`. The last UI line tells where startup stopped; see [Reading log.txt](#reading-logtxt).
-- **klog**: the same lines, prefixed `[ps5browser]`, plus kernel and loader messages. Read it with klogsrv (`nc PS5_IP 3232 > klog.txt`) or etaHEN's klog (`nc PS5_IP 9081`), connected **before** launching the browser. Spawner lines start with `spawn:`; elfldr-derived loader errors carry `elfldr.c:<line>`; a process that dies shows as `# process pid=N, <name> calls exit() exit_value=...`.
+- **`/data/prosperobrowser/log.txt`** (fetch it over FTP). Every role (UI, WebProcess, NetworkProcess) appends to it, one line per startup stage, fsync'ed line by line so it survives a crash. Each line starts with `[<ms since that process started> <role>]`. The last UI line tells where startup stopped; see [Reading log.txt](#reading-logtxt).
+- **klog**: the same lines, prefixed `[prosperobrowser]`, plus kernel and loader messages. Read it with klogsrv (`nc PS5_IP 3232 > klog.txt`) or etaHEN's klog (`nc PS5_IP 9081`), connected **before** launching the browser. Spawner lines start with `spawn:`; elfldr-derived loader errors carry `elfldr.c:<line>`; a process that dies shows as `# process pid=N, <name> calls exit() exit_value=...`.
 - **websrv's launch log** in the browser page that started the tile (stdout/stderr of the UI).
-- **Screen dump**: hold Share for more than a second, or create `/data/ps5browser/tmp/screenshot.request` over FTP (any content; the browser checks once per second and deletes it). The next composed 1920x1080 frame is written to `/data/ps5browser/tmp/screen-<ms>.png` (`<ms>` is the UI's SDL tick count) and to `/data/ps5browser/tmp/screen-latest.png`; `log.txt` shows `screenshot: written <path> (<ms> ms, ...)`. A short Share press still reloads the page, on release.
-- **Form-control probe**: create `/data/ps5browser/tmp/probe.request`. The active page reports its first 10 `input, textarea, button, [role=combobox]` elements (bounding rect, offset size, computed display/size/font/appearance/padding/border/box-sizing/line-height/visibility/opacity/transform), the page environment (compat mode, user agent, viewport, devicePixelRatio, `pointer:fine` and `hover:hover`, `display:grid` and `:has()` support) and 2000 characters of HTML around the first input. It is written pretty-printed to `/data/ps5browser/tmp/probe-<ms>.json` and `/data/ps5browser/tmp/probe-latest.json`; `log.txt` shows `probe: written <path> (...)`.
+- **Screen dump**: hold Share for more than a second, or create `/data/prosperobrowser/tmp/screenshot.request` over FTP (any content; the browser checks once per second and deletes it). The next composed 1920x1080 frame is written to `/data/prosperobrowser/tmp/screen-<ms>.png` (`<ms>` is the UI's SDL tick count) and to `/data/prosperobrowser/tmp/screen-latest.png`; `log.txt` shows `screenshot: written <path> (<ms> ms, ...)`. A short Share press still reloads the page, on release.
+- **Form-control probe**: create `/data/prosperobrowser/tmp/probe.request`. The active page reports its first 10 `input, textarea, button, [role=combobox]` elements (bounding rect, offset size, computed display/size/font/appearance/padding/border/box-sizing/line-height/visibility/opacity/transform), the page environment (compat mode, user agent, viewport, devicePixelRatio, `pointer:fine` and `hover:hover`, `display:grid` and `:has()` support) and 2000 characters of HTML around the first input. It is written pretty-printed to `/data/prosperobrowser/tmp/probe-<ms>.json` and `/data/prosperobrowser/tmp/probe-latest.json`; `log.txt` shows `probe: written <path> (...)`.
 - A photo or capture of the screen, the firmware version, the loader and HEN used (elfldr build, etaHEN version, kstuff), and the build commit (`git rev-parse HEAD`).
 
 ## 1. Prerequisites
@@ -24,18 +24,18 @@ Background: [architecture.md](architecture.md) (what runs where), [ps5-runtime.m
 
 ## 2. Install
 
-From `dist/ps5browser/README-install.txt` (generated by `scripts/ps5/package.sh`):
+From `dist/prosperobrowser/README-install.txt` (generated by `scripts/ps5/package.sh`):
 
-1. Copy `dist/ps5browser/` to `/data/ps5browser/` and `dist/homebrew/ps5browser/` (the websrv tile) to `/data/homebrew/ps5browser/`, for example: `lftp -p 2121 PS5_IP -e "mirror -R dist/ps5browser /data/ps5browser; mirror -R dist/homebrew/ps5browser /data/homebrew/ps5browser; quit"`.
-2. The browser must live in `/data/ps5browser/`: it re-launches `/data/ps5browser/ps5browser.elf` for its WebProcess and NetworkProcess (override with `PS5BROWSER_SELF_PATH`) and reads fonts, CA bundle and chrome from there.
+1. Copy `dist/prosperobrowser/` to `/data/prosperobrowser/` and `dist/homebrew/prosperobrowser/` (the websrv tile) to `/data/homebrew/prosperobrowser/`, for example: `lftp -p 2121 PS5_IP -e "mirror -R dist/prosperobrowser /data/prosperobrowser; mirror -R dist/homebrew/prosperobrowser /data/homebrew/prosperobrowser; quit"`.
+2. The browser must live in `/data/prosperobrowser/`: it re-launches `/data/prosperobrowser/prosperobrowser.elf` for its WebProcess and NetworkProcess (override with `PROSPEROBROWSER_SELF_PATH`) and reads fonts, CA bundle and chrome from there.
 3. Optional: copy `config.json.sample` to `config.json` and edit `home_url`, `language` (`en` or `ru`), `user_agent`.
-4. Check the upload: `ps5browser.elf` must be exactly the size of the local file (about 162 MB). A truncated upload is the most likely cause of a load failure.
+4. Check the upload: `prosperobrowser.elf` must be exactly the size of the local file (about 162 MB). A truncated upload is the most likely cause of a load failure.
 
 ## 3. Launch
 
-**Launch only through the websrv tile.** Start klog capture first, then open `http://PS5_IP:8080/` and select the "ps5browser" tile. websrv's hbldr starts the browser as the foreground big app (title FAKE00000), the only mode in which it gets the video output and the controller.
+**Launch only through the websrv tile.** Start klog capture first, then open `http://PS5_IP:8080/` and select the "ProsperoBrowser" tile. websrv's hbldr starts the browser as the foreground big app (title FAKE00000), the only mode in which it gets the video output and the controller.
 
-Do **not** launch `ps5browser.elf` through elfldr (port 9021) or the Payload Manager. That runs it as a background payload: no picture, and the UI plus its WebProcess and NetworkProcess stay alive in the background (about 300 MB each) until the console swaps. On the first console run two such launches left four live copies.
+Do **not** launch `prosperobrowser.elf` through elfldr (port 9021) or the Payload Manager. That runs it as a background payload: no picture, and the UI plus its WebProcess and NetworkProcess stay alive in the background (about 300 MB each) until the console swaps. On the first console run two such launches left four live copies.
 
 **Reboot the console between attempts**, and always after a launch that showed no picture, so no copy is left running and the next `log.txt` section belongs to one launch only.
 
@@ -46,12 +46,12 @@ To quit, use Options → Quit; this also saves the session. Killing the process 
 The file is appended to on every launch; a launch starts at a `UI] main: pid=...` line (timestamp near 0). A healthy UI start logs roughly this sequence (the `spawn:` lines interleave with steps 5 to 7, because WebKit launches its processes when it needs them):
 
 1. `main: pid=... ppid=... argv0=...`, then the `env ...` defaults
-2. `ps5browser UI starting`, `SDL_Init: calling`, `SDL_Init: ok, video driver ...`
+2. `ProsperoBrowser UI starting`, `SDL_Init: calling`, `SDL_Init: ok, video driver ...`
 3. `SDL_CreateWindow: calling 1920x1080`, `SDL_CreateWindow: ok`, `env SYSTEM_LANGUAGE=...`
 4. `WKRunLoopInitializeMain: calling` / `ok`, `WebKit: context and data store created`
-5. `view chrome: created (view ok, page ok)`, `chrome: loading file:///data/ps5browser/chrome/chrome.html`
+5. `view chrome: created (view ok, page ok)`, `chrome: loading file:///data/prosperobrowser/chrome/chrome.html`
 6. `spawn: self ELF ... fw 0x..., ui pid ...`, then for each child `spawn: role=<role> starting, fds=[...]` and `spawn: role=<role> pid=N fds=[...] ok in Nms, budget_set(0) ...`
-7. `shell: starting` / `started`, `view ps5browser: created ...`, `WKRunLoopRunMain: entering`, `frame: first frame`
+7. `shell: starting` / `started`, `view prosperobrowser: created ...`, `WKRunLoopRunMain: entering`, `frame: first frame`
 8. `SDL_GetWindowSurface: 1920x1080 SDL_PIXELFORMAT_... pitch ...`, `SDL_UpdateWindowSurface: first flip, calling`, `... first flip submitted`
 9. `view chrome: first setViewNeedsDisplay ...`, `view chrome: first WKPagePaint done ...`, `chrome: navigation finished`
 
@@ -70,17 +70,17 @@ What the last line means:
 
 | # | Test | Steps | Expected | If it fails, capture |
 |---|---|---|---|---|
-| a | ELF loads | Launch as in §3 | the tile starts the big app; `/data/ps5browser/log.txt` gets a new `main: pid=...` section with `env ...` lines | websrv's launch log, klog, firmware/loader versions; check the ELF size on the console |
-| b | UI shows the chrome | Wait up to 10 s | 1920x1080 picture; the chrome band (tabs, address bar) at the top; colours correct (blue is blue, not orange: R/B swap check) | `log.txt` (see [Reading log.txt](#reading-logtxt)), photo of the screen; white band without controls means `chrome.html` failed to load (check `/data/ps5browser/chrome/`) |
+| a | ELF loads | Launch as in §3 | the tile starts the big app; `/data/prosperobrowser/log.txt` gets a new `main: pid=...` section with `env ...` lines | websrv's launch log, klog, firmware/loader versions; check the ELF size on the console |
+| b | UI shows the chrome | Wait up to 10 s | 1920x1080 picture; the chrome band (tabs, address bar) at the top; colours correct (blue is blue, not orange: R/B swap check) | `log.txt` (see [Reading log.txt](#reading-logtxt)), photo of the screen; white band without controls means `chrome.html` failed to load (check `/data/prosperobrowser/chrome/`) |
 | c | WebProcess and NetworkProcess spawn | After (b), watch klog; with shsrv, list processes | `spawn: role=... ok` lines for both roles and their own `main: ... started` lines in `log.txt`; no `spawn: ... FAILED`; the page area stops being blank | `log.txt`, klog around the spawn (`spawn:`, `elfldr.c:` lines, `exit_value`), whether the UI froze, the process list |
 | d | Local page | Address bar → `about:blank`, then the home page if offline | `about:blank` renders white without errors; the page area starts **under** the chrome band (not hidden behind it) | `log.txt`, klog, photo |
-| e | HTTPS and fonts | Load `https://en.wikipedia.org/wiki/PlayStation_5` | Page renders; text in DejaVu, no tofu boxes for Latin/Cyrillic; no TLS error page | klog of the NetworkProcess (curl/OpenSSL errors: CA bundle path), `env PS5BROWSER_CA_BUNDLE` and `FONTCONFIG_FILE` lines in `log.txt`; CJK showing as boxes is expected (no CJK font shipped) |
+| e | HTTPS and fonts | Load `https://en.wikipedia.org/wiki/PlayStation_5` | Page renders; text in DejaVu, no tofu boxes for Latin/Cyrillic; no TLS error page | klog of the NetworkProcess (curl/OpenSSL errors: CA bundle path), `env PROSPEROBROWSER_CA_BUNDLE` and `FONTCONFIG_FILE` lines in `log.txt`; CJK showing as boxes is expected (no CJK font shipped) |
 | f | Gamepad | Left stick, Cross on a link, D-pad and right stick, L2/R2, Circle | Pointer moves smoothly and is visible over the page; Cross follows the link under the pointer (not 96 px below it); D-pad/right stick scroll **in the expected direction** and only vertically for vertical input; L2/R2 page up/down **once per press**; Circle goes back | Which button misbehaves and how (direction, repeat, offset); klog |
 | g | OSK and address bar | Triangle, type `example.com` with D-pad + Cross, Options | OSK opens over the lower third, page still visible above it; typed URL loads. Then focus a text field on a page (e.g. a search box): the OSK should open by itself; Options commits the text into the field | Photo of the OSK state, `log.txt` |
-| g2 | System keyboard | Triangle, edit the pre-filled URL to `example.com`, confirm; then click into the google.com search box, type, confirm; repeat with `PS5BROWSER_OSK=builtin` | The console keyboard dialog opens with the current URL / field value, the page keeps painting behind it; the URL loads, the search box holds exactly the typed text (old value replaced). With `builtin` the HTML OSK opens instead | Photo of the dialog, `log.txt` `ime:` lines |
-| h | Tabs and session | Touchpad (new tab), load a page, L1/R1 to switch, close a tab with ✕ in the tab strip; Options → Quit; relaunch | Tabs open, switch and close; clicks on chrome buttons work; after relaunch the same tabs (URLs) come back | `/data/ps5browser/tabs.json` content, `log.txt` |
+| g2 | System keyboard | Triangle, edit the pre-filled URL to `example.com`, confirm; then click into the google.com search box, type, confirm; repeat with `PROSPEROBROWSER_OSK=builtin` | The console keyboard dialog opens with the current URL / field value, the page keeps painting behind it; the URL loads, the search box holds exactly the typed text (old value replaced). With `builtin` the HTML OSK opens instead | Photo of the dialog, `log.txt` `ime:` lines |
+| h | Tabs and session | Touchpad (new tab), load a page, L1/R1 to switch, close a tab with ✕ in the tab strip; Options → Quit; relaunch | Tabs open, switch and close; clicks on chrome buttons work; after relaunch the same tabs (URLs) come back | `/data/prosperobrowser/tabs.json` content, `log.txt` |
 | i | Fullscreen | Load a page with an HTML5 fullscreen button (e.g. a `<video controls>` page, fullscreen button with Cross); then R3 and L3 | Page fullscreen fills the screen; Circle leaves it; R3 hides/shows the chrome without page fullscreen | klog, photo; whether `document.fullscreenEnabled` is true (test o) |
-| j | Progressive MP4 | Copy `docs/screenshots/pages/video.html` to the console or host it on the LAN; open `video.html?src=https://archive.org/download/BigBuckBunny_124/Content/big_buck_bunny_720p_surround.mp4` | Video plays with sound, `readyState 4`, `currentTime` advancing; seeking works | If video plays but is silent: likely the audio-from-WebProcess risk (sceAudioOut not available to a spawned process); confirm by relaunching with `PS5BROWSER_MEDIA_AUDIO=null` (behaviour must be identical, silent, no stall) and report klog lines from `AudioSink`. If nothing plays: the error code shown by the page, klog |
+| j | Progressive MP4 | Copy `docs/screenshots/pages/video.html` to the console or host it on the LAN; open `video.html?src=https://archive.org/download/BigBuckBunny_124/Content/big_buck_bunny_720p_surround.mp4` | Video plays with sound, `readyState 4`, `currentTime` advancing; seeking works | If video plays but is silent: likely the audio-from-WebProcess risk (sceAudioOut not available to a spawned process); confirm by relaunching with `PROSPEROBROWSER_MEDIA_AUDIO=null` (behaviour must be identical, silent, no stall) and report klog lines from `AudioSink`. If nothing plays: the error code shown by the page, klog |
 | k | Native HLS | `video.html?src=https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8` | 1080p HLS plays (fixed variant, no adaptive switching) | Same as (j); note frame drops and CPU behaviour |
 | l | YouTube, Twitch, VK Video, Rutube | Open each | **They will not play video.** These players require Media Source Extensions (MSE), which this build does not have; MSE is the next milestone. The sites themselves should load and be navigable | Only report crashes or pages that do not load at all; a player error is expected |
 | m | DRM notice | Navigate to `https://www.netflix.com/` | The DRM notice appears before the page loads; Cross proceeds, Circle cancels | Photo, `log.txt` |
@@ -120,7 +120,7 @@ A console-readiness review found the defects below. They are fixed on the host (
 4. **Keyboard keysyms and text** (USB keyboard on a text field): DOM key codes were sent where WPE keysyms are expected, and text input was dropped. Confirm Enter, Backspace, arrows and typed characters in a page field.
 5. **L2/R2 edges** (f, g): analog triggers fired their action on every frame while held. Confirm one page step per press, and that L2 in the OSK toggles Shift once.
 6. **Wheel direction and magnitude** (f): a zero axis still scrolled one tick, every scroll was one line, and the vertical sign was probably inverted. Confirm direction, no horizontal drift, and that PageUp/PageDown scroll a page.
-7. **Environment forwarding** (a, e): `FONTCONFIG_FILE`, `FONTCONFIG_PATH`, `PS5BROWSER_CA_BUNDLE`, `SYSTEM_LANGUAGE` must reach WebProcess and NetworkProcess. Confirm fonts render and HTTPS works (both are read only in the child processes).
+7. **Environment forwarding** (a, e): `FONTCONFIG_FILE`, `FONTCONFIG_PATH`, `PROSPEROBROWSER_CA_BUNDLE`, `SYSTEM_LANGUAGE` must reach WebProcess and NetworkProcess. Confirm fonts render and HTTPS works (both are read only in the child processes).
 8. **Spawn failure reporting** (c): a failed spawn left the page blank with no message in release builds. If spawning fails, confirm there is now a log line and WebKit's crash handling runs instead of a silent hang.
 9. **OSK auto-open** (g): focusing a page text field did not open the OSK on the PS5. Confirm it opens by itself.
 10. **Child reaping** (n): spawned processes were not reaped after kill or crash. Confirm that repeated WebProcess restarts (for example, closing and opening tabs for 10 minutes) do not exhaust processes.
@@ -131,7 +131,7 @@ Known unverified risks from the same review, worth watching while testing: a pos
 
 ## 6. First console run (2026-10-31)
 
-Firmware 10.00, websrv v0.34, files installed as in §2.
+Firmware 10.00, websrv v0.34, files installed as in §2. This run predates the rename: the install directory was `/data/ps5browser`, and the log lines below are quoted with the old name.
 
 - Through the Payload Manager (elfldr, twice): no picture, but the processes lived (UI + 2 WebProcess + NetworkProcess in the memory table) and the profile was created (`cache/Version 18`, `storage/salt`, `tabs.json`). Spawning, networking and WebKit worked; a background payload simply has no video output. The copies stayed alive and the console swapped.
 - Through the websrv tile (three times): the big app started and immediately every child died with `[ps5browser.elf] sys_budget_set: No such file or directory` and `ps5browser.elf calls exit() exit_value=ffffffff`; black screen. `log.txt` held only `ps5browser UI starting` and the `SYSTEM_LANGUAGE` line.

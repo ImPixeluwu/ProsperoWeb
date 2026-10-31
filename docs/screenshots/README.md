@@ -1,19 +1,19 @@
 # Host screenshots
 
-Screenshots of `ps5browser-host` (the WebKitGTK 6.0 host frontend, see "Host build" in the top-level README) taken under Xvfb at 1920x1080 and downscaled to 1280x720, 256 colours. Everything except `host-demo-chrome.png` is the real shell driving real WebKitGTK views; the UI states (OSK, menu, fullscreen) are reached by pressing gamepad buttons through `--input`, which goes through the same `ShellController::on_button()` path as the keyboard and an SDL2 controller.
+Screenshots of `prosperobrowser-host` (the WebKitGTK 6.0 host frontend, see "Host build" in the top-level README) taken under Xvfb at 1920x1080 and downscaled to 1280x720, 256 colours. Everything except `host-demo-chrome.png` is the real shell driving real WebKitGTK views; the UI states (OSK, menu, fullscreen) are reached by pressing gamepad buttons through `--input`, which goes through the same `ShellController::on_button()` path as the keyboard and an SDL2 controller.
 
 Host used: Ubuntu 24.04, GTK 4.14.5, WebKitGTK 6.0 2.52.6, GStreamer 1.24 (good/bad/libav).
 
 ## How they were produced
 
-All commands run from the repository root after building with `-DPS5BROWSER_FRONTEND=host-gtk` into `build-gtk`. `shot` below is this helper:
+All commands run from the repository root after building with `-DPROSPEROBROWSER_FRONTEND=host-gtk` into `build-gtk`. `shot` below is this helper:
 
 ```sh
 shot() {  # shot NAME AFTER_MS [host args...]
   name=$1; after=$2; shift 2
   prof=$(mktemp -d)
   WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 xvfb-run -a -s "-screen 0 1920x1080x24" \
-    build-gtk/src/frontend/host-gtk/ps5browser-host --profile "$prof" \
+    build-gtk/src/frontend/host-gtk/prosperobrowser-host --profile "$prof" \
     --screenshot "/tmp/$name-full.png" --after-ms "$after" "$@"
   convert "/tmp/$name-full.png" -resize 1280x720 -strip -dither None -colors 256 \
     "PNG8:docs/screenshots/$name.png"

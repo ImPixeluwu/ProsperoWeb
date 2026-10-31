@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes how ps5-browser is put together: the processes on the console, the libraries in the payload, the code layout, the engine abstraction that lets one shell run on two engines, the rendering, input and media paths, the WebKit patch set, the build pipeline and the licensing. Runtime details (on-disk layout, environment, spawn contract) are in [ps5-runtime.md](ps5-runtime.md); the WebKit port is in [webkit-port/README.md](../webkit-port/README.md); the media engine is in [webkit-port/media/README.md](../webkit-port/media/README.md). Nothing here has been run on a console yet; see [console-verification.md](console-verification.md).
+This document describes how ProsperoBrowser is put together: the processes on the console, the libraries in the payload, the code layout, the engine abstraction that lets one shell run on two engines, the rendering, input and media paths, the WebKit patch set, the build pipeline and the licensing. Runtime details (on-disk layout, environment, spawn contract) are in [ps5-runtime.md](ps5-runtime.md); the WebKit port is in [webkit-port/README.md](../webkit-port/README.md); the media engine is in [webkit-port/media/README.md](../webkit-port/media/README.md). Nothing here has been run on a console yet; see [console-verification.md](console-verification.md).
 
 The project implements Option B of [research.md](research.md) ("port a real engine"): upstream WebKit's PlayStation port, built with the open ps5-payload-sdk instead of Sony's SDK.
 
@@ -9,7 +9,7 @@ The project implements Option B of [research.md](research.md) ("port a real engi
 ```
  PS5 (jailbroken, elfldr on :9021)
  +--------------------------------------------------------------------------------+
- |  ps5browser.elf  (one static multi-call ELF, /data/ps5browser/ps5browser.elf)  |
+ |  prosperobrowser.elf  (one static multi-call ELF, /data/prosperobrowser/prosperobrowser.elf)  |
  |                                                                                |
  |  UI process  (argv[0] = anything else)                                         |
  |  +--------------------------------------------------------------------------+  |
@@ -32,7 +32,7 @@ The project implements Option B of [research.md](research.md) ("port a real engi
  +--------------------------------------------------------------------------------+
 ```
 
-All three processes run the same ELF. `main()` in `src/frontend/ps5/main.cpp` dispatches on the basename of `argv[0]` (`WebProcess`, `NetworkProcess`, anything else is the UI), with `PS5BROWSER_ROLE` as a fallback. WebKit's process launcher (patch 0005) creates a `SOCK_SEQPACKET` socketpair and calls `ps5_spawn_self({"WebProcess", "<id>", "3"}, {clientFd}, 1)`. The spawner re-launches our own ELF the way elfldr launches payloads (`rfork_thread` + `execve` of the `SceSpZeroConf` trampoline + ptrace injection) and duplicates the client end into the child as fd 3, where `AuxiliaryProcessMain` expects it. The full contract is in [ps5-runtime.md](ps5-runtime.md#spawn-mechanics-fd--argv-contract).
+All three processes run the same ELF. `main()` in `src/frontend/ps5/main.cpp` dispatches on the basename of `argv[0]` (`WebProcess`, `NetworkProcess`, anything else is the UI), with `PROSPEROBROWSER_ROLE` as a fallback. WebKit's process launcher (patch 0005) creates a `SOCK_SEQPACKET` socketpair and calls `ps5_spawn_self({"WebProcess", "<id>", "3"}, {clientFd}, 1)`. The spawner re-launches our own ELF the way elfldr launches payloads (`rfork_thread` + `execve` of the `SceSpZeroConf` trampoline + ptrace injection) and duplicates the client end into the child as fd 3, where `AuxiliaryProcessMain` expects it. The full contract is in [ps5-runtime.md](ps5-runtime.md#spawn-mechanics-fd--argv-contract).
 
 ## Libraries in the payload
 
@@ -55,8 +55,8 @@ The link line and the list of system modules (`NEEDED`) are in [webkit-port/READ
 | `src/core/` | platform-independent models: tabs, URL normalizer, history, bookmarks, storage and session, gamepad mapper, pointer, on-screen keyboard, fullscreen state, DRM policy, injected page scripts (EME detector, gamepad key bridge) |
 | `src/shell/` | `ShellController` and the interfaces a frontend implements: `EngineView`, `EngineViewClient`, `EngineFactory`, `ChromeUi` |
 | `src/chrome-ui/` | the browser chrome as one offline HTML page (`chrome.html`, `chrome.css`, `chrome.js`) |
-| `src/frontend/host-gtk/` | `ps5browser-host`: GTK 4 + WebKitGTK 6.0 desktop frontend for development and screenshots |
-| `src/frontend/ps5/` | `ps5browser.elf`: multi-call `main`, `Ps5App` (SDL2 frame loop, compositor, input), `WkWebView`/`Ps5EngineView` (WebKit C API), `Ps5ChromeUi`, config, log, runtime environment, libwpe loader |
+| `src/frontend/host-gtk/` | `prosperobrowser-host`: GTK 4 + WebKitGTK 6.0 desktop frontend for development and screenshots |
+| `src/frontend/ps5/` | `prosperobrowser.elf`: multi-call `main`, `Ps5App` (SDL2 frame loop, compositor, input), `WkWebView`/`Ps5EngineView` (WebKit C API), `Ps5ChromeUi`, config, log, runtime environment, libwpe loader |
 | `src/ps5/spawn/` | `ps5_spawn_self()` / `ps5_terminate_process()`: elfldr-derived spawner with fd passing ([README](../src/ps5/spawn/README.md)) |
 | `webkit-port/` | CMake stand-ins for Sony's modules, toolchain wrappers, compat headers, GL stubs, patches, smoke test, ffmpeg media engine sources |
 | `scripts/ps5/` | `build-deps.sh`, `fetch-webkit.sh`, `build-webkit.sh`, `export-webkit-patches.sh`, `package.sh`, pkg-config wrapper, meson cross file, ICU data filter |
@@ -78,7 +78,7 @@ The link line and the list of system modules (`NEEDED`) are in [webkit-port/READ
 | Chrome | transparent full-window `WebKitWebView` over the page | second `WKView` loading `chrome.html`, composited over declared rects |
 | Input | keyboard as DualSense, optional SDL2 controller; JS fallbacks (untrusted) | SDL `GameController` + USB keyboard; trusted `WKPageHandle*Event` |
 | Media | GStreamer | ffmpeg engine (patch 0900) |
-| Profile | `--profile DIR`, files in `DIR/state/` | `/data/ps5browser/` |
+| Profile | `--profile DIR`, files in `DIR/state/` | `/data/prosperobrowser/` |
 
 The same `ShellController`, core models and `chrome.html` run on both, so most behaviour can be developed and screenshotted on the host ([screenshots](screenshots/README.md)) and is covered by `tests/shell` with a fake engine.
 
@@ -110,12 +110,12 @@ The PlayStation port has no media backend, so the project adds one: `MediaPlayer
 - HTTP(S) goes through WebCore's `PlatformMediaResourceLoader` (so cookies, CORS, CSP and the NetworkProcess apply) behind a custom `AVIOContext`, with `Range` requests for seeking.
 - HLS is native (`<video src=*.m3u8>`) through libavformat's `hls` demuxer: a fixed variant up to 1080p, VOD seeking, live, AES-128.
 - Decoding is software only: H.264, HEVC, VP8, VP9; AAC, MP3, Opus, Vorbis, FLAC, AC-3, E-AC-3. No AV1.
-- Audio goes to an SDL audio device (sceAudioOut) opened from the WebProcess. If that fails, or the output stalls for 2 s, a `NullAudioSink` keeps the clock running and video plays silently. `PS5BROWSER_MEDIA_AUDIO=null` forces the null sink. Whether a spawned WebProcess may open audio at all is the main media risk.
+- Audio goes to an SDL audio device (sceAudioOut) opened from the WebProcess. If that fails, or the output stalls for 2 s, a `NullAudioSink` keeps the clock running and video plays silently. `PROSPEROBROWSER_MEDIA_AUDIO=null` forces the null sink. Whether a spawned WebProcess may open audio at all is the main media risk.
 - MSE is not implemented: `MediaSource` is absent, so sites that require MSE (YouTube, Twitch) do not play. The decoders, queues and clock only depend on packet queues, so a `SourceBufferPrivate` can reuse them; that is the next milestone.
 
 ## Persistence
 
-`core::FileStorage` writes one JSON file per key, atomically (write `.tmp`, rename). On the PS5 the directory is `/data/ps5browser/`: `tabs.json` (session), `history.json`, `bookmarks.json`, `config.json` (read-only settings). WebKit's own data (HTTP cache, cookies, localStorage, IndexedDB) lives in subdirectories configured through the website data store. On the host the same files are in `--profile DIR/state/`.
+`core::FileStorage` writes one JSON file per key, atomically (write `.tmp`, rename). On the PS5 the directory is `/data/prosperobrowser/`: `tabs.json` (session), `history.json`, `bookmarks.json`, `config.json` (read-only settings). WebKit's own data (HTTP cache, cookies, localStorage, IndexedDB) lives in subdirectories configured through the website data store. On the host the same files are in `--profile DIR/state/`.
 
 ## DRM policy
 
@@ -135,7 +135,7 @@ All patches are guarded by `PS5_HOMEBREW`; the upstream behaviour is unchanged w
 | `0001-cmake-playstation-homebrew-options` | `PS5_HOMEBREW` build option: no Sony toolchain flags or libraries, static `libWebKit`, no auxiliary executables, `ENABLE_GAMEPAD` without the WPE backend, `USE_FFMPEG` option |
 | `0002-wtf-posix-osallocator` | POSIX `OSAllocator` instead of the memory-extra allocator |
 | `0003-jsc-generic-shell` | generic `jsc` shell without Sony test wrappers |
-| `0004-webcore-curl-ca-bundle` | TLS roots from a PEM file (`$PS5BROWSER_CA_BUNDLE`, default `/data/ps5browser/cacert.pem`) |
+| `0004-webcore-curl-ca-bundle` | TLS roots from a PEM file (`$PROSPEROBROWSER_CA_BUNDLE`, default `/data/prosperobrowser/cacert.pem`) |
 | `0005-webkit-static-multicall-processes` | launcher calls `ps5_spawn_self()`/`ps5_terminate_process()`; process entry points become `ps5_webkit_*_process_main()` in libWebKit |
 | `0006-wtf-payload-sdk-compat` | no Sony libc extensions; clang 18 attribute fix |
 | `0007-webcore-playstation-build-fixes` | upstream PlayStation + Skia build breaks; `AF_INET` on FreeBSD |
@@ -153,17 +153,17 @@ All patches are guarded by `PS5_HOMEBREW`; the upstream behaviour is unchanged w
           |
  scripts/ps5/build-webkit.sh   configure, wtf, jsc, webcore, webkit, package, smoke  -> build-wk-ps5/lib/libWebKitPS5.a
           |                                                                             build-wk-ps5/ps5webkit-link.cmake
- cmake -DPS5BROWSER_FRONTEND=ps5 ... --target ps5browser                              -> build-ps5/.../ps5browser.elf
+ cmake -DPROSPEROBROWSER_FRONTEND=ps5 ... --target prosperobrowser                              -> build-ps5/.../prosperobrowser.elf
           |
- scripts/ps5/package.sh        strip debug info, chrome, cacert.pem, DejaVu fonts,   -> dist/ps5browser/
-                               fonts.conf, config sample, licenses, websrv tile         dist/homebrew/ps5browser/
+ scripts/ps5/package.sh        strip debug info, chrome, cacert.pem, DejaVu fonts,   -> dist/prosperobrowser/
+                               fonts.conf, config sample, licenses, websrv tile         dist/homebrew/prosperobrowser/
 ```
 
 Every stage is idempotent and resumable (stamps per dependency, per WebKit stage). The WebKit build takes several hours on 4 cores and about 6 GB of disk. The host frontend and all unit tests build independently with plain CMake.
 
 ## Licensing
 
-The distributed `ps5browser.elf` is **GPL-3.0-or-later**. This is forced, not chosen:
+The distributed `prosperobrowser.elf` is **GPL-3.0-or-later**. This is forced, not chosen:
 
 - the ps5-payload-sdk crt and libc are GPLv3+ with no linking exception and are statically linked into every payload ([research.md §4.1](research.md#41-license));
 - the spawner (`src/ps5/spawn/elfldr.c`, `pt.c`) is derived from ps5-payload-dev/elfldr, GPL-3.0-or-later;
@@ -173,7 +173,7 @@ The other components are GPL-compatible and keep their own licenses:
 
 | Component | License |
 |---|---|
-| ps5-browser code, elfldr-derived spawner, SDK crt/libc | GPL-3.0-or-later |
+| ProsperoBrowser code, elfldr-derived spawner, SDK crt/libc | GPL-3.0-or-later |
 | FFmpeg + x264 (SDK build) | GPL |
 | WebKit (WebCore, JavaScriptCore, WebKit) | LGPL-2.1 / BSD-2-Clause |
 | Skia | BSD-3-Clause |
@@ -188,7 +188,7 @@ The other components are GPL-compatible and keep their own licenses:
 | DejaVu fonts | Bitstream Vera / DejaVu license |
 | `cacert.pem` | MPL-2.0 |
 
-`scripts/ps5/package.sh` writes these notices into `dist/ps5browser/LICENSES/`. The corresponding source is this repository at the build commit plus the upstream sources named in `build-deps.sh` and `fetch-webkit.sh`.
+`scripts/ps5/package.sh` writes these notices into `dist/prosperobrowser/LICENSES/`. The corresponding source is this repository at the build commit plus the upstream sources named in `build-deps.sh` and `fetch-webkit.sh`.
 
 ## Non-goals
 

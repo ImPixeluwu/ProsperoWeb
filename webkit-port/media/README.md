@@ -50,11 +50,11 @@ Demuxer read-ahead stops at 24 MiB in total, or when every enabled stream has at
 
 Only the foreground application is heard on the PS5, and the WebProcess is a plain payload: SDL opens sceAudioOut there and drains it, silently. `AudioSink::create()` therefore tries, in order:
 
-1. **`remote`**: `RemoteAudioSink` connects to the UI process's audio server on `127.0.0.1:$PS5BROWSER_AUDIO_PORT` (17772; the UI exports the variable, and it is also the default on PlayStation) within 300 ms. Its writer thread pulls 10 ms chunks from the decoder's ring whenever less than 100 ms (`PS5BROWSER_AUDIO_AHEAD_MS`) is queued on the server, and sends them with pause/resume, flush (on seek) and close messages. The server mixes every stream into one SDL device and reports, every 20 ms, how many frames of the stream it retired (played, or dropped by a flush or an overflow) and how many are queued. Between reports the position extrapolates in real time for at most 100 ms, so a stalled server stalls the clock and the watchdog below switches to the null sink. If the connection drops, the sink keeps pulling in real time without sound.
+1. **`remote`**: `RemoteAudioSink` connects to the UI process's audio server on `127.0.0.1:$PROSPEROBROWSER_AUDIO_PORT` (17772; the UI exports the variable, and it is also the default on PlayStation) within 300 ms. Its writer thread pulls 10 ms chunks from the decoder's ring whenever less than 100 ms (`PROSPEROBROWSER_AUDIO_AHEAD_MS`) is queued on the server, and sends them with pause/resume, flush (on seek) and close messages. The server mixes every stream into one SDL device and reports, every 20 ms, how many frames of the stream it retired (played, or dropped by a flush or an overflow) and how many are queued. Between reports the position extrapolates in real time for at most 100 ms, so a stalled server stalls the clock and the watchdog below switches to the null sink. If the connection drops, the sink keeps pulling in real time without sound.
 2. **`sdl`**: `SDLAudioSink`, an output in the WebProcess itself (audible on desktop builds, not on the console).
 3. **`null`**: `NullAudioSink`.
 
-`PS5BROWSER_MEDIA_AUDIO=remote|sdl|null` picks the first one tried; failures fall through in the same order. The protocol is in `FFmpegAudioWire.h`; the server is `src/ps5/audio` plus `src/frontend/ps5/ps5_audio_server.cpp`; see `docs/ps5-runtime.md` ("Audio path").
+`PROSPEROBROWSER_MEDIA_AUDIO=remote|sdl|null` picks the first one tried; failures fall through in the same order. The protocol is in `FFmpegAudioWire.h`; the server is `src/ps5/audio` plus `src/frontend/ps5/ps5_audio_server.cpp`; see `docs/ps5-runtime.md` ("Audio path").
 
 ### Clock
 
@@ -81,7 +81,7 @@ At rates other than 1 there is no time-stretching. The audio decoder discards sa
 
 Frames are opaque BGRA from swscale, in `av_malloc` blocks whose rows are padded to 64 bytes plus a 256-byte tail (`videoFrameStride`/`videoFrameBytes` in `FFmpegPlaybackPolicy.h`): libswscale's x86 output loops store 8 pixels per iteration, and a tightly packed buffer of a width that is not a multiple of 8 was overrun after its last row, into the allocator's metadata. The colour matrix comes from the stream: BT.601, BT.709 or BT.2020, with full or limited range. Output is capped at 1920x1080, and the sample aspect ratio is applied. `paint()` and `nativeImageForCurrentTime()` wrap the current frame without copying, through `SkImages::RasterFromPixmap`. The `SkImage` holds a reference to the frame, and the decoder only reuses pool frames nobody else references. Rendering is software only: no `platformLayer()`, no accelerated compositing.
 
-On PlayStation the frames normally bypass page painting (the video overlay, `FFmpegVideoOverlay.h`): `paint()` clears the video box to transparent while the UI process shows the frames under the page, and each presented frame is copied into a shared-memory slot (or sent inline) by a per-player sender thread instead of repainting the element. `paintCurrentFrameInContext()` (canvas, snapshots) always draws the frame. `PS5BROWSER_VIDEO_OVERLAY=0` restores per-frame page painting; see `docs/ps5-runtime.md` ("Video overlay").
+On PlayStation the frames normally bypass page painting (the video overlay, `FFmpegVideoOverlay.h`): `paint()` clears the video box to transparent while the UI process shows the frames under the page, and each presented frame is copied into a shared-memory slot (or sent inline) by a per-player sender thread instead of repainting the element. `paintCurrentFrameInContext()` (canvas, snapshots) always draws the frame. `PROSPEROBROWSER_VIDEO_OVERLAY=0` restores per-frame page painting; see `docs/ps5-runtime.md` ("Video overlay").
 
 ## Support
 
@@ -128,8 +128,8 @@ The first sample the generic code enqueues for a video (audio) track binds that 
 | | |
 |---|---|
 | Byte streams | `video/mp4`, `audio/mp4` (fragmented ISO BMFF), `video/webm`, `audio/webm` |
-| Codecs | H.264, HEVC, AAC (LC, HE, HE v2), Opus, Vorbis, FLAC, AC-3, E-AC-3, as far as the linked libavcodec has software decoders; VP8/VP9 only with `PS5BROWSER_MEDIA_VP9=1` (also for `canPlayType`: software VP9 480p could not keep up on the console, so players are steered to H.264); AV1 only with libdav1d/libaom (not in the SDK); video codecs in `audio/*` are refused |
-| Parameters | "" for sizes above 1080p (`width`/`height` above 1920, or both above 1088 on the shorter side; `PS5BROWSER_MEDIA_MAX_VIDEO=3840x2160` raises it), `framerate` above 120, `channels` above 8, non-numeric values, `eotf` other than `bt709` (no HDR, so `smpte2084` and `arib-std-b67` are refused), `decode-to-texture` other than `true`/`false`, `experimental` other than `allowed`/`true`/`false`, `tunnelmode=true`, and any `cryptoblockformat` (no EME) |
+| Codecs | H.264, HEVC, AAC (LC, HE, HE v2), Opus, Vorbis, FLAC, AC-3, E-AC-3, as far as the linked libavcodec has software decoders; VP8/VP9 only with `PROSPEROBROWSER_MEDIA_VP9=1` (also for `canPlayType`: software VP9 480p could not keep up on the console, so players are steered to H.264); AV1 only with libdav1d/libaom (not in the SDK); video codecs in `audio/*` are refused |
+| Parameters | "" for sizes above 1080p (`width`/`height` above 1920, or both above 1088 on the shorter side; `PROSPEROBROWSER_MEDIA_MAX_VIDEO=3840x2160` raises it), `framerate` above 120, `channels` above 8, non-numeric values, `eotf` other than `bt709` (no HDR, so `smpte2084` and `arib-std-b67` are refused), `decode-to-texture` other than `true`/`false`, `experimental` other than `allowed`/`true`/`false`, `tunnelmode=true`, and any `cryptoblockformat` (no EME) |
 
 The parameter rules apply to `canPlayType()` as well. YouTube probes them (`width=99999`, `framerate=9999`, `eotf=catavision`, ...) to decide whether the browser's answers can be trusted, then picks H.264 (MP4) with AAC or Opus (VP9 when enabled).
 
@@ -152,9 +152,9 @@ The parameter rules apply to `canPlayType()` as well. YouTube probes them (`widt
   - 1080p60 H.264 at high bit rates is borderline, and HEVC/VP9 1080p60 likely is not. Expect frame dropping and the `skip_loop_filter` fallback.
   - On top of decoding, per frame: swscale to BGRA and, with the video overlay, one copy into shared memory (the UI process scales it); without the overlay, Skia's scaled draw into the page's backing store and the WebKit IPC transfer to the UI process.
   - Anything above 1080p is downscaled after decoding, so it pays the full decode cost. HLS variant selection avoids it.
-- **Memory.** Per player: at most 24 MiB of queued packets, 8 MiB of network read-ahead per open stream (32 MiB for a server without `Range` support), a pool of up to 5 BGRA frames (8 MiB each at 1080p; the queue holds 3 of them) and a 1 s audio ring. Video decoding uses slice threads only (`PS5BROWSER_MEDIA_FRAME_THREADS=1` turns frame threading back on, which keeps one extra picture per thread).
+- **Memory.** Per player: at most 24 MiB of queued packets, 8 MiB of network read-ahead per open stream (32 MiB for a server without `Range` support), a pool of up to 5 BGRA frames (8 MiB each at 1080p; the queue holds 3 of them) and a 1 s audio ring. Video decoding uses slice threads only (`PROSPEROBROWSER_MEDIA_FRAME_THREADS=1` turns frame threading back on, which keeps one extra picture per thread).
 - **Timestamps.** A live HLS discontinuity with a large forward timestamp jump inserts at most 2 s of silence. The audio and video timelines can then disagree until the next seek.
-- **Licensing.** The SDK's ffmpeg is linked with x264, so the combination is GPL. That matches ps5-browser's GPL-3.0-or-later, but the binary must be distributed under GPL terms.
+- **Licensing.** The SDK's ffmpeg is linked with x264, so the combination is GPL. That matches ProsperoBrowser's GPL-3.0-or-later, but the binary must be distributed under GPL terms.
 
 ## Integration
 
@@ -178,7 +178,7 @@ What the patches change:
 
 ### Link line
 
-`libWebKitPS5.a` is static, so the final `ps5browser.elf` link needs ffmpeg's own static dependencies after the WebKit archives. `scripts/ps5/build-webkit.sh` adds them to the link contract (`link_libs`, exported as `build-wk-ps5/ps5webkit-link.cmake` and consumed by `src/frontend/ps5/CMakeLists.txt`) whenever `cmakeconfig.h` has `USE_FFMPEG`. They come from `scripts/ps5/pkg-config --static --libs libavformat libavcodec libswscale libswresample libavutil`:
+`libWebKitPS5.a` is static, so the final `prosperobrowser.elf` link needs ffmpeg's own static dependencies after the WebKit archives. `scripts/ps5/build-webkit.sh` adds them to the link contract (`link_libs`, exported as `build-wk-ps5/ps5webkit-link.cmake` and consumed by `src/frontend/ps5/CMakeLists.txt`) whenever `cmakeconfig.h` has `USE_FFMPEG`. They come from `scripts/ps5/pkg-config --static --libs libavformat libavcodec libswscale libswresample libavutil`:
 
 ```
 -lavformat -lbz2 -lavcodec -liconv -llzma -lx264 -lpthread -lz -lswscale -lswresample -lavutil -lm -lssl -lcrypto -pthread
@@ -188,7 +188,7 @@ That is libavformat, libavcodec, libswscale, libswresample and libavutil, plus b
 
 ## Console log
 
-On the PS5 the engine writes `media: ...` lines to `/data/ps5browser/log.txt` through the shell's `ps5_log_line()` (declared weak in `FFmpegLog.h`, so other builds link without it): `supportsType` answers (each distinct query once), `load` with scheme and host, the demuxer's format, duration and every stream (the selected ones marked `[VIDEO]`/`[AUDIO]`), decoder and audio sink results (the remote connection and its stream id, SDL driver, requested and obtained spec, or the failure and the fallback), the first video frame, `readyState`/`networkState` transitions, seeks (start, demuxer seek and flush, first frame after the seek, finish), `Range` requests and HTTP errors, `cancelLoad`, and a `stats:` line every 5 s while playing or seeking (decoded/dropped frames, queue depths, audio clock against the video pts).
+On the PS5 the engine writes `media: ...` lines to `/data/prosperobrowser/log.txt` through the shell's `ps5_log_line()` (declared weak in `FFmpegLog.h`, so other builds link without it): `supportsType` answers (each distinct query once), `load` with scheme and host, the demuxer's format, duration and every stream (the selected ones marked `[VIDEO]`/`[AUDIO]`), decoder and audio sink results (the remote connection and its stream id, SDL driver, requested and obtained spec, or the failure and the fallback), the first video frame, `readyState`/`networkState` transitions, seeks (start, demuxer seek and flush, first frame after the seek, finish), `Range` requests and HTTP errors, `cancelLoad`, and a `stats:` line every 5 s while playing or seeking (decoded/dropped frames, queue depths, audio clock against the video pts).
 
 The MSE engine logs `mse:` lines: `addSourceBuffer <type> -> #n`; `#n init segment #g (<mime>): video 1 h264 1280x720` or `audio 1 aac 48000 Hz 2ch`; `#n append N bytes -> M samples (a-b), buffer X KiB of Q KiB` (the first eight appends of a buffer, then every 20th); `#n evicted: buffer X KiB -> Y KiB`; `video|audio pipeline: SourceBuffer #n track t <codec>`; `configuration change`; `seek to`, `seek data at ... available after`, `seek finished`; `stalled at`/`resumed at`; `readyState`; `endOfStream`; `ended`; failed appends with the parser error; and `mse stats:` every 5 s while playing.
 
@@ -197,6 +197,6 @@ The MSE engine logs `mse:` lines: `addSourceBuffer <type> -> #n`; `#n init segme
 `tests/media/` (doctest, host build) covers the engine-independent headers: the MIME/codec table, time-range merging, clock maths and frame decisions, the ring buffer, the read-ahead/`readyState`/`networkState` policies, and for MSE the `isTypeSupported` answers to YouTube-style probes, the byte queue's read/seek semantics, MP4/WebM segment splitting across arbitrary append boundaries, timestamp conversion, duration filling, queue feeding and the readyState/stall rules. `compile-check.sh` checks the sources against the real WebCore flags before a full build; on an integrated tree it compiles `ffmpeg/` and `ffmpeg/mse/` directly with `ENABLE_MEDIA_SOURCE` forced on. The "Load MSE (fMP4)" button of `src/chrome-ui/video.html` plays DASH test content through two SourceBuffers and logs each step on the page. `tests/ps5/test_audio_server.cpp` covers the audio forwarding: wire framing, the client clock, the UI mixer, and a loopback run of `RemoteAudioClient` against the server (`ctest --test-dir build-host -R audio`). `tests/ps5/test_video_overlay.cpp` covers the video overlay: wire framing, the slot seqlock, the UI's scaler and composition, and loopback runs of `VideoOverlayClient` against the server over each transport (`ctest --test-dir build-host -R video`).
 
 ```sh
-cmake -S . -B build-host && cmake --build build-host -j2 --target ps5browser_media_tests
+cmake -S . -B build-host && cmake --build build-host -j2 --target prosperobrowser_media_tests
 ctest --test-dir build-host -R media
 ```

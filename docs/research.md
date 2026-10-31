@@ -1,5 +1,7 @@
 # PS5 homebrew browser: scene research (2026-10-30)
 
+> The project is now called ProsperoBrowser (https://github.com/kvaps/ProsperoBrowser). This document is a historical record written when it was still ps5-browser; names and paths below are left as they were.
+
 ## How to read this
 
 This document merges six research notes written on 2026-10-30. Nothing was run on a console; every on-device behaviour is either cited or marked unknown. Each claim carries one evidence tag:
