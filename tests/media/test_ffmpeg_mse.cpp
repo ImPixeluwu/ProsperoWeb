@@ -109,10 +109,33 @@ size_t mediaBytes(const ScanResult& result)
 {
     size_t total = 0;
     for (auto& segment : result.segments) {
-        if (segment.kind == ByteStreamSegment::Kind::Media)
+        if (segment.kind == ByteStreamSegment::Kind::Media && !segment.partial)
             total += segment.bytes.size();
     }
     return total;
+}
+
+Bytes completeMedia(const ScanResult& result)
+{
+    Bytes out;
+    for (auto& segment : result.segments) {
+        if (segment.kind == ByteStreamSegment::Kind::Media && !segment.partial)
+            out.insert(out.end(), segment.bytes.begin(), segment.bytes.end());
+    }
+    return out;
+}
+
+// An MP4 box with a 64-bit size (size field 1).
+Bytes largeBox(const char (&type)[5], size_t payload, uint8_t fill = 0)
+{
+    Bytes out;
+    put32(out, 1);
+    for (int i = 0; i < 4; ++i)
+        out.push_back(static_cast<uint8_t>(type[i]));
+    put32(out, 0);
+    put32(out, static_cast<uint32_t>(16 + payload));
+    out.insert(out.end(), payload, fill);
+    return out;
 }
 
 } // namespace
@@ -335,6 +358,102 @@ TEST_SUITE("media_mse_bytes") {
     CHECK(mediaBytes(closed) == cluster.size() + element(WebMID::Cluster, 10).size());
     SegmentScanner early(ByteStreamFormat::WebM);
     CHECK_FALSE(scan(early, element(WebMID::Cluster, 10)).ok);
+  }
+
+  TEST_CASE("MP4: a fragment streamed in small appends is exposed as it grows") {
+    auto init = concat({ box("ftyp", 8), box("moov", 100) });
+    // moof + 64-bit-size mdat, then a regular pair, with the boxes a DASH /
+    // YouTube stream carries between fragments.
+    auto first = concat({ box("moof", 120, 1), largeBox("mdat", 40000, 2) });
+    auto second = concat({ box("moof", 80, 3), box("mdat", 9000, 4) });
+    auto stream = concat({ box("styp", 16), box("sidx", 40), box("emsg", 70), first, box("prft", 24), box("free", 20000), second });
+    SegmentScanner scanner(ByteStreamFormat::MP4, 4096);
+    REQUIRE(scan(scanner, init).ok);
+    ScanResult result;
+    size_t maxPending = 0;
+    unsigned completedAfter = 0;
+    for (size_t offset = 0; offset < stream.size(); offset += 1000) {
+        REQUIRE(scanner.append(stream.data() + offset, std::min<size_t>(1000, stream.size() - offset), result.segments));
+        maxPending = std::max(maxPending, scanner.pendingBytes());
+        completedAfter = std::max(completedAfter, scanner.lastFragmentAppends());
+    }
+    // Both fragments exactly once, nothing else, nothing left over.
+    CHECK(completeMedia(result) == concat({ first, second }));
+    CHECK(scanner.pendingBytes() == 0);
+    // The 20 KB free box is skipped, never buffered.
+    CHECK(maxPending <= first.size());
+    CHECK(completedAfter >= 40);
+    // Partial segments: growing prefixes of the fragment they belong to,
+    // and the complete segment names the fragment it continues.
+    size_t partials = 0, previous = 0;
+    uint64_t firstFragment = 0;
+    bool continued = false;
+    for (auto& segment : result.segments) {
+        if (segment.partial && (!firstFragment || segment.fragment == firstFragment)) {
+            ++partials;
+            REQUIRE(segment.bytes.size() <= first.size());
+            CHECK(std::equal(segment.bytes.begin(), segment.bytes.end(), first.begin()));
+            CHECK(segment.bytes.size() >= previous + 4096);
+            previous = segment.bytes.size();
+            firstFragment = segment.fragment;
+        } else if (segment.partial) {
+            CHECK(segment.fragment > firstFragment);
+            CHECK(std::equal(segment.bytes.begin(), segment.bytes.end(), second.begin()));
+        } else if (segment.kind == ByteStreamSegment::Kind::Media && segment.bytes.size() >= first.size())
+            continued = firstFragment && segment.fragment == firstFragment;
+    }
+    CHECK(partials >= 3);
+    CHECK(partials <= 12); // the step grows with the fragment
+    CHECK(continued);
+  }
+
+  TEST_CASE("MP4: a moof without its mdat is superseded, mdat without moof skipped") {
+    SegmentScanner scanner(ByteStreamFormat::MP4);
+    REQUIRE(scan(scanner, concat({ box("ftyp", 8), box("moov", 100) })).ok);
+    auto pair = concat({ box("moof", 30, 5), box("mdat", 300, 6) });
+    auto result = scan(scanner, concat({ box("mdat", 500), box("moof", 40), pair }), 7);
+    CHECK(result.ok);
+    CHECK(completeMedia(result) == pair);
+    CHECK(scanner.pendingBytes() == 0);
+    SegmentScanner toEnd(ByteStreamFormat::MP4);
+    REQUIRE(scan(toEnd, concat({ box("ftyp", 8), box("moov", 100) })).ok);
+    Bytes open { 0, 0, 0, 0, 'm', 'd', 'a', 't' };
+    CHECK_FALSE(scan(toEnd, open).ok);
+  }
+
+  TEST_CASE("WebM: partial clusters stop at complete children") {
+    auto segmentHeader = element(WebMID::Segment, 0, true);
+    segmentHeader.resize(12);
+    auto init = concat({ element(WebMID::EBML, 4), segmentHeader, element(WebMID::Info, 4), element(WebMID::Tracks, 4) });
+    Bytes blocks;
+    for (int i = 0; i < 40; ++i) {
+        auto block = element(WebMID::SimpleBlock, 300, false, static_cast<uint8_t>(i));
+        blocks.insert(blocks.end(), block.begin(), block.end());
+    }
+    auto children = concat({ element(WebMID::Timecode, 2), blocks });
+    auto unknown = concat({ element(WebMID::Cluster, 0, true), children });
+    auto knownHeader = element(WebMID::Cluster, children.size());
+    knownHeader.resize(12); // ID + 8-byte size, without the filler
+    auto known = concat({ knownHeader, children });
+    for (auto* cluster : { &unknown, &known }) {
+        SegmentScanner scanner(ByteStreamFormat::WebM, 1024);
+        REQUIRE(scan(scanner, init).ok);
+        auto stream = concat({ *cluster, element(WebMID::Cues, 10) });
+        auto result = scan(scanner, stream, 97);
+        REQUIRE(result.ok);
+        CHECK(completeMedia(result) == *cluster);
+        size_t partials = 0;
+        for (auto& segment : result.segments) {
+            if (!segment.partial)
+                continue;
+            ++partials;
+            // Header + Timecode + whole SimpleBlocks only.
+            size_t blockBytes = segment.bytes.size() - (cluster->size() - children.size()) - element(WebMID::Timecode, 2).size();
+            CHECK(blockBytes % element(WebMID::SimpleBlock, 300).size() == 0);
+        }
+        CHECK(partials >= 3);
+        CHECK(scanner.pendingBytes() == 0);
+    }
   }
 
   TEST_CASE("EBML header parsing") {

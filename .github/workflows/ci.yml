@@ -70,7 +70,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --assume-yes --no-install-recommends \
-            cmake ninja-build pkg-config libgtk-4-dev libwebkitgtk-6.0-dev libsdl2-dev
+            cmake ninja-build pkg-config libgtk-4-dev libwebkitgtk-6.0-dev libsdl2-dev \
+            libavformat-dev libavcodec-dev
 
       - name: Configure (core, shell, tests)
         run: cmake -S . -B build-host -G Ninja
