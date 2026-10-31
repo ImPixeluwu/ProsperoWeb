@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>ps5browser video test</title>
+<style>body{background:#111;color:#eee;font:26px/1.4 sans-serif;margin:20px}video{width:1280px;height:720px;background:#000;display:block}button{font-size:26px;padding:10px 20px;margin:6px}#s{font-size:22px;white-space:pre-wrap}</style></head>
+<body>
+<div><button id="mp4">Load MP4 (Big Buck Bunny)</button><button id="hls">Load HLS (mux test)</button><button id="play">Play</button><button id="pause">Pause</button><button id="fs">Fullscreen</button><button id="mute">Mute</button></div>
+<video id="v" controls playsinline></video>
+<div id="s">status:</div>
+<script>
+var v=document.getElementById('v'), s=document.getElementById('s');
+function st(m){ s.textContent='status: '+m+' | readyState='+v.readyState+' net='+v.networkState+' t='+v.currentTime.toFixed(1)+' dur='+(isFinite(v.duration)?v.duration.toFixed(1):'-')+' size='+v.videoWidth+'x'+v.videoHeight+' err='+(v.error?v.error.code+':'+v.error.message:'none'); }
+['loadstart','loadedmetadata','loadeddata','canplay','playing','waiting','stalled','error','ended','pause'].forEach(function(e){ v.addEventListener(e,function(){st(e);}); });
+setInterval(function(){ if(!v.paused) st('playing'); },1000);
+document.getElementById('mp4').onclick=function(){ v.src='https://archive.org/download/BigBuckBunny_124/Content/big_buck_bunny_720p_surround.mp4'; v.load(); st('mp4 set; canPlayType mp4='+v.canPlayType('video/mp4; codecs="avc1.42E01E, mp4a.40.2"')); };
+document.getElementById('hls').onclick=function(){ v.src='https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8'; v.load(); st('hls set; canPlayType hls='+v.canPlayType('application/vnd.apple.mpegurl')); };
+document.getElementById('play').onclick=function(){ v.play().then(function(){st('play ok');},function(e){st('play rejected: '+e);}); };
+document.getElementById('pause').onclick=function(){ v.pause(); };
+document.getElementById('mute').onclick=function(){ v.muted=!v.muted; st('muted='+v.muted); };
+document.getElementById('fs').onclick=function(){ var f=v.requestFullscreen||v.webkitRequestFullscreen; if(f){ try{ var p=f.call(v); if(p&&p.then)p.then(function(){st('fullscreen ok')},function(e){st('fullscreen rejected: '+e)}); else st('fullscreen called'); }catch(e){st('fullscreen threw: '+e);} } else st('no fullscreen API'); };
+st('ready');
+</script></body></html>
