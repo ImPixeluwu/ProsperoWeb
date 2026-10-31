@@ -170,18 +170,16 @@ if(PROSPEROWEB_NATIVE_TITLE_TARGET)
 
   # What the payload crt and libc.a gave the payload (native/*.c).
   add_library(prosperoweb_native_runtime OBJECT
+    native/native_crt.cpp
     native/native_runtime.c
     native/native_memory.c
     native/native_title.c)
   target_link_libraries(prosperoweb_native_runtime PRIVATE prosperoweb_warnings)
 
-  # Third-party code: the boilerplate's CRT and dlmalloc, without -Werror.
-  add_library(prosperoweb_native_vendor OBJECT
-    "${_native_tool}/app_crt.cpp"
-    native/dlmalloc_unit.c)
+  # Third-party code: dlmalloc, without -Werror.
+  add_library(prosperoweb_native_vendor OBJECT native/dlmalloc_unit.c)
   target_include_directories(prosperoweb_native_vendor PRIVATE "${CMAKE_SOURCE_DIR}/third_party/dlmalloc")
-  target_compile_options(prosperoweb_native_vendor PRIVATE -w
-    $<$<COMPILE_LANGUAGE:CXX>:-std=c++20 -fno-exceptions -fno-rtti>)
+  target_compile_options(prosperoweb_native_vendor PRIVATE -w)
 
   # Link stub for libSceVideodec2 (the payload SDK has none).
   add_library(prosperoweb_videodec2_stub SHARED native/videodec2_stub.c)

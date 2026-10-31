@@ -7,7 +7,8 @@
  * writable data in distinct address ranges; the native converter replaces
  * LLVM's generic dynamic metadata.
  *
- * ProsperoWeb change: WebKit's page-aligned writable sections
+ * ProsperoWeb changes: __prwb_image_base and the __prwb_got_start/_end
+ * bounds for the start-up import check; and WebKit's page-aligned writable sections
  * (WTF::Config "__DATA,__wtf_config" and JSC's "__DATA,__jsc_opcodes", which
  * WTF write-protects itself once initialised) are placed in the data
  * segment. As orphans, lld put them between .got.plt and .init_array, and
@@ -36,6 +37,8 @@ PROVIDE(__eh_frame_hdr_end = ADDR(.eh_frame_hdr) + SIZEOF(.eh_frame_hdr));
 
 SECTIONS {
     .text 0 : ALIGN(CONSTANT(MAXPAGESIZE)) {
+        /* The load address at run time (native/native_crt.cpp). */
+        PROVIDE_HIDDEN(__prwb_image_base = .);
         QUAD(0xcccccccccccccccc)
         QUAD(0xcccccccccccccccc)
         *(.text .text.*)
@@ -53,8 +56,15 @@ SECTIONS {
     .data.rel.ro : {
         *(.data.rel.ro .data.rel.ro.*)
     } : relro
-    .got : { *(.got) } : relro
-    .got.plt : { *(.got.plt) } : relro
+    /* The import slots, checked at start-up (native/native_crt.cpp). */
+    .got : {
+        PROVIDE_HIDDEN(__prwb_got_start = .);
+        *(.got)
+    } : relro
+    .got.plt : {
+        *(.got.plt)
+        PROVIDE_HIDDEN(__prwb_got_end = .);
+    } : relro
     .preinit_array : {
         PROVIDE_HIDDEN(__preinit_array_start = .);
         KEEP(*(.preinit_array))

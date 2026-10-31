@@ -211,6 +211,50 @@ int __dladdr(const void* address, void* info) {
   return 0;
 }
 
+// ---- __cxa_atexit -----------------------------------------------------------------
+//
+// The first console run of the title died in its first static constructor:
+// the import of __cxa_atexit (libSceLibcInternal) was left at address 0 by
+// the system, while _init_env and atexit from the same module resolved
+// (klog run 14; docs/native-title.md, "First console run"). The title has
+// its own: the destructors are recorded and run by __cxa_finalize, which
+// nothing calls in practice (a title is closed by the system, it does not
+// return from main()).
+
+#define kAtexitMax 4096
+static struct {
+  void (*fn)(void*);
+  void* arg;
+  void* dso;
+} g_atexit[kAtexitMax];
+static int g_atexit_count;
+static int g_atexit_lock;
+
+int __cxa_atexit(void (*fn)(void*), void* arg, void* dso) {
+  while (__atomic_exchange_n(&g_atexit_lock, 1, __ATOMIC_ACQUIRE)) {
+  }
+  int rc = -1;
+  if (g_atexit_count < kAtexitMax) {
+    g_atexit[g_atexit_count].fn = fn;
+    g_atexit[g_atexit_count].arg = arg;
+    g_atexit[g_atexit_count].dso = dso;
+    g_atexit_count++;
+    rc = 0;
+  }
+  __atomic_store_n(&g_atexit_lock, 0, __ATOMIC_RELEASE);
+  return rc;
+}
+
+void __cxa_finalize(void* dso) {
+  for (int i = g_atexit_count - 1; i >= 0; i--) {
+    if (g_atexit[i].fn && (!dso || g_atexit[i].dso == dso)) {
+      void (*fn)(void*) = g_atexit[i].fn;
+      g_atexit[i].fn = NULL;
+      fn(g_atexit[i].arg);
+    }
+  }
+}
+
 // ---- libc.a's raw-syscall calls that libkernel does not export ---------------------
 
 static int no_syscall(void) {
