@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -10,6 +11,7 @@
 
 #include "ps5browser/shell/chrome_ui.h"
 #include "ps5browser/shell/engine_view.h"
+#include "ps5browser/shell/text_input.h"
 
 namespace ps5browser::shell::test {
 
@@ -96,6 +98,47 @@ class FakeChromeUi final : public ChromeUi {
   nlohmann::json last;
   int renders = 0;
   std::vector<std::pair<int, int>> clicks;
+};
+
+// Records requests; the test completes them with finish_*(). With
+// refuse = true request_text() fails to start; with sync_error set the
+// request completes with that error from inside request_text().
+class FakeTextInputProvider final : public TextInputProvider {
+ public:
+  bool request_text(const TextInputRequest& request, Completion done) override {
+    requests.push_back(request);
+    if (refuse) {
+      return false;
+    }
+    done_ = std::move(done);
+    if (sync_error) {
+      complete({TextInputResult::Outcome::Error, "", *sync_error});
+    }
+    return true;
+  }
+  void poll() override { ++polls; }
+  bool active() const override { return static_cast<bool>(done_); }
+
+  void finish_done(const std::string& text) {
+    complete({TextInputResult::Outcome::Done, text, 0});
+  }
+  void finish_cancelled() { complete({TextInputResult::Outcome::Cancelled, "", 0}); }
+  void finish_error(std::int64_t code) { complete({TextInputResult::Outcome::Error, "", code}); }
+
+  std::vector<TextInputRequest> requests;
+  bool refuse = false;
+  std::optional<std::int64_t> sync_error;
+  int polls = 0;
+
+ private:
+  void complete(const TextInputResult& result) {
+    Completion done = std::move(done_);
+    done_ = nullptr;
+    if (done) {
+      done(result);
+    }
+  }
+  Completion done_;
 };
 
 }  // namespace ps5browser::shell::test
