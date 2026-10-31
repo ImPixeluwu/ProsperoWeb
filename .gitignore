@@ -12,6 +12,7 @@ build-*/
 out/
 
 # Artifacts
+dist/
 *.elf
 *.o
 *.a
