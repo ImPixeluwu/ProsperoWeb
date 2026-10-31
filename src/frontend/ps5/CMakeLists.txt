@@ -106,7 +106,7 @@ target_include_directories(prosperoweb_frontend_ps5_objs SYSTEM PRIVATE
   "${PROSPEROWEB_THIRD_PARTY_DIR}")
 # prosperoweb::core / ::shell provide the public headers the frontend consumes.
 target_link_libraries(prosperoweb_frontend_ps5_objs PRIVATE prosperoweb::core prosperoweb::shell
-  prosperoweb::spawn_util prosperoweb::audio_server  # prosperoweb/spawn/spawn.h (the broker role entry)
+  prosperoweb::spawn_util prosperoweb::spawn_broker prosperoweb::audio_server  # prosperoweb/spawn/spawn.h (the broker role entry)
   prosperoweb::display prosperoweb::video_server prosperoweb::cpu)
 
 # The final executable. It cannot link until the WebKit archives exist, so it

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ps5_config.h"
 
+#include <cstdlib>
+
 #include <nlohmann/json.hpp>
 
 #include "prosperoweb/core/storage.h"
@@ -9,6 +11,10 @@ namespace prosperoweb::frontend {
 
 Ps5Config Ps5Config::load(core::Storage& storage) {
   Ps5Config cfg;
+  // The native title's own chrome (main() sets it); config.json still wins.
+  if (const char* dir = std::getenv("PROSPEROWEB_CHROME_DIR"); dir && dir[0]) {
+    cfg.chrome_dir = dir;
+  }
   auto raw = storage.read("config");
   if (!raw) {
     return cfg;

@@ -98,12 +98,25 @@ std::string system_language_tag(const std::string& language) {
   return language;
 }
 
-void setup_runtime_env(const std::string& base_dir) {
-  const std::string fonts = base_dir + "/fonts";
+namespace {
+std::string& assets_dir_slot() {
+  static auto* dir = new std::string(kPs5DataDir);  // never destroyed
+  return *dir;
+}
+}  // namespace
+
+const std::string& runtime_assets_dir() { return assets_dir_slot(); }
+
+void setup_runtime_env(const std::string& base_dir, const std::string& assets_dir) {
+  assets_dir_slot() = assets_dir;
+  const std::string fonts = assets_dir + "/fonts";
   const std::string tmp = base_dir + "/tmp";
+  if (mkdir(base_dir.c_str(), 0755) != 0 && errno != EEXIST) {
+    log_printf("mkdir(%s) failed: %s", base_dir.c_str(), std::strerror(errno));
+  }
   set_default("FONTCONFIG_FILE", fonts + "/fonts.conf");
   set_default("FONTCONFIG_PATH", fonts);
-  set_default("PROSPEROWEB_CA_BUNDLE", base_dir + "/cacert.pem");
+  set_default("PROSPEROWEB_CA_BUNDLE", assets_dir + "/cacert.pem");
   set_default("SYSTEM_LANGUAGE", system_language_tag(""));
   set_default("TMPDIR", tmp);
   set_default("HOME", base_dir);

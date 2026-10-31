@@ -9,6 +9,14 @@
 //   "spawn-broker"   -> ps5_spawn_broker_main          (src/ps5/spawn), the
 //                       plain payload websrv starts to spawn the two above
 //   anything else    -> the UI process (Ps5App)
+//
+// --env=NAME=VALUE arguments are exported first: elfldr, which starts the
+// broker for the native title, passes arguments but no environment.
+//
+// The same sources are also linked as the native title's eboot.bin
+// (PROSPEROWEB_NATIVE_TITLE, docs/native-title.md). That build is only ever
+// the UI: the broker and the children stay the payload ELF shipped next to
+// it (<title>/prosperoweb.elf).
 
 #include <csignal>
 #include <cstdlib>
@@ -17,6 +25,7 @@
 #include <string>
 #include <vector>
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "prosperoweb/core/legacy_profile.h"
@@ -28,8 +37,15 @@
 #include "ps5_log.h"
 #include "ps5_runtime_env.h"
 
+#if PROSPEROWEB_NATIVE_TITLE
+#include "native/native_title.h"
+#include "ps5_hwdec.h"
+#include "title_paths.h"
+#endif
+
 namespace {
 
+#if !PROSPEROWEB_NATIVE_TITLE
 // Returns the basename of a path (argv[0] may be absolute).
 const char* basename_of(const char* path) {
   if (!path) {
@@ -79,6 +95,8 @@ void export_self_path(int argc, char** argv) {
   setenv("PROSPEROWEB_SELF_PATH", path.c_str(), /*overwrite=*/0);
 }
 
+#endif  // !PROSPEROWEB_NATIVE_TITLE
+
 // The project was called ProsperoBrowser and ps5browser before: carry the
 // newest old profile over once (UI role, before config.json is read).
 // Copies, never moves, so an old build keeps working from its directory.
@@ -111,13 +129,101 @@ void log_legacy_env(const std::vector<std::string>& adopted) {
              names.c_str());
 }
 
+// Exports every --env=NAME=VALUE argument (overriding).
+void apply_arg_env(int argc, char** argv) {
+  for (int i = 1; i < argc; i++) {
+    if (!argv[i] || std::strncmp(argv[i], "--env=", 6) != 0) {
+      continue;
+    }
+    const std::string entry = argv[i] + 6;
+    const size_t eq = entry.find('=');
+    if (eq == 0 || eq == std::string::npos) {
+      continue;
+    }
+    setenv(entry.substr(0, eq).c_str(), entry.substr(eq + 1).c_str(), /*overwrite=*/1);
+  }
+}
+
+#if PROSPEROWEB_NATIVE_TITLE
+
+constexpr const char* kApp0 = "/app0";
+
+// Whether dir holds the running title: the same eboot.bin as /app0 (size
+// and modification time; nullfs shows the same file on both sides).
+bool same_title(const std::string& dir, const std::string& app0) {
+  struct stat a {};
+  struct stat b {};
+  return stat((dir + "/eboot.bin").c_str(), &a) == 0 &&
+         stat((app0 + "/eboot.bin").c_str(), &b) == 0 && a.st_size == b.st_size &&
+         a.st_mtim.tv_sec == b.st_mtim.tv_sec;
+}
+
+// Where the title's files are for this process and for the payloads it
+// starts (src/ps5/spawn/title_paths.h), exported for the spawner and the
+// chrome; the payload ELF the broker runs for the children; the read-only
+// assets and the writable profile.
+void setup_native_title_env() {
+  namespace spawn = prosperoweb::spawn;
+  using prosperoweb::frontend::log_printf;
+  const auto layout = spawn::resolve_title_layout(kApp0, PROSPEROWEB_TITLE_ID,
+                                                  std::getenv("PROSPEROWEB_TITLE_DIR"), same_title);
+  log_printf("title: %s; UI reads %s, helpers %s", layout.how.c_str(), layout.ui_root.c_str(),
+             layout.child_root.c_str());
+  setenv("PROSPEROWEB_TITLE_UI_ROOT", layout.ui_root.c_str(), 1);
+  setenv("PROSPEROWEB_TITLE_CHILD_ROOT", layout.child_root.c_str(), 1);
+  setenv("PROSPEROWEB_SELF_PATH", (layout.child_root + "/prosperoweb.elf").c_str(), 0);
+  setenv("PROSPEROWEB_CHROME_DIR", (layout.child_root + "/data/chrome").c_str(), 0);
+  const char* self = std::getenv("PROSPEROWEB_SELF_PATH");
+  const std::string self_here = spawn::rebase_path(self, layout.child_root, layout.ui_root);
+  log_printf("title: payload ELF for the broker and children %s (%s here)", self,
+             access(self_here.c_str(), R_OK) == 0 ? "present" : "MISSING");
+
+  prosperoweb::frontend::setup_runtime_env(prosperoweb::frontend::kPs5DataDir,
+                                           layout.ui_root + "/data");
+  // JavaScriptCore's JIT needs executable memory, which a title does not
+  // get: the UI runs JSC without it. The children are payloads and keep
+  // their own defaults: the spawner leaves these out of their environment.
+  setenv("JSC_useJIT", "false", 1);
+  setenv("JSC_useWasm", "false", 1);
+  setenv("PROSPEROWEB_UI_ONLY_ENV", "JSC_useJIT JSC_useWasm", 1);
+  log_printf("env JSC_useJIT=false JSC_useWasm=false (UI only; the children keep theirs)");
+}
+
+#endif  // PROSPEROWEB_NATIVE_TITLE
+
 }  // namespace
 
 int main(int argc, char** argv) {
   using namespace prosperoweb::frontend;
+  apply_arg_env(argc, argv);
   // Before anything reads the environment (the role, then every module).
   // The children inherit the new names, so only the UI or broker logs this.
   const std::vector<std::string> legacy_env = prosperoweb::core::adopt_legacy_env();
+#if PROSPEROWEB_NATIVE_TITLE
+  // The title is the UI: the system starts it with no role argument, and
+  // the broker and the children run the payload ELF.
+  const std::string role = "UI";
+  mkdir(kPs5DataDir, 0755);
+  log_set_role(role);
+  log_open(std::string(kPs5DataDir) + "/log.txt");
+  log_printf("main: native title %s pid=%d argv0=%s", PROSPEROWEB_TITLE_ID,
+             static_cast<int>(getpid()), argc > 0 && argv[0] ? argv[0] : "(none)");
+  // First, before any other thread and before any helper is started: the
+  // hardware decoder's module and compute queue (VLC for PS5's order).
+  hwdec_native_startup();
+  char modules[256];
+  native_load_system_modules(modules, sizeof(modules));
+  log_printf("main: system modules: %s", modules);
+  log_printf("main: heap %zu MiB of direct memory%s", native_heap_size() >> 20,
+             native_heap_size() ? "" : " (none: the system heap)");
+  log_legacy_env(legacy_env);
+  migrate_legacy_profile_dir();
+  setup_native_title_env();
+  tune_process_cpus();
+  start_cpu_monitor();
+  Ps5App app;
+  return app.run();
+#else
   std::string role = resolve_role(argc, argv);
   const bool child = role == "WebProcess" || role == "NetworkProcess";
   const bool broker = role == kBrokerRole;
@@ -145,7 +251,7 @@ int main(int argc, char** argv) {
 
   // Before any role starts: WebProcess and NetworkProcess read fontconfig,
   // TLS and temp-dir settings from their own environment.
-  setup_runtime_env(kPs5DataDir);
+  setup_runtime_env(kPs5DataDir, kPs5DataDir);
   if (!child) {
     export_self_path(argc, argv);
   } else {
@@ -180,4 +286,5 @@ int main(int argc, char** argv) {
   start_cpu_monitor();
   Ps5App app;
   return app.run();
+#endif
 }

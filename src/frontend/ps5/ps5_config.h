@@ -21,7 +21,9 @@ struct Ps5Config {
   std::string home_url = "https://duckduckgo.com/";
   std::string user_agent = kDefaultUserAgent;
   std::string language = "en";  // "en" or "ru"
-  // Directory where chrome.html and its assets are installed.
+  // Directory where chrome.html and its assets are installed, as the
+  // WebProcess sees it. PROSPEROWEB_CHROME_DIR (the native title's
+  // <title>/data/chrome) replaces the default.
   std::string chrome_dir = "/data/prosperoweb/chrome";
   // Text entry: "system" (the PS5 keyboard dialog, built-in OSK as the
   // fallback) or "builtin" (the HTML OSK only). PROSPEROWEB_OSK overrides it.

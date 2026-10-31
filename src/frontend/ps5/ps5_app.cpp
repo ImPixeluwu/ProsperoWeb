@@ -22,6 +22,7 @@
 #include "ps5_log.h"
 #include "ps5_runtime_env.h"
 #include "ps5_splash_text.h"
+#include "title_paths.h"
 
 namespace prosperoweb::frontend {
 
@@ -65,6 +66,15 @@ constexpr const char* kInputTraceScript = R"JS((function () {
 constexpr const char* kBaseDir = kPs5DataDir;
 
 std::string tmp_path(const std::string& name) { return std::string(kBaseDir) + "/tmp/" + name; }
+
+// A path the WebProcess is given, as this process sees it: the native title
+// reads its folder as /app0, the children by its real path (title_paths.h;
+// main() exports both roots). Unchanged for the payload.
+std::string ui_view(const std::string& path) {
+  const char* ui = std::getenv("PROSPEROWEB_TITLE_UI_ROOT");
+  const char* child = std::getenv("PROSPEROWEB_TITLE_CHILD_ROOT");
+  return ui && child ? spawn::rebase_path(path, child, ui) : path;
+}
 // Milliseconds since `start` (an SDL_GetPerformanceCounter() value).
 double ms_since(std::uint64_t start) {
   static const double ms_per_tick = 1000.0 / static_cast<double>(SDL_GetPerformanceFrequency());
@@ -221,12 +231,25 @@ int Ps5App::run() {
   log_line("WebKit: context and data store created");
   mark_splash_stage(kSplashWebKit);
 
-  const std::string chrome_path = config_.chrome_dir + "/chrome.html";
+  // config.json may still name the websrv install's chrome
+  // (/data/prosperoweb/chrome, config.json.sample); the native title falls
+  // back to its own copy (PROSPEROWEB_CHROME_DIR, set by main()).
+  std::string chrome_dir = config_.chrome_dir;
+  const char* title_chrome = std::getenv("PROSPEROWEB_CHROME_DIR");
+  if (access(ui_view(chrome_dir + "/chrome.html").c_str(), R_OK) != 0 && title_chrome &&
+      title_chrome[0] && chrome_dir != title_chrome) {
+    log_printf("chrome: %s/chrome.html not found, using the title's %s", chrome_dir.c_str(),
+               title_chrome);
+    chrome_dir = title_chrome;
+  }
+  const std::string chrome_path = chrome_dir + "/chrome.html";
   std::string chrome_url = "file://" + chrome_path;
-  if (access(chrome_path.c_str(), R_OK) != 0) {
+  if (access(ui_view(chrome_path).c_str(), R_OK) != 0) {
     log_printf("chrome: %s is missing (%s); reinstall the chrome/ directory",
-               chrome_path.c_str(), std::strerror(errno));
+               ui_view(chrome_path).c_str(), std::strerror(errno));
     chrome_url.clear();  // Ps5ChromeUi shows its built-in fallback
+  } else {
+    log_printf("chrome: %s", chrome_url.c_str());
   }
   chrome_ = std::make_unique<Ps5ChromeUi>(
       factory_->context(), factory_->data_store(), chrome_url, width_, height_,
@@ -245,7 +268,7 @@ int Ps5App::run() {
   cfg.native_pointer = true;
   cfg.user_agent = config_.user_agent;
   cfg.language = config_.language;
-  cfg.diagnostics_url = "file://" + config_.chrome_dir + "/diag.html";
+  cfg.diagnostics_url = "file://" + chrome_dir + "/diag.html";
   if (use_system_ime(config_.osk)) {
     ime_input_ = std::make_unique<Ps5ImeTextInput>();
     cfg.text_input = ime_input_.get();
@@ -292,7 +315,7 @@ void Ps5App::draw_splash() {
   }
   // Text first (FreeType, no WebKit or fontconfig yet); without it the
   // screen still shows the background and the progress bar.
-  const std::string font = std::string(kBaseDir) + "/fonts/NotoSans-Regular.ttf";
+  const std::string font = runtime_assets_dir() + "/fonts/NotoSans-Regular.ttf";
   std::string error;
   const int title_px = std::max(24, surface->h * 96 / 1080);
   const int subtitle_px = std::max(12, surface->h * 30 / 1080);

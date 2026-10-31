@@ -23,12 +23,18 @@ inline constexpr const char* kLegacyDataDirs[] = {"/data/prosperobrowser", "/dat
 // to the BCP 47 tag WebKit expects in SYSTEM_LANGUAGE.
 std::string system_language_tag(const std::string& language);
 
-// Sets FONTCONFIG_FILE, FONTCONFIG_PATH, PROSPEROWEB_CA_BUNDLE,
-// SYSTEM_LANGUAGE (en-US), TMPDIR and HOME for files under base_dir, unless
-// already set, then exports base_dir/config.json "env" (overriding), then
-// defaults JSC_useJIT and JSC_useWasm to true, and creates the temp
-// directory. Any process role.
-void setup_runtime_env(const std::string& base_dir);
+// Sets FONTCONFIG_FILE, FONTCONFIG_PATH and PROSPEROWEB_CA_BUNDLE for the
+// read-only files under assets_dir, and SYSTEM_LANGUAGE (en-US), TMPDIR and
+// HOME under the writable profile base_dir, unless already set; then
+// exports base_dir/config.json "env" (overriding), then defaults JSC_useJIT
+// and JSC_useWasm to true, and creates base_dir and its temp directory. Any
+// process role. The payload keeps both in kPs5DataDir; the native title
+// reads its assets from the title folder (<title>/data, docs/native-title.md).
+void setup_runtime_env(const std::string& base_dir, const std::string& assets_dir);
+
+// The assets_dir of the last setup_runtime_env() (kPs5DataDir before it):
+// the UI's own read-only files (the splash font).
+const std::string& runtime_assets_dir();
 
 // UI role: SYSTEM_LANGUAGE from config.json (overrides the default above).
 void apply_language_env(const std::string& language);
