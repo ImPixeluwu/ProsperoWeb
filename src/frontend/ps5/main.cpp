@@ -22,6 +22,7 @@
 #include "prosperobrowser/spawn/spawn.h"
 #include "ps5webkit/entry.h"
 #include "ps5_app.h"
+#include "ps5_cpu_affinity.h"
 #include "ps5_cpu_monitor.h"
 #include "ps5_log.h"
 #include "ps5_runtime_env.h"
@@ -150,13 +151,18 @@ int main(int argc, char** argv) {
                static_cast<int>(getppid()));
   }
 
+  // Every role, before it starts a thread: the threads inherit the mask.
+  tune_process_cpus();
+
   if (broker) {
     const int rc = ps5_spawn_broker_main();
     log_printf("main: broker returned %d", rc);
     return rc;
   }
   if (role == "WebProcess") {
-    // Before WebKit starts its threads: they inherit a widened affinity.
+    // The main thread also runs the media presentation tick: above the
+    // decoder threads, which inherit the default priority.
+    raise_main_thread_priority();
     start_cpu_monitor();
     const int rc = ps5_webkit_web_process_main(argc, argv);
     log_printf("main: returned %d", rc);
