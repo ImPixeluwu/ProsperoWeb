@@ -1,0 +1,129 @@
+Subject: WebCore/WebKit: never enter accelerated compositing without a GL display
+
+The PS5 build paints without accelerated compositing (the shell sets
+AcceleratedCompositingEnabled=false) and has no PlatformDisplay. Some
+callers enter compositing mode regardless of the setting: a page calling
+document.startViewTransition() made RenderLayerCompositor::
+enableCompositingMode() create the root layer, the drawing area then
+built a LayerTreeHost, and CoordinatedTileManager::create hit the
+RELEASE_ASSERT in PlatformDisplay::sharedDisplay(), killing the
+WebProcess.
+
+- RenderLayerCompositor::enableCompositingMode() refuses to enable
+  compositing when the setting is off (view transitions, plug-ins and
+  page overlays all funnel through it).
+- View transitions are skipped like for a hidden document: the update
+  callback still runs; resolveViewTransitionRule() skips cross-document
+  ones.
+- DrawingAreaCoordinatedGraphics::enterAcceleratedCompositingMode() does
+  nothing without a shared display, so graphicsLayerFactory() returns
+  null instead of crashing.
+- The WebProcess turns off accelerated buffers when there is no display.
+diff --git a/Source/WebCore/dom/Document.cpp b/Source/WebCore/dom/Document.cpp
+index ed8dedf70..703bf24b1 100644
+--- a/Source/WebCore/dom/Document.cpp
++++ b/Source/WebCore/dom/Document.cpp
+@@ -9332,6 +9332,12 @@ Variant<Document::SkipTransition, Vector<AtomString>> Document::resolveViewTrans
+     if (hidden())
+         return SkipTransition { };
+ 
++#if defined(PS5_HOMEBREW)
++    // View transitions need compositing, which the PS5 build does not have.
++    if (!settings().acceleratedCompositingEnabled())
++        return SkipTransition { };
++#endif
++
+     RefPtr rule = protect(styleScope().resolver())->viewTransitionRule();
+     if (rule && rule->computedNavigation() == ViewTransitionNavigation::Auto)
+         return rule->types();
+@@ -12713,6 +12719,15 @@ RefPtr<ViewTransition> Document::startViewTransition(StartViewTransitionCallback
+         return viewTransition;
+     }
+ 
++#if defined(PS5_HOMEBREW)
++    // The update callback still runs; only the animated transition, which
++    // needs compositing, is skipped.
++    if (!settings().acceleratedCompositingEnabled()) {
++        viewTransition->skipViewTransition(Exception { ExceptionCode::InvalidStateError, "View transition was skipped because accelerated compositing is disabled."_s });
++        return viewTransition;
++    }
++#endif
++
+     if (RefPtr activeViewTransition = m_activeViewTransition)
+         activeViewTransition->skipViewTransition(Exception { ExceptionCode::AbortError, "Old view transition aborted by new view transition."_s });
+ 
+diff --git a/Source/WebCore/rendering/RenderLayerCompositor.cpp b/Source/WebCore/rendering/RenderLayerCompositor.cpp
+index 9acfd0a4d..ad8177811 100644
+--- a/Source/WebCore/rendering/RenderLayerCompositor.cpp
++++ b/Source/WebCore/rendering/RenderLayerCompositor.cpp
+@@ -596,6 +596,15 @@ RenderLayerCompositor::~RenderLayerCompositor()
+ 
+ void RenderLayerCompositor::enableCompositingMode(bool enable /* = true */)
+ {
++#if defined(PS5_HOMEBREW)
++    // The PS5 build paints without accelerated compositing (no GL display):
++    // entering compositing mode would make the drawing area create a
++    // LayerTreeHost, which needs PlatformDisplay::sharedDisplay(). Callers
++    // that force it regardless of the setting (view transitions, plug-ins,
++    // page overlays) stay in the software path.
++    if (enable && !m_renderView.settings().acceleratedCompositingEnabled())
++        return;
++#endif
+     if (enable != m_compositing) {
+         m_compositing = enable;
+         
+diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp
+index efd16800d..7bb80090d 100644
+--- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp
++++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp
+@@ -42,6 +42,7 @@
+ #include <WebCore/LocalFrameView.h>
+ #include <WebCore/Page.h>
+ #include <WebCore/PageOverlayController.h>
++#include <WebCore/PlatformDisplay.h>
+ #include <WebCore/Region.h>
+ #include <WebCore/Settings.h>
+ #include <WebCore/ShareableBitmap.h>
+@@ -440,6 +441,14 @@ void DrawingAreaCoordinatedGraphics::resumePainting()
+ 
+ void DrawingAreaCoordinatedGraphics::enterAcceleratedCompositingMode(GraphicsLayer* graphicsLayer)
+ {
++#if defined(PS5_HOMEBREW)
++    // LayerTreeHost needs a GL display (CoordinatedTileManager::create calls
++    // PlatformDisplay::sharedDisplay(), a RELEASE_ASSERT without one). The
++    // PS5 build has none: stay in non-composited mode, graphicsLayerFactory()
++    // then returns null.
++    if (!PlatformDisplay::sharedDisplayIfExists())
++        return;
++#endif
+     m_exitCompositingTimer.stop();
+     m_wantsToExitAcceleratedCompositingMode = false;
+ 
+diff --git a/Source/WebKit/WebProcess/playstation/WebProcessPlayStation.cpp b/Source/WebKit/WebProcess/playstation/WebProcessPlayStation.cpp
+index d1a4f8121..6b675aa7f 100644
+--- a/Source/WebKit/WebProcess/playstation/WebProcessPlayStation.cpp
++++ b/Source/WebKit/WebProcess/playstation/WebProcessPlayStation.cpp
+@@ -35,6 +35,11 @@
+ #include <WebCore/PlatformDisplayLibWPE.h>
+ #endif
+ 
++#if defined(PS5_HOMEBREW)
++#include <WebCore/PlatformDisplay.h>
++#include <WebCore/ProcessCapabilities.h>
++#endif
++
+ namespace WebKit {
+ 
+ void WebProcess::platformInitializeWebProcess(WebProcessCreationParameters& parameters)
+@@ -42,6 +47,11 @@ void WebProcess::platformInitializeWebProcess(WebProcessCreationParameters& para
+ #if USE(WPE_RENDERER)
+     if (!parameters.isServiceWorkerProcess)
+         WebCore::PlatformDisplay::setSharedDisplay(WebCore::PlatformDisplayLibWPE::create(parameters.hostClientFileDescriptor.release()));
++#endif
++#if defined(PS5_HOMEBREW)
++    // No GL display: keep tiles and image buffers in system memory.
++    if (!WebCore::PlatformDisplay::sharedDisplayIfExists())
++        WebCore::ProcessCapabilities::setCanUseAcceleratedBuffers(false);
+ #endif
+     applyProcessCreationParameters(WTF::move(parameters.auxiliaryProcessParameters));
+ }
