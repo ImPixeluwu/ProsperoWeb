@@ -1,0 +1,39 @@
+# Fonts bundled into dist/ps5browser/fonts by scripts/ps5/fonts/stage-fonts.sh.
+#
+# kind     name (cache file in third_party/dl/fonts/)  sha256  url
+#
+# kind: font    copied into fonts/ as is
+#       license copied into LICENSES/ under the name given in stage-fonts.sh
+#       archive extracted into its own empty build-deps/fonts/<name>/ and
+#               the files listed in stage-fonts.sh are copied out of it
+#
+# Single files come from tagged trees, so the URLs never change content:
+#   notofonts.github.io  noto-monthly-release-2026.10.01
+#                        (Noto Sans/Serif 2.015, Noto Sans Mono 2.014)
+#   noto-emoji           v2.051
+#   noto-cjk             Sans2.004
+# Their sha256 were pinned after checking each file's git blob id against
+# the GitHub contents API at that tag; the Liberation tarball's sha512
+# matches Fedora's liberation-fonts dist-git "sources" file.
+
+archive dejavu-fonts-ttf-2.37.tar.bz2 fa9ca4d13871dd122f61258a80d01751d603b4d3ee14095d65453b4e846e17d7 https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.tar.bz2
+archive liberation-fonts-ttf-2.1.5.tar.gz 7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0 https://github.com/liberationfonts/liberation-fonts/files/7261482/liberation-fonts-ttf-2.1.5.tar.gz
+
+font NotoSans-Regular.ttf 478c558ea716033cd60c03438f628dfa75694dcf6b5f6d505a2f05fd2b4f3823 https://raw.githubusercontent.com/notofonts/notofonts.github.io/noto-monthly-release-2026.10.01/fonts/NotoSans/hinted/ttf/NotoSans-Regular.ttf
+font NotoSans-Bold.ttf 1df075a380fc7cb898acf64c1f7b3b4dd780de3caa860178bf929de35817a913 https://raw.githubusercontent.com/notofonts/notofonts.github.io/noto-monthly-release-2026.10.01/fonts/NotoSans/hinted/ttf/NotoSans-Bold.ttf
+font NotoSans-Italic.ttf 467e3f89eeca4108bb8710a2b9e0cf2281ac56d5b0609211a83776d0505eecb5 https://raw.githubusercontent.com/notofonts/notofonts.github.io/noto-monthly-release-2026.10.01/fonts/NotoSans/hinted/ttf/NotoSans-Italic.ttf
+font NotoSans-BoldItalic.ttf 1b602a9d6353be42c91df097a4857b69fa2696f26703d7a33b54a15d87c2622c https://raw.githubusercontent.com/notofonts/notofonts.github.io/noto-monthly-release-2026.10.01/fonts/NotoSans/hinted/ttf/NotoSans-BoldItalic.ttf
+font NotoSerif-Regular.ttf 19e72cd8d595fae5bd74a5206f5d938512e1183d4fed7abb1ec1be1d7efa5f88 https://raw.githubusercontent.com/notofonts/notofonts.github.io/noto-monthly-release-2026.10.01/fonts/NotoSerif/hinted/ttf/NotoSerif-Regular.ttf
+font NotoSerif-Bold.ttf 96656aa5cec8f1d6fd0e804c1fad397e1a1cfa082e6642124e0bda68cd8363ce https://raw.githubusercontent.com/notofonts/notofonts.github.io/noto-monthly-release-2026.10.01/fonts/NotoSerif/hinted/ttf/NotoSerif-Bold.ttf
+font NotoSerif-Italic.ttf 749e80e313ef711f9373c6cce17c72297ef05490b3dcda7967d1d5d90bf1183f https://raw.githubusercontent.com/notofonts/notofonts.github.io/noto-monthly-release-2026.10.01/fonts/NotoSerif/hinted/ttf/NotoSerif-Italic.ttf
+font NotoSerif-BoldItalic.ttf c710c5b9cf354ae46e7a10472a08019b28220fafeb5887a482a76856f8f6fc0b https://raw.githubusercontent.com/notofonts/notofonts.github.io/noto-monthly-release-2026.10.01/fonts/NotoSerif/hinted/ttf/NotoSerif-BoldItalic.ttf
+font NotoSansMono-Regular.ttf 65b5e2b2c4a1fba9ae8be1f026cb35b03dcb8886d9b2a4147054fde12f7e767d https://raw.githubusercontent.com/notofonts/notofonts.github.io/noto-monthly-release-2026.10.01/fonts/NotoSansMono/hinted/ttf/NotoSansMono-Regular.ttf
+font NotoSansMono-Bold.ttf a21ea0ba6ea49fda7b34ca39a504b487f1130885d36e1a4f9f4255b3ba6994bc https://raw.githubusercontent.com/notofonts/notofonts.github.io/noto-monthly-release-2026.10.01/fonts/NotoSansMono/hinted/ttf/NotoSansMono-Bold.ttf
+license notofonts.github.io-LICENSE f2095b08bed08b23a6fe26112fcd679a2bee3f002eef077eb05d215ed1051bd8 https://raw.githubusercontent.com/notofonts/notofonts.github.io/noto-monthly-release-2026.10.01/fonts/LICENSE
+
+font NotoColorEmoji.ttf 72a635cb3d2f3524c51620cdde406b217204e8a6a06c6a096ff8ed4b5fd6e27b https://raw.githubusercontent.com/googlefonts/noto-emoji/v2.051/fonts/NotoColorEmoji.ttf
+license noto-emoji-LICENSE 6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2 https://raw.githubusercontent.com/googlefonts/noto-emoji/v2.051/fonts/LICENSE
+
+font NotoSansCJK-Regular.ttc b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTC/NotoSansCJK-Regular.ttc
+font NotoSansCJK-Bold.ttc faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTC/NotoSansCJK-Bold.ttc
+license noto-cjk-LICENSE 6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2 https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/LICENSE

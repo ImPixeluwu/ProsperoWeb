@@ -7,9 +7,10 @@
 #     ps5browser.elf              debug info stripped (symbols kept)
 #     chrome/                     HTML chrome (src/chrome-ui)
 #     cacert.pem                  curl's CA bundle (MPL-2.0)
-#     fonts/                      DejaVu TTFs + fonts.conf (FONTCONFIG_FILE)
+#     fonts/                      Noto, Liberation, DejaVu + fonts.conf (FONTCONFIG_FILE)
 #     config.json.sample          copy to config.json to override defaults
-#     LICENSES/                   GPL-3.0 (ps5browser), MPL-2.0 notice (cacert)
+#     LICENSES/                   GPL-3.0 (ps5browser), MPL-2.0 notice (cacert),
+#                                 font licenses
 #     README-install.txt
 #   dist/homebrew/ps5browser/   -> copy to /data/homebrew/ps5browser/ (websrv tile,
 #                                  the only supported way to launch the browser)
@@ -18,9 +19,9 @@
 #
 #   scripts/ps5/package.sh [path/to/ps5browser.elf]
 #
-# Downloads are cached and verified in build-dist/dl/ (cacert.pem against
-# curl.se's published .sha256, DejaVu against the sha256 pinned below).
-# No Noto CJK: about 100 MB per weight; CJK text renders as missing glyphs.
+# cacert.pem is cached in build-dist/dl/ and verified against curl.se's
+# published .sha256. Fonts are pinned in scripts/ps5/fonts/fonts.lock and
+# staged (with fonts.conf) by scripts/ps5/fonts/stage-fonts.sh.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -34,9 +35,6 @@ TILE="${DIST}/homebrew/ps5browser"
 INSTALL_DIR="/data/ps5browser"
 
 CACERT_URL="https://curl.se/ca/cacert.pem"
-DEJAVU_VERSION="2.37"
-DEJAVU_URL="https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_${DEJAVU_VERSION//./_}/dejavu-fonts-ttf-${DEJAVU_VERSION}.tar.bz2"
-DEJAVU_SHA256="fa9ca4d13871dd122f61258a80d01751d603b4d3ee14095d65453b4e846e17d7"
 
 log() { printf '[package] %s\n' "$*"; }
 die() { printf '[package] error: %s\n' "$*" >&2; exit 1; }
@@ -65,17 +63,6 @@ download "${CACERT_URL}" cacert.pem
 download "${CACERT_URL}.sha256" cacert.pem.sha256
 (cd "${DL}" && sha256sum --check --quiet cacert.pem.sha256) || die "cacert.pem checksum mismatch"
 
-# --- DejaVu fonts: pinned tarball, extracted into its own directory. -------
-download "${DEJAVU_URL}" "dejavu-fonts-ttf-${DEJAVU_VERSION}.tar.bz2"
-echo "${DEJAVU_SHA256}  ${DL}/dejavu-fonts-ttf-${DEJAVU_VERSION}.tar.bz2" | sha256sum --check --quiet - \
-    || die "DejaVu tarball checksum mismatch"
-DEJAVU_DIR="${WORK}/dejavu"
-rm -rf -- "${DEJAVU_DIR}"
-mkdir -p "${DEJAVU_DIR}"
-tar -xjf "${DL}/dejavu-fonts-ttf-${DEJAVU_VERSION}.tar.bz2" -C "${DEJAVU_DIR}" --no-same-owner --no-same-permissions
-DEJAVU_SRC="${DEJAVU_DIR}/dejavu-fonts-ttf-${DEJAVU_VERSION}"
-[[ -d "${DEJAVU_SRC}/ttf" ]] || die "unexpected DejaVu tarball layout"
-
 # --- Assemble. dist/ is generated output, rebuilt from scratch. -------------
 rm -rf -- "${OUT}" "${TILE}"
 mkdir -p "${OUT}/chrome" "${OUT}/fonts" "${OUT}/LICENSES" "${TILE}/sce_sys"
@@ -87,12 +74,9 @@ mkdir -p "${OUT}/chrome" "${OUT}/fonts" "${OUT}/LICENSES" "${TILE}/sce_sys"
 
 cp -- "${ROOT}"/src/chrome-ui/*.html "${ROOT}"/src/chrome-ui/*.css "${ROOT}"/src/chrome-ui/*.js "${OUT}/chrome/"
 cp -- "${DL}/cacert.pem" "${OUT}/cacert.pem"
-# Not DejaVuMathTeXGyre.ttf: it has the widest coverage and wins
-# family-less fallback matches, rendering body text in the math face.
-find "${DEJAVU_SRC}/ttf" -name '*.ttf' ! -name 'DejaVuMathTeXGyre.ttf' -exec cp -- {} "${OUT}/fonts/" \;
-cp -- "${DEJAVU_SRC}/LICENSE" "${OUT}/fonts/LICENSE-DejaVu"
+# Fonts, their licenses and fonts.conf (pointing at ${INSTALL_DIR}/fonts).
+"${ROOT}/scripts/ps5/fonts/stage-fonts.sh" "${OUT}/fonts" "${OUT}/LICENSES" "${INSTALL_DIR}"
 cp -- "${ROOT}/LICENSE" "${OUT}/LICENSES/GPL-3.0-or-later.txt"
-cp -- "${DEJAVU_SRC}/LICENSE" "${OUT}/LICENSES/DejaVu-fonts.txt"
 
 cat > "${OUT}/LICENSES/cacert-MPL-2.0.txt" <<'EOF'
 cacert.pem is the CA certificate bundle extracted from Mozilla's NSS by the
@@ -113,40 +97,12 @@ source is the ps5-browser repository at the commit this package was built
 from, plus the upstream sources listed in its scripts/ps5/build-deps.sh and
 scripts/ps5/fetch-webkit.sh.
 
-Fonts: DejaVu (DejaVu-fonts.txt). CA bundle: MPL-2.0 (cacert-MPL-2.0.txt).
-EOF
-
-# fontconfig is compiled with /user/homebrew/etc/fonts/fonts.conf, which does
-# not exist on the console; the frontend points FONTCONFIG_FILE here. No
-# conf.d is loaded, so the generic families are mapped explicitly.
-cat > "${OUT}/fonts/fonts.conf" <<EOF
-<?xml version="1.0"?>
-<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
-<fontconfig>
-  <dir>${INSTALL_DIR}/fonts</dir>
-  <cachedir>${INSTALL_DIR}/cache/fontconfig</cachedir>
-  <config><rescan><int>0</int></rescan></config>
-
-  <!-- Common web fonts that are not installed (before the generic
-       families, so the appended generic family is expanded below). -->
-EOF
-for f in Arial Helvetica Verdana Tahoma "Segoe UI" Roboto -apple-system BlinkMacSystemFont; do
-    printf '  <alias><family>%s</family><default><family>sans-serif</family></default></alias>\n' "${f}"
-done >> "${OUT}/fonts/fonts.conf"
-for f in Times "Times New Roman" Georgia; do
-    printf '  <alias><family>%s</family><default><family>serif</family></default></alias>\n' "${f}"
-done >> "${OUT}/fonts/fonts.conf"
-for f in Courier "Courier New" Consolas Menlo Monaco; do
-    printf '  <alias><family>%s</family><default><family>monospace</family></default></alias>\n' "${f}"
-done >> "${OUT}/fonts/fonts.conf"
-cat >> "${OUT}/fonts/fonts.conf" <<'EOF'
-  <alias binding="same"><family>sans-serif</family><prefer><family>DejaVu Sans</family></prefer></alias>
-  <alias binding="same"><family>serif</family><prefer><family>DejaVu Serif</family></prefer></alias>
-  <alias binding="same"><family>monospace</family><prefer><family>DejaVu Sans Mono</family></prefer></alias>
-  <alias binding="same"><family>system-ui</family><prefer><family>DejaVu Sans</family></prefer></alias>
-  <alias binding="same"><family>cursive</family><prefer><family>DejaVu Sans</family></prefer></alias>
-  <alias binding="same"><family>fantasy</family><prefer><family>DejaVu Sans</family></prefer></alias>
-</fontconfig>
+Fonts: Noto Sans, Noto Serif, Noto Sans Mono, Noto Color Emoji and
+Noto Sans CJK (SIL OFL 1.1: Noto-fonts-OFL-1.1.txt,
+Noto-Color-Emoji-OFL-1.1.txt, Noto-Sans-CJK-OFL-1.1.txt), Liberation
+Sans, Serif and Mono (SIL OFL 1.1: Liberation-fonts-OFL-1.1.txt), DejaVu
+(DejaVu-fonts.txt). The fonts are unmodified.
+CA bundle: MPL-2.0 (cacert-MPL-2.0.txt).
 EOF
 
 # Defaults from src/frontend/ps5/ps5_config.h; config.json overrides them.
@@ -183,8 +139,8 @@ async function main() {
 EOF
 
 convert -size 512x512 gradient:'#1b3a8a'-'#0a1430' \
-    -fill white -font "${DEJAVU_SRC}/ttf/DejaVuSans-Bold.ttf" -pointsize 300 -gravity center -annotate +0-30 'W' \
-    -fill '#c8d4ff' -font "${DEJAVU_SRC}/ttf/DejaVuSans.ttf" -pointsize 64 -gravity south -annotate +0+40 'ps5browser' \
+    -fill white -font "${OUT}/fonts/DejaVuSans-Bold.ttf" -pointsize 300 -gravity center -annotate +0-30 'W' \
+    -fill '#c8d4ff' -font "${OUT}/fonts/DejaVuSans.ttf" -pointsize 64 -gravity south -annotate +0+40 'ps5browser' \
     -strip "PNG24:${TILE}/sce_sys/icon0.png" 2>/dev/null \
     || convert -size 512x512 gradient:'#1b3a8a'-'#0a1430' -strip "PNG24:${TILE}/sce_sys/icon0.png"
 
