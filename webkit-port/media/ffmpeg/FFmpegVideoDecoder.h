@@ -102,6 +102,15 @@ public:
     // Current playback position, used to drop late frames before conversion.
     void setClockHint(double time) { m_clockHint = time; }
 
+    // Average milliseconds per frame since the previous call (main thread):
+    // time in libavcodec per decoded frame, swscale per converted frame.
+    struct Timing {
+        double decodeMilliseconds { 0 };
+        double convertMilliseconds { 0 };
+    };
+    Timing takeTiming();
+    int threadCount() const { return m_codec->thread_count; }
+
     unsigned decodedFrames() const { return m_decodedFrames; }
     unsigned droppedFrames() const { return m_droppedFrames; }
     int outputWidth() const { return m_outputWidth; }
@@ -131,6 +140,14 @@ private:
     std::atomic<double> m_clockHint { 0 };
     std::atomic<unsigned> m_decodedFrames { 0 };
     std::atomic<unsigned> m_droppedFrames { 0 };
+    std::atomic<unsigned> m_convertedFrames { 0 };
+    std::atomic<int64_t> m_decodeMicros { 0 };
+    std::atomic<int64_t> m_convertMicros { 0 };
+    // takeTiming() snapshot (main thread).
+    unsigned m_timingDecoded { 0 };
+    unsigned m_timingConverted { 0 };
+    int64_t m_timingDecodeMicros { 0 };
+    int64_t m_timingConvertMicros { 0 };
     std::atomic<int> m_outputWidth { 0 };
     std::atomic<int> m_outputHeight { 0 };
 
@@ -139,6 +156,7 @@ private:
     bool m_waitingForKeyframe { false };
     bool m_skippingLoopFilter { false };
     unsigned m_lateFrames { 0 };
+    int64_t m_pendingConvertMicros { 0 };
     unsigned m_sendErrors { 0 };
     Vector<Ref<FFmpegVideoFrame>> m_pool;
 

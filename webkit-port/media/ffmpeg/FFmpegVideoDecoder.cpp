@@ -15,6 +15,7 @@ extern "C" {
 #include <libavutil/imgutils.h>
 #include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
+#include <wtf/MonotonicTime.h>
 }
 
 namespace WebCore {
@@ -30,24 +31,43 @@ constexpr size_t maxPooledFrames = 5;
 // Output is capped at 1080p; anything bigger is downscaled by swscale.
 constexpr int maxOutputWidth = 1920;
 constexpr int maxOutputHeight = 1080;
-// Decoder threads. The WebProcess shares the Zen 2 cores with the UI
-// process and the audio decoder; 4 leaves headroom. Slice threading only:
-// frame threading keeps a picture per thread in flight (more memory, more
-// latency), and its worker threads ("av:h264:df*") are where the console
-// crashes of run 4/5 surfaced. One Zen 2 core decodes 1080p30 H.264 in
-// real time; PS5BROWSER_MEDIA_FRAME_THREADS=1 turns frame threading back on.
-constexpr int decoderThreads = 4;
+// Decoder threads: 6 of the Zen 2's 8 cores, leaving 2 for the UI process,
+// networking and the audio decoder (PS5BROWSER_MEDIA_THREADS=1..16).
+// Frame and slice threading: frame threading is what scales H.264 and VP9
+// across cores. The console crashes of run 4/5 that first pointed at the
+// frame threads ("av:h264:df*") were the swscale overrun fixed in
+// FFmpegPlaybackPolicy.h, not frame threading;
+// PS5BROWSER_MEDIA_FRAME_THREADS=0 goes back to slice threads only.
+constexpr int defaultDecoderThreads = 6;
 
-bool frameThreadsRequested()
+int decoderThreads()
+{
+    if (const char* value = getenv("PS5BROWSER_MEDIA_THREADS")) {
+        int count = atoi(value);
+        if (count >= 1 && count <= 16)
+            return count;
+    }
+    return defaultDecoderThreads;
+}
+
+bool frameThreadsEnabled()
 {
     const char* value = getenv("PS5BROWSER_MEDIA_FRAME_THREADS");
-    return value && !strcmp(value, "1");
+    return !value || strcmp(value, "0");
+}
+
+int64_t nowMicroseconds()
+{
+    return static_cast<int64_t>(MonotonicTime::now().secondsSinceEpoch().microseconds());
 }
 // A frame this far behind the clock is dropped before conversion; one in
 // lateFrameKeepInterval late frames is still shown so the picture moves.
 constexpr double lateThreshold = 0.08;
 constexpr unsigned lateFrameKeepInterval = 8;
+// Falling behind: first skip deblocking of non-reference frames, then of
+// all frames.
 constexpr unsigned lateFramesBeforeSkippingLoopFilter = 4;
+constexpr unsigned lateFramesBeforeSkippingAllLoopFilter = 12;
 
 int swsColorspace(const AVFrame* frame)
 {
@@ -79,8 +99,8 @@ RefPtr<FFmpegVideoDecoder> FFmpegVideoDecoder::create(const FFmpegStreamInfo& st
     if (!context || avcodec_parameters_to_context(context.get(), stream.parameters.get()) < 0)
         return nullptr;
     context->pkt_timebase = stream.timeBase;
-    context->thread_count = decoderThreads;
-    context->thread_type = frameThreadsRequested() ? (FF_THREAD_FRAME | FF_THREAD_SLICE) : FF_THREAD_SLICE;
+    context->thread_count = decoderThreads();
+    context->thread_type = frameThreadsEnabled() ? (FF_THREAD_FRAME | FF_THREAD_SLICE) : FF_THREAD_SLICE;
     int result = avcodec_open2(context.get(), codec, nullptr);
     if (result < 0) {
         ffmpegMediaLog("video decoder %s: open failed: %s", codec->name, ffmpegErrorString(result).utf8().legacyCStringPointer());
@@ -203,6 +223,8 @@ bool FFmpegVideoDecoder::handlePacket(AVPacket* packet)
         m_waitingForKeyframe = false;
     }
 
+    int64_t start = nowMicroseconds();
+    m_pendingConvertMicros = 0;
     int result = avcodec_send_packet(m_codec.get(), packet);
     if (result == AVERROR(EAGAIN)) {
         receiveFrames();
@@ -214,7 +236,28 @@ bool FFmpegVideoDecoder::handlePacket(AVPacket* packet)
             ffmpegMediaLog("video decoder: send_packet: %s (%u errors)", ffmpegErrorString(result).utf8().legacyCStringPointer(), m_sendErrors);
     }
     receiveFrames();
+    // Wall time in libavcodec (with frame threads: waiting for the
+    // threads), without the conversions done in between.
+    m_decodeMicros += std::max<int64_t>(0, nowMicroseconds() - start - m_pendingConvertMicros);
     return !m_stopping;
+}
+
+FFmpegVideoDecoder::Timing FFmpegVideoDecoder::takeTiming()
+{
+    unsigned decoded = m_decodedFrames;
+    unsigned converted = m_convertedFrames;
+    int64_t decodeMicros = m_decodeMicros;
+    int64_t convertMicros = m_convertMicros;
+    Timing timing;
+    if (decoded > m_timingDecoded)
+        timing.decodeMilliseconds = (decodeMicros - m_timingDecodeMicros) / 1000.0 / (decoded - m_timingDecoded);
+    if (converted > m_timingConverted)
+        timing.convertMilliseconds = (convertMicros - m_timingConvertMicros) / 1000.0 / (converted - m_timingConverted);
+    m_timingDecoded = decoded;
+    m_timingConverted = converted;
+    m_timingDecodeMicros = decodeMicros;
+    m_timingConvertMicros = convertMicros;
+    return timing;
 }
 
 void FFmpegVideoDecoder::receiveFrames()
@@ -286,9 +329,11 @@ void FFmpegVideoDecoder::emitFrame(AVFrame* frame)
         if (m_lateFrames >= lateFramesBeforeSkippingLoopFilter && !m_skippingLoopFilter) {
             // Deblocking is a large share of H.264 decode time; skipping it
             // costs some quality but lets a slow CPU catch up.
-            m_codec->skip_loop_filter = AVDISCARD_ALL;
+            m_codec->skip_loop_filter = AVDISCARD_NONREF;
             m_skippingLoopFilter = true;
         }
+        if (m_lateFrames >= lateFramesBeforeSkippingAllLoopFilter && m_codec->skip_loop_filter != AVDISCARD_ALL)
+            m_codec->skip_loop_filter = AVDISCARD_ALL;
         if (m_lateFrames % lateFrameKeepInterval) {
             ++m_droppedFrames;
             return;
@@ -309,8 +354,11 @@ void FFmpegVideoDecoder::emitFrame(AVFrame* frame)
         ++m_droppedFrames;
         return;
     }
+    // Same size: only the YUV to BGRA conversion, no filtering needed.
+    int64_t convertStart = nowMicroseconds();
+    int swsFlags = (width == frame->width && height == frame->height) ? SWS_POINT : SWS_FAST_BILINEAR;
     m_sws = sws_getCachedContext(m_sws, frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
-        width, height, AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr, nullptr, nullptr);
+        width, height, AV_PIX_FMT_BGRA, swsFlags, nullptr, nullptr, nullptr);
     if (!m_sws) {
         ffmpegMediaLog("video decoder: no swscale path from %s", av_get_pix_fmt_name(static_cast<AVPixelFormat>(frame->format)));
         m_fatalError = true;
@@ -322,6 +370,10 @@ void FFmpegVideoDecoder::emitFrame(AVFrame* frame)
     uint8_t* destination[4] = { output->data(), nullptr, nullptr, nullptr };
     int destinationStride[4] = { static_cast<int>(output->stride()), 0, 0, 0 };
     sws_scale(m_sws, frame->data, frame->linesize, 0, frame->height, destination, destinationStride);
+    int64_t convertMicros = nowMicroseconds() - convertStart;
+    m_convertMicros += convertMicros;
+    m_pendingConvertMicros += convertMicros;
+    ++m_convertedFrames;
     output->pts = pts;
     output->duration = duration;
     output->serial = m_serial;

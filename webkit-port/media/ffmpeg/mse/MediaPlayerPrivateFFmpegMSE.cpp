@@ -943,10 +943,11 @@ void MediaPlayerPrivateFFmpegMSE::logStats(double now, double position)
     if (audio && m_audioSink)
         audioClock = audio->clockTime(m_audioSink->latency());
     double ahead = mediaSource ? toRangeSet(mediaSource->buffered()).bufferedAhead(position) : 0;
-    ffmpegMediaLog("mse stats: t=%.2f%s %s | video %u decoded %u dropped (+%u presenter) %zu queued, pts %.2f | queues v %zu/%.1fs a %zu/%.1fs | audio %s clock %.2f ring %.2fs | buffered ahead %.1fs, %llu KiB appended",
+    auto timing = video ? video->takeTiming() : FFmpegVideoDecoder::Timing { };
+    ffmpegMediaLog("mse stats: t=%.2f%s %s | video %u decoded %u dropped (+%u presenter) %zu queued, pts %.2f, decode %.1f ms convert %.1f ms per frame (%d threads) | queues v %zu/%.1fs a %zu/%.1fs | audio %s clock %.2f ring %.2fs | buffered ahead %.1fs, %llu KiB appended",
         position, m_seeking ? " SEEKING" : "", readyStateName(m_readyState),
         video ? video->decodedFrames() : 0, video ? video->droppedFrames() : 0, m_presenterDropped, video ? video->queuedFrames() : 0,
-        m_currentFrame ? m_currentFrame->pts : -1.0,
+        m_currentFrame ? m_currentFrame->pts : -1.0, timing.decodeMilliseconds, timing.convertMilliseconds, video ? video->threadCount() : 0,
         videoLevel.packets, videoLevel.seconds, audioLevel.packets, audioLevel.seconds,
         m_audioSink ? m_audioSink->name() : "none", audioClock ? *audioClock : -1.0, audio ? audio->bufferedSeconds() : 0.0,
         ahead, static_cast<unsigned long long>(m_bytesAppended >> 10));
