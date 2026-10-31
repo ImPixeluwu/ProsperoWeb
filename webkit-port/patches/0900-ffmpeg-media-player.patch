@@ -5695,10 +5695,10 @@ index 000000000..6915ee6c1
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlayClient.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlayClient.h
 new file mode 100644
-index 000000000..a32bfa5d7
+index 000000000..d7f74060d
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlayClient.h
-@@ -0,0 +1,646 @@
+@@ -0,0 +1,1045 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Client side of the video overlay protocol (FFmpegVideoOverlayWire.h): one
@@ -5709,11 +5709,19 @@ index 000000000..a32bfa5d7
 +// and frame whenever they change. Only the latest frame matters: a frame
 +// submitted while the previous one is still being sent replaces it.
 +//
++// Remote decoding (RemoteVideoStream below): instead of frames the player's
++// video decoder sends the compressed packets over the same connection, and
++// the UI decodes them; the presenter then only names the frame to show.
++// Once connected, a reader thread receives the server's answers (shm
++// results, stream answers, decoded-frame notices).
++//
 +// Engine-independent (POSIX, the C++ library; no WebCore/WTF) so the host
-+// tests drive the same code as the engine (FFmpegVideoOverlay.cpp).
++// tests drive the same code as the engine (FFmpegVideoOverlay.cpp,
++// FFmpegVideoDecoder.cpp).
 +//
 +// Threading: start(), stop() on the owner's thread; setGeometry(), submit(),
-+// clear(), state queries and takeStats() from any thread.
++// clear(), openStream(), showRemote(), state queries and takeStats() from
++// any thread. RemoteVideoStream: any thread.
 +
 +#pragma once
 +
@@ -5725,6 +5733,8 @@ index 000000000..a32bfa5d7
 +#include <chrono>
 +#include <condition_variable>
 +#include <cstdarg>
++#include <deque>
++#include <memory>
 +#include <cstdio>
 +#include <cstring>
 +#include <functional>
@@ -5786,6 +5796,201 @@ index 000000000..a32bfa5d7
 +    return duration<double>(steady_clock::now().time_since_epoch()).count();
 +}
 +
++class VideoOverlayClient;
++
++// One stream the UI decodes for a player (FFmpegVideoDecoder's remote mode).
++// Created by VideoOverlayClient::openStream(); it stays valid (shared) after
++// the client is gone, then everything fails softly.
++class RemoteVideoStream {
++public:
++    enum class State : uint8_t { Opening, Hardware, Rejected, Failed, Closed };
++
++    // Flow control: packets sent but not yet consumed by the UI's decoder.
++    static constexpr uint32_t maxPacketsInFlight = 32;
++    static constexpr size_t maxBytesInFlight = 8u << 20;
++
++    explicit RemoteVideoStream(uint32_t id)
++        : m_id(id)
++    {
++    }
++
++    uint32_t id() const { return m_id; }
++
++    State state() const
++    {
++        std::lock_guard<std::mutex> lock(m_lock);
++        return m_state;
++    }
++
++    std::string reason() const
++    {
++        std::lock_guard<std::mutex> lock(m_lock);
++        return m_reason;
++    }
++
++    static const char* stateName(State state)
++    {
++        switch (state) {
++        case State::Opening:
++            return "opening";
++        case State::Hardware:
++            return "hardware";
++        case State::Rejected:
++            return "rejected";
++        case State::Failed:
++            return "failed";
++        case State::Closed:
++            return "closed";
++        }
++        return "?";
++    }
++
++    // Waits for the UI's answer to the stream-open. A stream that is still
++    // opening when `timeoutSeconds` pass is closed (reason "no answer").
++    State waitForAnswer(double timeoutSeconds, const std::atomic<bool>& abort)
++    {
++        double deadline = overlayMonotonicSeconds() + timeoutSeconds;
++        {
++            std::unique_lock<std::mutex> lock(m_lock);
++            while (m_state == State::Opening && !abort.load()) {
++                double left = deadline - overlayMonotonicSeconds();
++                if (left <= 0)
++                    break;
++                m_changed.wait_for(lock, std::chrono::milliseconds(std::max(1, std::min(50, static_cast<int>(left * 1000)))));
++            }
++            if (m_state != State::Opening)
++                return m_state;
++        }
++        close(abort.load() ? "aborted" : "no answer from the UI");
++        return state();
++    }
++
++    bool usable() const { return state() == State::Hardware; }
++
++    // Room for one more packet of `bytes` (always for the first one).
++    bool hasCredit(size_t bytes) const
++    {
++        std::lock_guard<std::mutex> lock(m_lock);
++        return creditLocked(bytes);
++    }
++
++    // Waits up to `seconds` for a notice, an answer or credit.
++    void waitForEvent(double seconds)
++    {
++        std::unique_lock<std::mutex> lock(m_lock);
++        if (!m_notices.empty() || m_state != State::Hardware)
++            return;
++        uint32_t consumed = m_consumed;
++        m_changed.wait_for(lock, std::chrono::microseconds(static_cast<int64_t>(seconds * 1e6)), [&] {
++            return !m_notices.empty() || m_state != State::Hardware || m_consumed != consumed;
++        });
++    }
++
++    // False when the stream is not (or no longer) decoded by the UI.
++    bool sendPacket(const PacketHeader& header, const uint8_t* data, size_t bytes);
++    void reconfigure(StreamOpen open);
++    void flush(uint32_t serial) { control(Type::Flush, { m_id, serial, 0 }); }
++    void drain(uint32_t serial) { control(Type::Drain, { m_id, serial, 0 }); }
++    void show(uint32_t serial, int64_t pts) { control(Type::Show, { m_id, serial, pts }); }
++    void discard(uint32_t serial, int64_t pts) { control(Type::Discard, { m_id, serial, pts }); }
++    // Ends the stream on the UI (stream-close); no more messages.
++    void close(const std::string& reason);
++
++    // Frames decoded and end-of-stream notices, oldest first.
++    std::deque<Decoded> takeNotices()
++    {
++        std::lock_guard<std::mutex> lock(m_lock);
++        std::deque<Decoded> notices;
++        notices.swap(m_notices);
++        return notices;
++    }
++
++    uint32_t packetsInFlight() const
++    {
++        std::lock_guard<std::mutex> lock(m_lock);
++        return static_cast<uint32_t>(m_inFlight.size());
++    }
++
++    uint32_t maxFrames() const
++    {
++        std::lock_guard<std::mutex> lock(m_lock);
++        return m_maxFrames;
++    }
++
++private:
++    friend class VideoOverlayClient;
++
++    bool creditLocked(size_t bytes) const
++    {
++        return m_inFlight.empty() || (m_inFlight.size() < maxPacketsInFlight && m_inFlightBytes + bytes <= maxBytesInFlight);
++    }
++
++    void control(Type type, const StreamControl& control);
++
++    // Reader thread of the client.
++    void received(Type type, const uint8_t* payload, size_t bytes)
++    {
++        std::lock_guard<std::mutex> lock(m_lock);
++        switch (type) {
++        case Type::StreamOk:
++            if (auto ok = decodeStreamOk(payload, bytes); ok && ok->stream == m_id && m_state == State::Opening) {
++                m_state = State::Hardware;
++                m_maxFrames = ok->maxFrames;
++            }
++            break;
++        case Type::StreamReject:
++        case Type::StreamError:
++            if (auto failure = decodeStreamFailure(payload, bytes); failure && failure->stream == m_id && (m_state == State::Opening || m_state == State::Hardware)) {
++                m_state = type == Type::StreamReject ? State::Rejected : State::Failed;
++                m_reason = failure->reason;
++                m_client = nullptr;
++            }
++            break;
++        case Type::Decoded:
++            if (auto decoded = decodeDecoded(payload, bytes); decoded && decoded->stream == m_id) {
++                // Counts may arrive out of order (two UI threads send them).
++                while (static_cast<int32_t>(decoded->consumed - m_consumed) > 0 && !m_inFlight.empty()) {
++                    m_inFlightBytes -= m_inFlight.front();
++                    m_inFlight.pop_front();
++                    ++m_consumed;
++                }
++                if (static_cast<int32_t>(decoded->consumed - m_consumed) > 0)
++                    m_consumed = decoded->consumed;
++                if (decoded->hasFrame() || decoded->drained())
++                    m_notices.push_back(*decoded);
++            }
++            break;
++        default:
++            return;
++        }
++        m_changed.notify_all();
++    }
++
++    // The client is going away (or lost its connection).
++    void detach(const char* reason)
++    {
++        std::lock_guard<std::mutex> lock(m_lock);
++        m_client = nullptr;
++        if (m_state == State::Opening || m_state == State::Hardware) {
++            m_state = State::Failed;
++            m_reason = reason;
++        }
++        m_changed.notify_all();
++    }
++
++    const uint32_t m_id;
++    mutable std::mutex m_lock;
++    std::condition_variable m_changed;
++    VideoOverlayClient* m_client { nullptr };
++    State m_state { State::Opening };
++    std::string m_reason;
++    uint32_t m_maxFrames { 0 };
++    uint32_t m_consumed { 0 };
++    std::deque<size_t> m_inFlight;
++    size_t m_inFlightBytes { 0 };
++    std::deque<Decoded> m_notices;
++};
++
 +class VideoOverlayClient {
 +public:
 +    static constexpr uint32_t slotCount = 3;
@@ -5842,6 +6047,43 @@ index 000000000..a32bfa5d7
 +        if (m_thread.joinable())
 +            m_thread.join();
 +        releasePending();
++        detachStream("the overlay closed");
++    }
++
++    // Asks the UI to decode a stream (the answer arrives asynchronously:
++    // RemoteVideoStream::waitForAnswer). Replaces the previous stream.
++    std::shared_ptr<RemoteVideoStream> openStream(StreamOpen open)
++    {
++        auto stream = std::make_shared<RemoteVideoStream>(m_nextStream.fetch_add(1));
++        open.stream = stream->id();
++        detachStream("replaced by a new stream");
++        if (m_state.load() == State::Failed || m_state.load() == State::Stopped) {
++            stream->detach("no overlay server");
++            return stream;
++        }
++        {
++            std::lock_guard<std::mutex> streamLock(stream->m_lock);
++            stream->m_client = this;
++        }
++        {
++            std::lock_guard<std::mutex> lock(m_lock);
++            m_stream = stream;
++            appendStreamOpen(m_streamOut, open);
++        }
++        m_wake.notify_all();
++        return stream;
++    }
++
++    // The presenter shows a remotely decoded frame.
++    void showRemote(uint32_t stream, uint32_t serial, int64_t pts)
++    {
++        std::shared_ptr<RemoteVideoStream> current;
++        {
++            std::lock_guard<std::mutex> lock(m_lock);
++            current = m_stream;
++        }
++        if (current && current->id() == stream)
++            current->show(serial, pts);
 +    }
 +
 +    State state() const { return m_state.load(); }
@@ -5912,6 +6154,33 @@ index 000000000..a32bfa5d7
 +    uint32_t key() const { return m_key.load(); }
 +
 +private:
++    friend class RemoteVideoStream;
++
++    // From a RemoteVideoStream, holding its lock (lock order: stream, then
++    // client).
++    void enqueueStream(const std::vector<uint8_t>& bytes, const uint8_t* data = nullptr, size_t dataBytes = 0)
++    {
++        {
++            std::lock_guard<std::mutex> lock(m_lock);
++            m_streamOut.insert(m_streamOut.end(), bytes.begin(), bytes.end());
++            if (dataBytes)
++                m_streamOut.insert(m_streamOut.end(), data, data + dataBytes);
++        }
++        m_wake.notify_all();
++    }
++
++    void detachStream(const char* reason)
++    {
++        std::shared_ptr<RemoteVideoStream> stream;
++        {
++            std::lock_guard<std::mutex> lock(m_lock);
++            stream = std::move(m_stream);
++            m_stream = nullptr;
++        }
++        if (stream)
++            stream->detach(reason);
++    }
++
 +    void log(const std::string& line)
 +    {
 +        if (m_config.log)
@@ -5948,9 +6217,13 @@ index 000000000..a32bfa5d7
 +            m_state = State::Failed;
 +            closeSocket();
 +            releasePending();
++            detachStream("no overlay server");
 +            return;
 +        }
 +        m_state = State::Connected;
++        m_readerStop = false;
++        m_reader = std::thread([this] { readLoop(); });
++        std::vector<uint8_t> streamBytes;
 +        while (true) {
 +            Frame frame;
 +            bool haveFrame = false;
@@ -5960,10 +6233,12 @@ index 000000000..a32bfa5d7
 +            {
 +                std::unique_lock<std::mutex> lock(m_lock);
 +                m_wake.wait_for(lock, std::chrono::milliseconds(200), [this] {
-+                    return m_stopping || m_geometryDirty || m_havePending || m_clearRequested;
++                    return m_stopping || m_geometryDirty || m_havePending || m_clearRequested || !m_streamOut.empty() || m_peerGone;
 +                });
 +                if (m_stopping)
 +                    break;
++                streamBytes.clear();
++                streamBytes.swap(m_streamOut);
 +                if (m_geometryDirty) {
 +                    geometry = m_geometry;
 +                    sendGeometry = true;
@@ -5979,20 +6254,22 @@ index 000000000..a32bfa5d7
 +                    haveFrame = true;
 +                }
 +            }
-+            bool ok = true;
++            bool ok = !m_peerGone.load();
++            if (!ok)
++                errno = ECONNRESET;
 +            m_out.clear();
 +            if (sendGeometry)
 +                appendGeometry(m_out, geometry);
 +            if (sendClear)
 +                appendMessage(m_out, Type::Clear);
-+            if (!m_out.empty())
++            if (ok && !m_out.empty())
 +                ok = sendAll(m_out.data(), m_out.size(), overlayMonotonicSeconds() + 2);
++            if (ok && !streamBytes.empty())
++                ok = sendAll(streamBytes.data(), streamBytes.size(), overlayMonotonicSeconds() + 2);
 +            if (ok && haveFrame)
 +                ok = sendFrame(frame);
 +            if (frame.release)
 +                frame.release();
-+            if (ok && !haveFrame && !sendGeometry && !sendClear)
-+                ok = checkAlive();
 +            if (!ok) {
 +                logf("video overlay: player %u: connection lost (%s)", m_config.player, strerror(errno));
 +                m_state = State::Failed;
@@ -6005,9 +6282,75 @@ index 000000000..a32bfa5d7
 +            sendAll(m_out.data(), m_out.size(), overlayMonotonicSeconds() + 0.2);
 +            m_state = State::Stopped;
 +        }
++        m_readerStop = true;
++        if (m_reader.joinable())
++            m_reader.join();
++        detachStream(m_state.load() == State::Failed ? "connection lost" : "the overlay closed");
 +        unmapSegment();
 +        closeSocket();
 +        releasePending();
++    }
++
++    // Reader thread: everything the server sends after the hello.
++    void readLoop()
++    {
++        Parser parser;
++        while (!m_readerStop.load()) {
++            pollfd descriptor { m_fd, POLLIN, 0 };
++            int ready = ::poll(&descriptor, 1, 100);
++            if (ready < 0 && errno != EINTR)
++                break;
++            if (ready <= 0)
++                continue;
++            bool gone = false;
++            while (true) {
++                uint8_t* buffer = parser.writable(16384);
++                ssize_t got = ::recv(m_fd, buffer, 16384, 0);
++                if (got > 0) {
++                    parser.commit(static_cast<size_t>(got));
++                    continue;
++                }
++                if (!got || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
++                    gone = true;
++                break;
++            }
++            while (true) {
++                auto result = parser.next();
++                if (result == Parser::Result::Error) {
++                    gone = true;
++                    break;
++                }
++                if (result != Parser::Result::Message)
++                    break;
++                dispatch(parser.message());
++            }
++            if (gone) {
++                m_peerGone = true;
++                m_wake.notify_all();
++                detachStream("connection lost");
++                return;
++            }
++        }
++    }
++
++    void dispatch(const Parser::Message& message)
++    {
++        if (message.type == Type::ShmResult) {
++            {
++                std::lock_guard<std::mutex> lock(m_lock);
++                m_shmResult = decodeShmResult(message.payload, message.bytes);
++                m_shmAnswered = true;
++            }
++            m_wake.notify_all();
++            return;
++        }
++        std::shared_ptr<RemoteVideoStream> stream;
++        {
++            std::lock_guard<std::mutex> lock(m_lock);
++            stream = m_stream;
++        }
++        if (stream)
++            stream->received(message.type, message.payload, message.bytes);
 +    }
 +
 +    bool connect()
@@ -6131,22 +6474,6 @@ index 000000000..a32bfa5d7
 +                m_parser.commit(static_cast<size_t>(got));
 +            else if (!got || (errno != EAGAIN && errno != EINTR))
 +                return std::nullopt;
-+        }
-+    }
-+
-+    // Idle: notices a server that went away (EOF), drains anything it sent.
-+    bool checkAlive()
-+    {
-+        uint8_t buffer[256];
-+        while (true) {
-+            ssize_t got = ::recv(m_fd, buffer, sizeof(buffer), 0);
-+            if (got > 0)
-+                continue;
-+            if (!got) {
-+                errno = ECONNRESET;
-+                return false;
-+            }
-+            return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
 +        }
 +    }
 +
@@ -6276,13 +6603,22 @@ index 000000000..a32bfa5d7
 +        appendShmOffer(m_out, ShmOffer { kind == Transport::Shm ? ShmKind::Named : ShmKind::File, layout.slots, layout.slotBytes, name });
 +        double deadline = overlayMonotonicSeconds() + 2;
 +        std::optional<ShmResult> result;
++        {
++            std::lock_guard<std::mutex> lock(m_lock);
++            m_shmAnswered = false;
++            m_shmResult.reset();
++        }
 +        if (sendAll(m_out.data(), m_out.size(), deadline)) {
-+            while (auto message = receiveMessage(deadline)) {
-+                if (message->type == Type::ShmResult) {
-+                    result = decodeShmResult(message->payload, message->bytes);
++            // The reader thread receives the answer.
++            std::unique_lock<std::mutex> lock(m_lock);
++            while (!m_shmAnswered && !m_peerGone.load() && !m_stopping) {
++                double left = deadline - overlayMonotonicSeconds();
++                if (left <= 0)
 +                    break;
-+                }
++                m_wake.wait_for(lock, std::chrono::milliseconds(std::max(1, static_cast<int>(left * 1000))));
 +            }
++            if (m_shmAnswered)
++                result = m_shmResult;
 +        }
 +        // Mapped on both sides (or refused): the name is no longer needed,
 +        // so nothing is left behind even if a process dies.
@@ -6332,6 +6668,15 @@ index 000000000..a32bfa5d7
 +    unsigned m_replaced { 0 };
 +    double m_copySeconds { 0 };
 +
++    std::vector<uint8_t> m_streamOut;
++    std::shared_ptr<RemoteVideoStream> m_stream;
++    std::atomic<uint32_t> m_nextStream { 1 };
++    bool m_shmAnswered { false };
++    std::optional<ShmResult> m_shmResult;
++    std::thread m_reader;
++    std::atomic<bool> m_readerStop { false };
++    std::atomic<bool> m_peerGone { false };
++
 +    // Sender thread only.
 +    int m_fd { -1 };
 +    Parser m_parser;
@@ -6342,15 +6687,69 @@ index 000000000..a32bfa5d7
 +    uint32_t m_generation { 0 };
 +};
 +
++inline bool RemoteVideoStream::sendPacket(const PacketHeader& header, const uint8_t* data, size_t bytes)
++{
++    std::lock_guard<std::mutex> lock(m_lock);
++    if (m_state != State::Hardware || !m_client)
++        return false;
++    std::vector<uint8_t> message;
++    PacketHeader packet = header;
++    packet.stream = m_id;
++    // Header only; the data is appended straight into the client's outbox.
++    appendPacket(message, packet, nullptr, 0);
++    putU32(message.data() + 4, static_cast<uint32_t>(packetHeaderBytes + bytes));
++    m_client->enqueueStream(message, data, bytes);
++    m_inFlight.push_back(bytes);
++    m_inFlightBytes += bytes;
++    return true;
++}
++
++inline void RemoteVideoStream::reconfigure(StreamOpen open)
++{
++    std::lock_guard<std::mutex> lock(m_lock);
++    if (m_state != State::Hardware || !m_client)
++        return;
++    open.stream = m_id;
++    std::vector<uint8_t> message;
++    appendStreamOpen(message, open);
++    m_client->enqueueStream(message);
++}
++
++inline void RemoteVideoStream::control(Type type, const StreamControl& control)
++{
++    std::lock_guard<std::mutex> lock(m_lock);
++    if (m_state != State::Hardware || !m_client)
++        return;
++    std::vector<uint8_t> message;
++    appendStreamControl(message, type, control);
++    m_client->enqueueStream(message);
++}
++
++inline void RemoteVideoStream::close(const std::string& reason)
++{
++    std::lock_guard<std::mutex> lock(m_lock);
++    if (m_client) {
++        std::vector<uint8_t> message;
++        appendStreamControl(message, Type::StreamClose, { m_id, 0, 0 });
++        m_client->enqueueStream(message);
++        m_client = nullptr;
++    }
++    if (m_state == State::Opening || m_state == State::Hardware) {
++        m_state = State::Closed;
++        m_reason = reason;
++    }
++    m_changed.notify_all();
++}
++
 +} // namespace VideoWire
 +} // namespace FFmpegMedia
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlayWire.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlayWire.h
 new file mode 100644
-index 000000000..f6c28e0dc
+index 000000000..776fa736c
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlayWire.h
-@@ -0,0 +1,571 @@
+@@ -0,0 +1,876 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Video overlay forwarding from the WebProcess to the UI process. Without
@@ -6387,6 +6786,45 @@ index 000000000..f6c28e0dc
 +//     server -> client:
 +//       0x80 accepted    u32 player key (unique in the server)
 +//       0x81 shm-result  u8 ok, u8[3], u32 errno of the failed open/mmap
++//
++// Remote decoding (PROSPEROWEB_VIDEO_DECODE=ui): instead of pixels the
++// player sends the compressed stream, the UI decodes it (sceVideodec2) and
++// keeps the decoded pictures; the player's presenter still decides which
++// frame is due and names it by its pts. Every message carries the stream id
++// of the stream-open it belongs to, so late messages of a closed stream are
++// ignored. Timestamps are integers in the stream's timebase, echoed
++// unchanged, so the frame the player presents is matched exactly.
++//     client -> server:
++//       7  stream-open  u32 stream, u8 codec, u8 matrix (0 unknown, 1 BT.601,
++//                       2 BT.709, 3 BT.2020), u8 full range, u8, i32 profile,
++//                       i32 level, u32 width, u32 height, i32 timebase num,
++//                       den, then the extradata (avcC/hvcC as the container
++//                       has it, Annex-B, or nothing). Sent again with the same
++//                       stream id when the extradata changes (new avcC on a
++//                       quality switch): the UI reconfigures, no answer.
++//       8  packet       u32 stream, u32 serial, i64 pts, i64 dts, u8 flags
++//                       (1 = keyframe), u8[3], then the packet's bytes as the
++//                       demuxer produced them (length-prefixed or Annex-B;
++//                       the UI converts, see stream-open)
++//       9  flush        u32 stream, u32 serial: a seek; drop everything queued
++//                       and decoded, reset the decoder, continue with `serial`
++//       10 show         u32 stream, u32 serial, i64 pts: present the newest
++//                       decoded frame at or before pts; older ones are released
++//       11 discard      u32 stream, u32 serial, i64 pts: the player dropped
++//                       that frame (late, before a seek target): release it
++//       12 drain        u32 stream, u32 serial: end of stream, output what the
++//                       decoder still holds, then answer decoded(drained)
++//       13 stream-close u32 stream
++//     server -> client:
++//       0x82 stream-ok     u32 stream, u8 mode (1 = hardware), u8[3],
++//                          u32 frames the UI holds at most
++//       0x83 stream-reject u32 stream, reason text: the player decodes itself
++//       0x84 decoded       u32 stream, u32 serial, u32 packets consumed (total
++//                          for the stream, decoded or dropped), u8 flags
++//                          (1 = frame, 2 = drained), u8[3], u32 width,
++//                          u32 height, i64 pts
++//       0x85 stream-error  u32 stream, reason text: decoding failed at run
++//                          time; the player falls back to its own decoder
 +//
 +// Pixels are BGRA bytes (premultiplied ARGB32 words on little-endian; video
 +// is opaque), the layout the decoder's swscale writes.
@@ -6432,8 +6870,19 @@ index 000000000..f6c28e0dc
 +    Frame = 4,
 +    Clear = 5,
 +    Close = 6,
++    StreamOpen = 7,
++    Packet = 8,
++    Flush = 9,
++    Show = 10,
++    Discard = 11,
++    Drain = 12,
++    StreamClose = 13,
 +    Accepted = 0x80,
 +    ShmResult = 0x81,
++    StreamOk = 0x82,
++    StreamReject = 0x83,
++    Decoded = 0x84,
++    StreamError = 0x85,
 +};
 +
 +enum class ShmKind : uint8_t {
@@ -6725,6 +7174,261 @@ index 000000000..f6c28e0dc
 +        return std::nullopt;
 +    *pixels = payload + frameHeaderBytes;
 +    return frame;
++}
++
++// MARK: Remote decoding
++
++enum class Codec : uint8_t { Other = 0, H264 = 1, Hevc = 2, Vp9 = 3, Av1 = 4 };
++
++inline const char* codecName(Codec codec)
++{
++    switch (codec) {
++    case Codec::H264:
++        return "h264";
++    case Codec::Hevc:
++        return "hevc";
++    case Codec::Vp9:
++        return "vp9";
++    case Codec::Av1:
++        return "av1";
++    case Codec::Other:
++        break;
++    }
++    return "other";
++}
++
++constexpr uint32_t maxExtradata = 64 * 1024;
++constexpr uint32_t maxPacketBytes = 16u << 20;
++constexpr size_t maxReasonBytes = 256;
++
++enum class Matrix : uint8_t { Unknown = 0, Bt601 = 1, Bt709 = 2, Bt2020 = 3 };
++
++struct StreamOpen {
++    uint32_t stream { 0 };
++    Codec codec { Codec::Other };
++    Matrix matrix { Matrix::Unknown };
++    bool fullRange { false };
++    int32_t profile { -1 };
++    int32_t level { -1 };
++    uint32_t width { 0 };
++    uint32_t height { 0 };
++    int32_t timeBaseNum { 1 };
++    int32_t timeBaseDen { 1000000 };
++    std::vector<uint8_t> extradata;
++};
++
++constexpr size_t streamOpenHeaderBytes = 32;
++// The payload: u32 stream @0, codec @4, matrix @5, range @6, profile @8,
++// level @12, width @16, height @20, timebase @24/@28, extradata @32.
++
++inline void appendStreamOpen(std::vector<uint8_t>& out, const StreamOpen& open)
++{
++    std::vector<uint8_t> payload(streamOpenHeaderBytes + open.extradata.size());
++    putU32(payload.data(), open.stream);
++    payload[4] = static_cast<uint8_t>(open.codec);
++    payload[5] = static_cast<uint8_t>(open.matrix);
++    payload[6] = open.fullRange ? 1 : 0;
++    putU32(payload.data() + 8, static_cast<uint32_t>(open.profile));
++    putU32(payload.data() + 12, static_cast<uint32_t>(open.level));
++    putU32(payload.data() + 16, open.width);
++    putU32(payload.data() + 20, open.height);
++    putU32(payload.data() + 24, static_cast<uint32_t>(open.timeBaseNum));
++    putU32(payload.data() + 28, static_cast<uint32_t>(open.timeBaseDen));
++    if (!open.extradata.empty())
++        memcpy(payload.data() + streamOpenHeaderBytes, open.extradata.data(), open.extradata.size());
++    appendMessage(out, Type::StreamOpen, payload.data(), payload.size());
++}
++
++inline std::optional<StreamOpen> decodeStreamOpen(const uint8_t* payload, size_t bytes)
++{
++    if (bytes < streamOpenHeaderBytes || bytes - streamOpenHeaderBytes > maxExtradata)
++        return std::nullopt;
++    StreamOpen open;
++    open.stream = getU32(payload);
++    if (payload[4] > static_cast<uint8_t>(Codec::Av1))
++        return std::nullopt;
++    open.codec = static_cast<Codec>(payload[4]);
++    open.matrix = payload[5] <= static_cast<uint8_t>(Matrix::Bt2020) ? static_cast<Matrix>(payload[5]) : Matrix::Unknown;
++    open.fullRange = payload[6] == 1;
++    open.profile = static_cast<int32_t>(getU32(payload + 8));
++    open.level = static_cast<int32_t>(getU32(payload + 12));
++    open.width = getU32(payload + 16);
++    open.height = getU32(payload + 20);
++    open.timeBaseNum = static_cast<int32_t>(getU32(payload + 24));
++    open.timeBaseDen = static_cast<int32_t>(getU32(payload + 28));
++    if (open.timeBaseNum <= 0 || open.timeBaseDen <= 0)
++        return std::nullopt;
++    open.extradata.assign(payload + streamOpenHeaderBytes, payload + bytes);
++    return open;
++}
++
++struct PacketHeader {
++    uint32_t stream { 0 };
++    uint32_t serial { 0 };
++    int64_t pts { 0 };
++    int64_t dts { 0 };
++    bool keyframe { false };
++};
++
++constexpr size_t packetHeaderBytes = 28;
++
++// Header and data in one message, written straight into `out` (no
++// intermediate copy of the data).
++inline void appendPacket(std::vector<uint8_t>& out, const PacketHeader& packet, const uint8_t* data, size_t bytes)
++{
++    size_t offset = out.size();
++    out.resize(offset + headerSize + packetHeaderBytes + bytes);
++    uint8_t* message = out.data() + offset;
++    encodeHeader(Type::Packet, static_cast<uint32_t>(packetHeaderBytes + bytes), message);
++    uint8_t* header = message + headerSize;
++    putU32(header, packet.stream);
++    putU32(header + 4, packet.serial);
++    putU64(header + 8, static_cast<uint64_t>(packet.pts));
++    putU64(header + 16, static_cast<uint64_t>(packet.dts));
++    header[24] = packet.keyframe ? 1 : 0;
++    header[25] = header[26] = header[27] = 0;
++    if (bytes)
++        memcpy(header + packetHeaderBytes, data, bytes);
++}
++
++// The header; the data is the rest of the payload (`*data`, `*dataBytes`).
++inline std::optional<PacketHeader> decodePacket(const uint8_t* payload, size_t bytes, const uint8_t** data, size_t* dataBytes)
++{
++    if (bytes < packetHeaderBytes || bytes - packetHeaderBytes > maxPacketBytes)
++        return std::nullopt;
++    PacketHeader packet;
++    packet.stream = getU32(payload);
++    packet.serial = getU32(payload + 4);
++    packet.pts = static_cast<int64_t>(getU64(payload + 8));
++    packet.dts = static_cast<int64_t>(getU64(payload + 16));
++    packet.keyframe = payload[24] & 1;
++    *data = payload + packetHeaderBytes;
++    *dataBytes = bytes - packetHeaderBytes;
++    return packet;
++}
++
++// flush, drain, stream-close (pts unused), show, discard.
++struct StreamControl {
++    uint32_t stream { 0 };
++    uint32_t serial { 0 };
++    int64_t pts { 0 };
++};
++
++inline void appendStreamControl(std::vector<uint8_t>& out, Type type, const StreamControl& control)
++{
++    uint8_t payload[16];
++    putU32(payload, control.stream);
++    putU32(payload + 4, control.serial);
++    putU64(payload + 8, static_cast<uint64_t>(control.pts));
++    size_t bytes = (type == Type::Show || type == Type::Discard) ? 16 : (type == Type::StreamClose ? 4 : 8);
++    appendMessage(out, type, payload, bytes);
++}
++
++inline std::optional<StreamControl> decodeStreamControl(Type type, const uint8_t* payload, size_t bytes)
++{
++    size_t expected = (type == Type::Show || type == Type::Discard) ? 16 : (type == Type::StreamClose ? 4 : 8);
++    if (bytes != expected)
++        return std::nullopt;
++    StreamControl control;
++    control.stream = getU32(payload);
++    if (bytes >= 8)
++        control.serial = getU32(payload + 4);
++    if (bytes >= 16)
++        control.pts = static_cast<int64_t>(getU64(payload + 8));
++    return control;
++}
++
++struct StreamOk {
++    uint32_t stream { 0 };
++    uint8_t mode { 1 };
++    uint32_t maxFrames { 0 };
++};
++
++inline void appendStreamOk(std::vector<uint8_t>& out, const StreamOk& ok)
++{
++    uint8_t payload[12] = { };
++    putU32(payload, ok.stream);
++    payload[4] = ok.mode;
++    putU32(payload + 8, ok.maxFrames);
++    appendMessage(out, Type::StreamOk, payload, sizeof(payload));
++}
++
++inline std::optional<StreamOk> decodeStreamOk(const uint8_t* payload, size_t bytes)
++{
++    if (bytes != 12)
++        return std::nullopt;
++    return StreamOk { getU32(payload), payload[4], getU32(payload + 8) };
++}
++
++// stream-reject and stream-error: the stream and a reason.
++struct StreamFailure {
++    uint32_t stream { 0 };
++    std::string reason;
++};
++
++inline void appendStreamFailure(std::vector<uint8_t>& out, Type type, const StreamFailure& failure)
++{
++    std::string reason = failure.reason.substr(0, maxReasonBytes);
++    std::vector<uint8_t> payload(4 + reason.size());
++    putU32(payload.data(), failure.stream);
++    memcpy(payload.data() + 4, reason.data(), reason.size());
++    appendMessage(out, type, payload.data(), payload.size());
++}
++
++inline std::optional<StreamFailure> decodeStreamFailure(const uint8_t* payload, size_t bytes)
++{
++    if (bytes < 4 || bytes > 4 + maxReasonBytes)
++        return std::nullopt;
++    StreamFailure failure;
++    failure.stream = getU32(payload);
++    failure.reason.assign(reinterpret_cast<const char*>(payload + 4), bytes - 4);
++    return failure;
++}
++
++struct Decoded {
++    enum Flags : uint8_t { HasFrame = 1, Drained = 2 };
++    uint32_t stream { 0 };
++    uint32_t serial { 0 };
++    uint32_t consumed { 0 };
++    uint8_t flags { 0 };
++    uint32_t width { 0 };
++    uint32_t height { 0 };
++    int64_t pts { 0 };
++
++    bool hasFrame() const { return flags & HasFrame; }
++    bool drained() const { return flags & Drained; }
++};
++
++constexpr size_t decodedBytes = 32;
++
++inline void appendDecoded(std::vector<uint8_t>& out, const Decoded& decoded)
++{
++    uint8_t payload[decodedBytes] = { };
++    putU32(payload, decoded.stream);
++    putU32(payload + 4, decoded.serial);
++    putU32(payload + 8, decoded.consumed);
++    payload[12] = decoded.flags;
++    putU32(payload + 16, decoded.width);
++    putU32(payload + 20, decoded.height);
++    putU64(payload + 24, static_cast<uint64_t>(decoded.pts));
++    appendMessage(out, Type::Decoded, payload, sizeof(payload));
++}
++
++inline std::optional<Decoded> decodeDecoded(const uint8_t* payload, size_t bytes)
++{
++    if (bytes != decodedBytes)
++        return std::nullopt;
++    Decoded decoded;
++    decoded.stream = getU32(payload);
++    decoded.serial = getU32(payload + 4);
++    decoded.consumed = getU32(payload + 8);
++    decoded.flags = payload[12];
++    decoded.width = getU32(payload + 16);
++    decoded.height = getU32(payload + 20);
++    decoded.pts = static_cast<int64_t>(getU64(payload + 24));
++    if (decoded.hasFrame() && (!decoded.width || !decoded.height || decoded.width > 8192 || decoded.height > 8192))
++        return std::nullopt;
++    return decoded;
 +}
 +
 +// Shared memory segment: header page, then the slots.
@@ -8729,10 +9433,10 @@ index 000000000..46a30e7b7
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/mse/FFmpegAppendParser.cpp b/Source/WebCore/platform/graphics/ffmpeg/mse/FFmpegAppendParser.cpp
 new file mode 100644
-index 000000000..1a667abf7
+index 000000000..7308e5366
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/mse/FFmpegAppendParser.cpp
-@@ -0,0 +1,339 @@
+@@ -0,0 +1,403 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -8861,9 +9565,9 @@ index 000000000..1a667abf7
 +        avcodec_parameters_free(&parameters);
 +}
 +
-+FFmpegAppendParser::FFmpegAppendParser(FFmpegMedia::ByteStreamFormat format)
++FFmpegAppendParser::FFmpegAppendParser(FFmpegMedia::ByteStreamFormat format, size_t partialStep)
 +    : m_format(format)
-+    , m_scanner(format)
++    , m_scanner(format, partialStep)
 +{
 +}
 +
@@ -8878,18 +9582,21 @@ index 000000000..1a667abf7
 +{
 +    m_scanner.reset();
 +    m_error.clear();
++    m_partialFragment = 0;
++    m_partialTaken.clear();
 +}
 +
 +bool FFmpegAppendParser::append(const uint8_t* data, size_t size, FFmpegAppendParserClient& client)
 +{
 +    m_lastAppendSamples = 0;
++    m_lastAppendPartialSamples = 0;
 +    m_error.clear();
 +    std::vector<FFmpegMedia::ByteStreamSegment> segments;
 +    bool scanned = m_scanner.append(data, size, segments);
 +    for (auto& segment : segments) {
 +        bool ok = segment.kind == FFmpegMedia::ByteStreamSegment::Kind::Initialization
 +            ? parseInitialization(segment.bytes, client)
-+            : demuxMedia(segment.bytes, client);
++            : demuxMedia(segment, client);
 +        if (!ok)
 +            return false;
 +    }
@@ -8950,6 +9657,8 @@ index 000000000..1a667abf7
 +    }
 +
 +    m_initialization = bytes;
++    m_partialFragment = 0;
++    m_partialTaken.clear();
 +    m_current.tracks.clear();
 +    for (auto& track : segment.tracks)
 +        m_current.tracks.push_back(track);
@@ -8958,23 +9667,38 @@ index 000000000..1a667abf7
 +    return true;
 +}
 +
-+bool FFmpegAppendParser::demuxMedia(const std::vector<uint8_t>& bytes, FFmpegAppendParserClient& client)
++bool FFmpegAppendParser::demuxMedia(const FFmpegMedia::ByteStreamSegment& segment, FFmpegAppendParserClient& client)
 +{
++    const bool partial = segment.partial;
 +    if (m_initialization.empty()) {
 +        m_error = "media segment before the initialization segment";
 +        return false;
 +    }
++    // Samples of a partially emitted fragment that were already delivered.
++    std::vector<size_t> skip(m_current.tracks.size(), 0);
++    if (segment.fragment && segment.fragment == m_partialFragment) {
++        for (size_t t = 0; t < skip.size() && t < m_partialTaken.size(); ++t)
++            skip[t] = m_partialTaken[t];
++    }
++    if (!partial) {
++        m_partialFragment = 0;
++        m_partialTaken.clear();
++    }
++
 +    const AVInputFormat* format = inputFormat();
 +    // Matroska would follow SeekHead/Cues offsets of the original file on a
 +    // seekable input; the concatenated segment is read front to back.
-+    MemoryDemuxer demuxer(m_initialization, &bytes, m_format == FFmpegMedia::ByteStreamFormat::MP4);
++    MemoryDemuxer demuxer(m_initialization, &segment.bytes, m_format == FFmpegMedia::ByteStreamFormat::MP4);
 +    int result = demuxer.open(format);
 +    if (result < 0) {
++        if (partial)
++            return true; // retried with more data
 +        char buffer[AV_ERROR_MAX_STRING_SIZE] = { };
 +        m_error = std::string("media segment: ") + errorText(result, buffer);
 +        return false;
 +    }
 +    auto* context = demuxer.context();
++    const int64_t inputSize = static_cast<int64_t>(m_initialization.size() + segment.bytes.size());
 +
 +    // stream index -> track of the current initialization segment
 +    std::vector<int> trackForStream(context->nb_streams, -1);
@@ -8991,8 +9715,11 @@ index 000000000..1a667abf7
 +    struct Collected {
 +        int track;
 +        AVPacket* packet;
++        bool hadDuration;
 +    };
 +    std::vector<Collected> collected;
++    // Partial: a track stops at its first sample that is not complete.
++    std::vector<bool> trackStopped(m_current.tracks.size(), false);
 +    AVPacket* packet = av_packet_alloc();
 +    if (!packet) {
 +        m_error = "out of memory";
@@ -9007,6 +9734,17 @@ index 000000000..1a667abf7
 +            break;
 +        }
 +        int track = packet->stream_index >= 0 && static_cast<unsigned>(packet->stream_index) < trackForStream.size() ? trackForStream[packet->stream_index] : -1;
++        if (track >= 0 && partial) {
++            // A sample cut by the end of the data is read short (and may not
++            // be flagged corrupt): one reaching the end is not trusted yet.
++            bool complete = !(packet->flags & AV_PKT_FLAG_CORRUPT) && packet->pos >= 0 && packet->pos + packet->size < inputSize;
++            if (!complete)
++                trackStopped[track] = true;
++            if (trackStopped[track]) {
++                av_packet_unref(packet);
++                continue;
++            }
++        }
 +        if (track < 0 || (packet->flags & AV_PKT_FLAG_CORRUPT) || (packet->dts == AV_NOPTS_VALUE && packet->pts == AV_NOPTS_VALUE)) {
 +            av_packet_unref(packet);
 +            continue;
@@ -9021,10 +9759,12 @@ index 000000000..1a667abf7
 +            break;
 +        }
 +        av_packet_move_ref(owned, packet);
-+        collected.push_back({ track, owned });
++        collected.push_back({ track, owned, owned->duration > 0 });
 +    }
 +    av_packet_free(&packet);
 +
++    std::vector<size_t> taken(m_current.tracks.size(), 0);
++    std::vector<bool> emit(collected.size(), false);
 +    for (size_t t = 0; t < m_current.tracks.size(); ++t) {
 +        auto& track = m_current.tracks[t];
 +        std::vector<FFmpegMedia::SampleTiming> timings;
@@ -9044,17 +9784,45 @@ index 000000000..1a667abf7
 +        }
 +        int64_t fallback = track.timeBase.num > 0 ? std::max<int64_t>(1, std::llround(fallbackSeconds * track.timeBase.den / track.timeBase.num)) : 1;
 +        FFmpegMedia::fillMissingDurations(timings, fallback);
-+        size_t index = 0;
-+        for (auto& entry : collected) {
-+            if (entry.track == static_cast<int>(t))
-+                entry.packet->duration = timings[index++].duration;
++        // Partial: the last sample's duration needs the next one's decode
++        // time unless the container gave it.
++        size_t usable = timings.size();
++        if (partial && !collected.empty()) {
++            for (auto it = collected.rbegin(); it != collected.rend(); ++it) {
++                if (it->track == static_cast<int>(t)) {
++                    if (!it->hadDuration)
++                        --usable;
++                    break;
++                }
++            }
 +        }
++        size_t index = 0;
++        for (size_t i = 0; i < collected.size(); ++i) {
++            auto& entry = collected[i];
++            if (entry.track != static_cast<int>(t))
++                continue;
++            entry.packet->duration = timings[index].duration;
++            emit[i] = index >= skip[t] && index < usable;
++            ++index;
++        }
++        taken[t] = std::max(skip[t], usable);
 +    }
 +
-+    for (auto& entry : collected) {
-+        client.appendParserDidParseSample(m_current.tracks[entry.track], entry.packet);
++    unsigned emitted = 0;
++    for (size_t i = 0; i < collected.size(); ++i) {
++        auto& entry = collected[i];
++        if (emit[i]) {
++            client.appendParserDidParseSample(m_current.tracks[entry.track], entry.packet);
++            ++emitted;
++        }
 +        av_packet_free(&entry.packet);
-+        ++m_lastAppendSamples;
++    }
++    m_lastAppendSamples += emitted;
++    if (partial) {
++        m_lastAppendPartialSamples += emitted;
++        m_partialFragment = segment.fragment;
++        m_partialTaken = taken;
++        return true;
 +    }
 +
 +    if (readError && collected.empty()) {
@@ -9074,20 +9842,23 @@ index 000000000..1a667abf7
 +#endif // ENABLE(VIDEO) && USE(FFMPEG) && ENABLE(MEDIA_SOURCE)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/mse/FFmpegAppendParser.h b/Source/WebCore/platform/graphics/ffmpeg/mse/FFmpegAppendParser.h
 new file mode 100644
-index 000000000..cdb2b379e
+index 000000000..8f4cc5738
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/mse/FFmpegAppendParser.h
-@@ -0,0 +1,96 @@
+@@ -0,0 +1,111 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Parser of one MSE SourceBuffer's byte stream (fragmented MP4 or WebM).
-+// SegmentScanner cuts the appended bytes into complete initialization and
-+// media segments; each initialization segment is opened with libavformat
-+// (mov or matroska demuxer) to describe the tracks, and each batch of media
-+// segments is demuxed together with the current initialization segment from
-+// an in-memory AVIOContext. libavformat thus always sees a complete, seekable
-+// file and never waits for data; demuxing is synchronous on the caller's
-+// thread.
++// SegmentScanner cuts the appended bytes into initialization and media
++// segments; each initialization segment is opened with libavformat (mov or
++// matroska demuxer) to describe the tracks, and each batch of media segments
++// is demuxed together with the current initialization segment from an
++// in-memory AVIOContext. libavformat thus always sees a seekable file and
++// never waits for data; demuxing is synchronous on the caller's thread.
++// A fragment streamed in many small appends is also demuxed while it
++// arrives: samples whose bytes are complete are emitted at once, and are
++// skipped when the fragment is demuxed again (per track, the samples taken
++// so far are a prefix of the fragment's samples).
 +//
 +// Uses only ffmpeg and the C++ library (no WebCore/WTF), so it also runs in
 +// a host harness linked against a desktop libavformat.
@@ -9142,7 +9913,8 @@ index 000000000..cdb2b379e
 +
 +class FFmpegAppendParser {
 +public:
-+    explicit FFmpegAppendParser(FFmpegMedia::ByteStreamFormat);
++    // partialStep: see SegmentScanner (tests use small steps).
++    explicit FFmpegAppendParser(FFmpegMedia::ByteStreamFormat, size_t partialStep = FFmpegMedia::SegmentScanner::defaultPartialStep);
 +    ~FFmpegAppendParser();
 +
 +    // Parses `size` more bytes; returns false on a parse error (error()).
@@ -9157,10 +9929,16 @@ index 000000000..cdb2b379e
 +    size_t pendingBytes() const { return m_scanner.pendingBytes(); }
 +
 +    unsigned lastAppendSamples() const { return m_lastAppendSamples; }
++    // Of the last append: samples of fragments still being received.
++    unsigned lastAppendPartialSamples() const { return m_lastAppendPartialSamples; }
++    // The fragment the last append completed: appends that carried it, and
++    // its size (0 when the append completed none).
++    unsigned lastCompletedFragmentAppends() const { return m_scanner.lastFragmentAppends(); }
++    size_t lastCompletedFragmentBytes() const { return m_scanner.lastFragmentBytes(); }
 +
 +private:
 +    bool parseInitialization(const std::vector<uint8_t>&, FFmpegAppendParserClient&);
-+    bool demuxMedia(const std::vector<uint8_t>&, FFmpegAppendParserClient&);
++    bool demuxMedia(const FFmpegMedia::ByteStreamSegment&, FFmpegAppendParserClient&);
 +    const AVInputFormat* inputFormat() const;
 +
 +    const FFmpegMedia::ByteStreamFormat m_format;
@@ -9169,6 +9947,11 @@ index 000000000..cdb2b379e
 +    FFmpegParsedInitializationSegment m_current;
 +    std::string m_error;
 +    unsigned m_lastAppendSamples { 0 };
++    unsigned m_lastAppendPartialSamples { 0 };
++    // Samples per track (index into m_current.tracks) already emitted from
++    // the fragment the scanner numbered m_partialFragment.
++    uint64_t m_partialFragment { 0 };
++    std::vector<size_t> m_partialTaken;
 +};
 +
 +} // namespace WebCore
@@ -9176,10 +9959,10 @@ index 000000000..cdb2b379e
 +#endif // ENABLE(VIDEO) && USE(FFMPEG) && ENABLE(MEDIA_SOURCE)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/mse/FFmpegMSEParsing.h b/Source/WebCore/platform/graphics/ffmpeg/mse/FFmpegMSEParsing.h
 new file mode 100644
-index 000000000..914f951ce
+index 000000000..942e3d2ea
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/mse/FFmpegMSEParsing.h
-@@ -0,0 +1,600 @@
+@@ -0,0 +1,770 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Engine-independent byte stream handling of the ffmpeg MSE source buffers
@@ -9188,8 +9971,9 @@ index 000000000..914f951ce
 +//  - ByteQueue: growable byte buffer with the read/seek semantics an
 +//    AVIOContext needs;
 +//  - SegmentScanner: splits appended ISO BMFF (fragmented MP4) or WebM bytes
-+//    into complete initialization and media segments at top-level box /
-+//    element boundaries, keeping partial data for the next append;
++//    into initialization and media segments at top-level box / element
++//    boundaries, keeping partial data for the next append and exposing the
++//    head of a fragment that is still arriving;
 +//  - timestamp helpers: exact stream-timebase to (value, timescale)
 +//    conversion, microsecond conversion, and filling missing durations.
 +//
@@ -9206,6 +9990,7 @@ index 000000000..914f951ce
 +#include <limits>
 +#include <string>
 +#include <string_view>
++#include <utility>
 +#include <vector>
 +
 +namespace WebCore {
@@ -9297,6 +10082,12 @@ index 000000000..914f951ce
 +struct ByteStreamSegment {
 +    enum class Kind { Initialization, Media };
 +    Kind kind { Kind::Media };
++    // Media only. partial: the head of fragment `fragment` (still being
++    // received); its samples complete in `bytes` may be used, and a later
++    // partial or complete segment repeats them. Complete media: `fragment`
++    // is nonzero when its first fragment was emitted partially before.
++    bool partial { false };
++    uint64_t fragment { 0 };
 +    std::vector<uint8_t> bytes;
 +};
 +
@@ -9393,27 +10184,45 @@ index 000000000..914f951ce
 +    return ParseStatus::Ok;
 +}
 +
-+// Splits an appended byte stream into complete segments.
++// Splits an appended byte stream into initialization and media segments.
 +//  MP4:  ftyp ... moov  -> initialization segment (only ftyp and moov kept);
-+//        moof + mdat    -> media data, emitted per append (styp, sidx, ssix,
-+//                          prft, emsg, free, skip, mfra are dropped).
++//        moof + mdat    -> media data (styp, sidx, ssix, prft, emsg, free,
++//                          skip, mfra and other boxes are dropped).
 +//  WebM: EBML header + Segment header + Info + Tracks -> initialization
 +//        segment (SeekHead, Void, Tags, ... dropped: their offsets would not
 +//        match); Cluster (known or unknown size) -> media data; Cues and other
 +//        level-1 elements after the Tracks are dropped.
++// Complete fragments (moof + mdat, or a whole Cluster) of one append are
++// emitted together as one Media segment. A fragment still being received
++// (players that stream a segment in many small appends, e.g. YouTube) is
++// additionally emitted as a `partial` Media segment whenever at least
++// `partialStep` new bytes arrived: moof + the mdat received so far, or the
++// Cluster header + its complete children, so its first samples become
++// buffered before the last byte of the fragment arrives. The parser keeps
++// count of what it already took from fragment `fragment` (see
++// ByteStreamSegment). Partial data is held in one buffer per fragment and
++// never dropped; only resetParserState() discards it.
 +// A media segment before any initialization segment is an error, as is a
 +// malformed box or element.
 +class SegmentScanner {
 +public:
-+    explicit SegmentScanner(ByteStreamFormat format)
++    static constexpr size_t defaultPartialStep = 64 * 1024;
++
++    explicit SegmentScanner(ByteStreamFormat format, size_t partialStep = defaultPartialStep)
 +        : m_format(format)
++        , m_partialStep(partialStep ? partialStep : 1)
 +    {
 +    }
 +
 +    ByteStreamFormat format() const { return m_format; }
 +    bool hasInitializationSegment() const { return m_hasInitialization; }
-+    size_t pendingBytes() const { return m_pending.size() + m_partialMedia.size(); }
++    size_t pendingBytes() const { return m_pending.size() + m_fragment.size(); }
 +    const std::string& error() const { return m_error; }
++
++    // Diagnostics of the fragment completed last: how many appends carried
++    // its bytes, and its size.
++    unsigned lastFragmentAppends() const { return m_lastFragmentAppends; }
++    size_t lastFragmentBytes() const { return m_lastFragmentBytes; }
 +
 +    // Returns false on a parse error (error() says why); segments completed
 +    // before the error are still appended to `out`.
@@ -9421,14 +10230,15 @@ index 000000000..914f951ce
 +    {
 +        if (!m_error.empty())
 +            return false;
++        m_lastFragmentAppends = 0;
++        m_lastFragmentBytes = 0;
++        if (m_fragmentOpen)
++            ++m_fragmentAppends;
 +        m_pending.append(data, size);
 +        bool ok = m_format == ByteStreamFormat::MP4 ? scanMP4(out) : scanWebM(out);
-+        if (!m_media.empty()) {
-+            ByteStreamSegment segment;
-+            segment.kind = ByteStreamSegment::Kind::Media;
-+            segment.bytes.swap(m_media);
-+            out.push_back(segment);
-+        }
++        flushMedia(out);
++        if (ok)
++            emitPartial(out);
 +        return ok;
 +    }
 +
@@ -9437,8 +10247,9 @@ index 000000000..914f951ce
 +    void reset()
 +    {
 +        m_pending.clear();
-+        m_partialMedia.clear();
++        closeFragment();
 +        m_media.clear();
++        m_mediaContinues = 0;
 +        m_init.clear();
 +        m_inInitialization = false;
 +        m_inSegment = false;
@@ -9453,22 +10264,30 @@ index 000000000..914f951ce
 +    {
 +        m_error = message;
 +        m_pending.clear();
++        closeFragment();
 +        return false;
++    }
++
++    void flushMedia(std::vector<ByteStreamSegment>& out)
++    {
++        if (m_media.empty())
++            return;
++        ByteStreamSegment segment;
++        segment.kind = ByteStreamSegment::Kind::Media;
++        segment.fragment = m_mediaContinues;
++        segment.bytes.swap(m_media);
++        out.push_back(std::move(segment));
++        m_mediaContinues = 0;
 +    }
 +
 +    void emitInitialization(std::vector<ByteStreamSegment>& out)
 +    {
 +        // Media of the previous initialization segment goes first.
-+        if (!m_media.empty()) {
-+            ByteStreamSegment media;
-+            media.kind = ByteStreamSegment::Kind::Media;
-+            media.bytes.swap(m_media);
-+            out.push_back(media);
-+        }
++        flushMedia(out);
 +        ByteStreamSegment segment;
 +        segment.kind = ByteStreamSegment::Kind::Initialization;
 +        segment.bytes.swap(m_init);
-+        out.push_back(segment);
++        out.push_back(std::move(segment));
 +        m_inInitialization = false;
 +        m_hasInitialization = true;
 +    }
@@ -9479,9 +10298,85 @@ index 000000000..914f951ce
 +        m_pending.consume(count);
 +    }
 +
++    // MARK: Fragment in progress
++
++    void openFragment()
++    {
++        closeFragment();
++        m_fragmentOpen = true;
++        m_fragmentSerial = ++m_serials;
++        m_fragmentAppends = 1;
++    }
++
++    void closeFragment()
++    {
++        m_fragment.clear();
++        m_fragmentOpen = false;
++        m_fragmentPartialEmitted = false;
++        m_fragmentPartialSize = 0;
++        m_fragmentRemaining = 0;
++        m_fragmentUnknownSize = false;
++        m_fragmentDataStarted = false;
++        m_fragmentHeaderSize = 0;
++        m_childrenEnd = 0;
++    }
++
++    // The fragment is complete: move it to the media of this append.
++    void completeFragment()
++    {
++        if (m_media.empty() && m_fragmentPartialEmitted)
++            m_mediaContinues = m_fragmentSerial;
++        m_lastFragmentAppends = m_fragmentAppends;
++        m_lastFragmentBytes = m_fragment.size();
++        m_media.insert(m_media.end(), m_fragment.begin(), m_fragment.end());
++        closeFragment();
++    }
++
++    void emitPartial(std::vector<ByteStreamSegment>& out)
++    {
++        if (!m_fragmentOpen || !m_fragmentDataStarted)
++            return;
++        size_t usable = m_format == ByteStreamFormat::MP4 ? m_fragment.size() : m_childrenEnd;
++        // Step grows with the fragment, so a large fragment arriving in tiny
++        // appends is demuxed O(log) rather than O(appends) times.
++        size_t step = std::max(m_partialStep, m_fragmentPartialSize / 4);
++        if (usable <= m_fragmentHeaderSize || usable < m_fragmentPartialSize + step)
++            return;
++        ByteStreamSegment segment;
++        segment.kind = ByteStreamSegment::Kind::Media;
++        segment.partial = true;
++        segment.fragment = m_fragmentSerial;
++        segment.bytes.assign(m_fragment.begin(), m_fragment.begin() + static_cast<std::ptrdiff_t>(usable));
++        out.push_back(std::move(segment));
++        m_fragmentPartialEmitted = true;
++        m_fragmentPartialSize = usable;
++    }
++
++    // MARK: MP4
++
 +    bool scanMP4(std::vector<ByteStreamSegment>& out)
 +    {
-+        while (m_pending.size() >= 8) {
++        while (true) {
++            if (m_skipRemaining) {
++                size_t count = static_cast<size_t>(std::min<uint64_t>(m_skipRemaining, m_pending.size()));
++                m_pending.consume(count);
++                m_skipRemaining -= count;
++                if (m_skipRemaining)
++                    return true;
++                continue;
++            }
++            if (m_fragmentOpen && m_fragmentDataStarted) {
++                // mdat payload of the current fragment.
++                size_t count = static_cast<size_t>(std::min<uint64_t>(m_fragmentRemaining, m_pending.size()));
++                take(m_fragment, count);
++                m_fragmentRemaining -= count;
++                if (m_fragmentRemaining)
++                    return true;
++                completeFragment();
++                continue;
++            }
++            if (m_pending.size() < 8)
++                return true;
 +            const uint8_t* p = m_pending.data();
 +            uint64_t size = readBigEndian32(p);
 +            uint32_t type = readBigEndian32(p + 4);
@@ -9497,40 +10392,55 @@ index 000000000..914f951ce
 +                return fail("MP4 box smaller than its header");
 +            if (size > maxElementSize)
 +                return fail("MP4 box larger than 1 GiB");
-+            if (m_pending.size() < size)
-+                return true;
 +
-+            if (type == fourCC("ftyp")) {
-+                m_init.clear();
-+                m_partialMedia.clear();
-+                m_inInitialization = true;
-+                take(m_init, size);
-+            } else if (type == fourCC("moov")) {
-+                if (!m_inInitialization)
-+                    m_init.clear();
-+                take(m_init, size);
-+                emitInitialization(out);
-+            } else if (type == fourCC("moof")) {
++            if (type == fourCC("mdat")) {
 +                if (!m_hasInitialization || m_inInitialization)
 +                    return fail("media segment before the initialization segment");
-+                m_partialMedia.clear();
-+                take(m_partialMedia, size);
-+            } else if (type == fourCC("mdat")) {
-+                if (!m_hasInitialization || m_inInitialization)
-+                    return fail("media segment before the initialization segment");
-+                if (m_partialMedia.empty()) {
++                if (!m_fragmentOpen) {
 +                    // mdat without a moof: nothing references it.
-+                    m_pending.consume(size);
++                    m_skipRemaining = size;
 +                    continue;
 +                }
-+                m_media.insert(m_media.end(), m_partialMedia.begin(), m_partialMedia.end());
-+                m_partialMedia.clear();
-+                take(m_media, size);
-+            } else
-+                m_pending.consume(size);
++                // Streamed into the fragment as it arrives.
++                take(m_fragment, headerLength);
++                m_fragmentHeaderSize = m_fragment.size();
++                m_fragmentRemaining = size - headerLength;
++                m_fragmentDataStarted = true;
++                continue;
++            }
++
++            bool initialization = type == fourCC("ftyp") || type == fourCC("moov");
++            if (type == fourCC("moof") || initialization) {
++                if (m_pending.size() < size)
++                    return true;
++            } else {
++                // Anything else is skipped, possibly across appends.
++                m_skipRemaining = size;
++                continue;
++            }
++
++            if (type == fourCC("ftyp")) {
++                closeFragment();
++                m_init.clear();
++                m_inInitialization = true;
++                take(m_init, static_cast<size_t>(size));
++            } else if (type == fourCC("moov")) {
++                closeFragment();
++                if (!m_inInitialization)
++                    m_init.clear();
++                take(m_init, static_cast<size_t>(size));
++                emitInitialization(out);
++            } else {
++                if (!m_hasInitialization || m_inInitialization)
++                    return fail("media segment before the initialization segment");
++                // A moof without its mdat is superseded by the next one.
++                openFragment();
++                take(m_fragment, static_cast<size_t>(size));
++            }
 +        }
-+        return true;
 +    }
++
++    // MARK: WebM
 +
 +    bool isLevelOneElement(uint32_t id) const
 +    {
@@ -9544,37 +10454,71 @@ index 000000000..914f951ce
 +            || id == WebMID::SimpleBlock || id == WebMID::BlockGroup || id == WebMID::EncryptedBlock || id == WebMID::Void || id == WebMID::CRC32;
 +    }
 +
-+    // Length of an unknown-size cluster starting at the front of m_pending,
-+    // or 0 while its end is not known yet.
-+    size_t unknownSizeClusterLength(size_t headerLength, ParseStatus& status) const
++    // Known-size cluster: advances m_childrenEnd over the complete children
++    // received so far. Children that do not parse only stop the partial
++    // emission; the whole cluster still goes to the demuxer once complete.
++    void advanceKnownSizeChildren()
 +    {
-+        const uint8_t* p = m_pending.data();
-+        size_t available = m_pending.size();
-+        size_t offset = headerLength;
-+        status = ParseStatus::Ok;
-+        while (offset < available) {
++        while (m_childrenEnd < m_fragment.size()) {
 +            EBMLHeader child;
-+            auto result = readEBMLHeader(p + offset, available - offset, child);
-+            if (result == ParseStatus::NeedMoreData)
-+                return 0;
-+            if (result == ParseStatus::Invalid) {
-+                status = ParseStatus::Invalid;
-+                return 0;
-+            }
-+            if (!isClusterChild(child.id))
-+                return offset;
-+            if (child.unknownSize || child.size > maxElementSize) {
-+                status = ParseStatus::Invalid;
-+                return 0;
-+            }
-+            offset += child.headerLength + child.size;
++            auto status = readEBMLHeader(m_fragment.data() + m_childrenEnd, m_fragment.size() - m_childrenEnd, child);
++            if (status != ParseStatus::Ok || !isClusterChild(child.id) || child.unknownSize || child.size > maxElementSize)
++                return;
++            uint64_t end = m_childrenEnd + child.headerLength + child.size;
++            if (end > m_fragment.size())
++                return;
++            m_childrenEnd = static_cast<size_t>(end);
 +        }
-+        return 0;
++    }
++
++    // Unknown-size cluster: takes its complete children from m_pending. It
++    // ends at the first element that is not a cluster child.
++    bool scanUnknownSizeCluster()
++    {
++        while (!m_pending.empty()) {
++            EBMLHeader child;
++            auto status = readEBMLHeader(m_pending.data(), m_pending.size(), child);
++            if (status == ParseStatus::NeedMoreData)
++                return true;
++            if (status == ParseStatus::Invalid)
++                return fail("malformed WebM cluster");
++            if (!isClusterChild(child.id)) {
++                completeFragment();
++                return true;
++            }
++            if (child.unknownSize || child.size > maxElementSize)
++                return fail("malformed WebM cluster");
++            uint64_t total = child.headerLength + child.size;
++            if (m_pending.size() < total)
++                return true;
++            take(m_fragment, static_cast<size_t>(total));
++            m_childrenEnd = m_fragment.size();
++        }
++        return true;
 +    }
 +
 +    bool scanWebM(std::vector<ByteStreamSegment>& out)
 +    {
-+        while (!m_pending.empty()) {
++        while (true) {
++            if (m_fragmentOpen) {
++                if (m_fragmentUnknownSize) {
++                    if (!scanUnknownSizeCluster())
++                        return false;
++                    if (m_fragmentOpen)
++                        return true;
++                    continue;
++                }
++                size_t count = static_cast<size_t>(std::min<uint64_t>(m_fragmentRemaining, m_pending.size()));
++                take(m_fragment, count);
++                m_fragmentRemaining -= count;
++                advanceKnownSizeChildren();
++                if (m_fragmentRemaining)
++                    return true;
++                completeFragment();
++                continue;
++            }
++            if (m_pending.empty())
++                return true;
 +            if (m_skipRemaining) {
 +                size_t count = static_cast<size_t>(std::min<uint64_t>(m_skipRemaining, m_pending.size()));
 +                m_pending.consume(count);
@@ -9601,21 +10545,17 @@ index 000000000..914f951ce
 +            if (header.id == WebMID::Cluster) {
 +                if (!m_hasInitialization || m_inInitialization)
 +                    return fail("media segment before the initialization segment");
-+                if (header.unknownSize) {
-+                    ParseStatus clusterStatus;
-+                    size_t length = unknownSizeClusterLength(header.headerLength, clusterStatus);
-+                    if (clusterStatus == ParseStatus::Invalid)
-+                        return fail("malformed WebM cluster");
-+                    if (!length)
-+                        return true;
-+                    take(m_media, length);
-+                    continue;
-+                }
-+                if (header.size > maxElementSize)
++                if (!header.unknownSize && header.size > maxElementSize)
 +                    return fail("WebM cluster larger than 1 GiB");
-+                if (m_pending.size() < total)
-+                    return true;
-+                take(m_media, static_cast<size_t>(total));
++                openFragment();
++                take(m_fragment, header.headerLength);
++                m_fragmentHeaderSize = m_fragment.size();
++                m_childrenEnd = m_fragment.size();
++                m_fragmentDataStarted = true;
++                m_fragmentUnknownSize = header.unknownSize;
++                m_fragmentRemaining = header.unknownSize ? 0 : header.size;
++                if (!header.unknownSize && !header.size)
++                    completeFragment();
 +                continue;
 +            }
 +
@@ -9647,18 +10587,31 @@ index 000000000..914f951ce
 +                return fail("unexpected WebM element");
 +            // Everything else (SeekHead, Void, Cues, Tags, ...) is skipped,
 +            // possibly across appends.
-+            size_t now = static_cast<size_t>(std::min<uint64_t>(total, m_pending.size()));
-+            m_pending.consume(now);
-+            m_skipRemaining = total - now;
++            m_skipRemaining = total;
 +        }
-+        return true;
 +    }
 +
 +    const ByteStreamFormat m_format;
++    const size_t m_partialStep;
 +    ByteQueue m_pending;
 +    std::vector<uint8_t> m_init;
-+    std::vector<uint8_t> m_partialMedia; // MP4: a moof waiting for its mdat
 +    std::vector<uint8_t> m_media; // complete media data of the current append
++    uint64_t m_mediaContinues { 0 }; // fragment serial m_media starts with, if partially emitted
++    // The fragment being received: moof + mdat so far, or a Cluster.
++    std::vector<uint8_t> m_fragment;
++    bool m_fragmentOpen { false };
++    bool m_fragmentDataStarted { false }; // mdat header / Cluster header taken
++    bool m_fragmentUnknownSize { false };
++    bool m_fragmentPartialEmitted { false };
++    uint64_t m_fragmentRemaining { 0 };
++    size_t m_fragmentHeaderSize { 0 }; // bytes before the first sample data
++    size_t m_fragmentPartialSize { 0 }; // size of the last partial emission
++    size_t m_childrenEnd { 0 }; // WebM: end of the complete cluster children
++    uint64_t m_fragmentSerial { 0 };
++    uint64_t m_serials { 0 };
++    unsigned m_fragmentAppends { 0 };
++    unsigned m_lastFragmentAppends { 0 };
++    size_t m_lastFragmentBytes { 0 };
 +    uint64_t m_skipRemaining { 0 };
 +    bool m_inInitialization { false };
 +    bool m_inSegment { false };
@@ -9782,10 +10735,10 @@ index 000000000..914f951ce
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/mse/FFmpegMSEPolicy.h b/Source/WebCore/platform/graphics/ffmpeg/mse/FFmpegMSEPolicy.h
 new file mode 100644
-index 000000000..1f213d65d
+index 000000000..ad6741365
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/mse/FFmpegMSEPolicy.h
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,170 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Engine-independent policy of the ffmpeg MSE player (no WebCore, WTF or
@@ -9947,6 +10900,12 @@ index 000000000..1f213d65d
 +        return true;
 +    return !positionBuffered;
 +}
++
++// A media segment that arrived in at least this many appends (YouTube
++// streams segments in 16-64 KiB pieces) is reported once per SourceBuffer.
++inline constexpr unsigned mseStreamedSegmentAppends = 8;
++// Partial data beyond this is reported: a segment that never completes.
++inline constexpr size_t msePendingWarningBytes = 4u << 20;
 +
 +} // namespace FFmpegMedia
 +} // namespace WebCore
@@ -11734,10 +12693,10 @@ index 000000000..131eafd00
 +#endif // ENABLE(VIDEO) && USE(FFMPEG) && ENABLE(MEDIA_SOURCE)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/mse/SourceBufferPrivateFFmpeg.cpp b/Source/WebCore/platform/graphics/ffmpeg/mse/SourceBufferPrivateFFmpeg.cpp
 new file mode 100644
-index 000000000..28e91ecdf
+index 000000000..e3c710f43
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/mse/SourceBufferPrivateFFmpeg.cpp
-@@ -0,0 +1,301 @@
+@@ -0,0 +1,312 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -11905,6 +12864,17 @@ index 000000000..28e91ecdf
 +    }
 +
 +    unsigned samples = m_parser.lastAppendSamples();
++    unsigned fragmentAppends = m_parser.lastCompletedFragmentAppends();
++    if (!m_loggedStreamedSegment && fragmentAppends >= FFmpegMedia::mseStreamedSegmentAppends) {
++        m_loggedStreamedSegment = true;
++        ffmpegMediaLog("mse: #%u segment completed after %u appends (%zu bytes)", m_identifier, fragmentAppends, m_parser.lastCompletedFragmentBytes());
++    }
++    size_t pending = m_parser.pendingBytes();
++    if (!m_warnedPending && pending > FFmpegMedia::msePendingWarningBytes) {
++        m_warnedPending = true;
++        ffmpegMediaLog("mse: #%u warning: %zu KiB of an incomplete segment pending", m_identifier, pending >> 10);
++    } else if (m_warnedPending && pending <= FFmpegMedia::msePendingWarningBytes / 2)
++        m_warnedPending = false;
 +    double sinceSeek = m_seekAt < 0 ? -1 : MonotonicTime::now().secondsSinceEpoch().seconds() - m_seekAt;
 +    bool positionBuffered = true;
 +    if (RefPtr mediaSource = m_mediaSource.get()) {
@@ -11913,11 +12883,11 @@ index 000000000..28e91ecdf
 +    }
 +    if (FFmpegMedia::mseShouldLogAppend(m_appends, sinceSeek, positionBuffered) || !samples) {
 +        if (samples)
-+            ffmpegMediaLog("mse: #%u append %zu bytes -> %u samples (%.3f-%.3f), buffer %llu KiB of %zu KiB, %llu KiB appended in %u appends",
-+                m_identifier, bytes.size(), samples, m_appendFirst, m_appendLast, static_cast<unsigned long long>(contentSize >> 10),
-+                platformMaximumBufferSize() >> 10, static_cast<unsigned long long>(m_bytesAppended >> 10), m_appends);
++            ffmpegMediaLog("mse: #%u append %zu bytes -> %u samples%s (%.3f-%.3f), buffer %llu KiB of %zu KiB, %llu KiB appended in %u appends",
++                m_identifier, bytes.size(), samples, m_parser.lastAppendPartialSamples() == samples ? " of a partial segment" : "", m_appendFirst, m_appendLast,
++                static_cast<unsigned long long>(contentSize >> 10), platformMaximumBufferSize() >> 10, static_cast<unsigned long long>(m_bytesAppended >> 10), m_appends);
 +        else
-+            ffmpegMediaLog("mse: #%u append %zu bytes -> no samples (%zu bytes pending)", m_identifier, bytes.size(), m_parser.pendingBytes());
++            ffmpegMediaLog("mse: #%u append %zu bytes -> no samples (%zu bytes pending)", m_identifier, bytes.size(), pending);
 +    }
 +    return MediaPromise::createAndResolve();
 +}
@@ -12041,10 +13011,10 @@ index 000000000..28e91ecdf
 +#endif // ENABLE(VIDEO) && USE(FFMPEG) && ENABLE(MEDIA_SOURCE)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/mse/SourceBufferPrivateFFmpeg.h b/Source/WebCore/platform/graphics/ffmpeg/mse/SourceBufferPrivateFFmpeg.h
 new file mode 100644
-index 000000000..001ac3b98
+index 000000000..10981b982
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/mse/SourceBufferPrivateFFmpeg.h
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,102 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// SourceBufferPrivate of the ffmpeg media engine. appendBuffer() bytes go to
@@ -12132,6 +13102,8 @@ index 000000000..001ac3b98
 +    uint64_t m_lastContentSize { 0 };
 +    double m_appendFirst { 0 };
 +    double m_appendLast { 0 };
++    bool m_loggedStreamedSegment { false };
++    bool m_warnedPending { false };
 +#if !RELEASE_LOG_DISABLED
 +    const Ref<const Logger> m_logger;
 +    const uint64_t m_logIdentifier;
