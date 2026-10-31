@@ -16,10 +16,12 @@ installed under `/data/ps5browser/`:
     chrome.html         the HTML browser chrome (from src/chrome-ui/)
     ...                 chrome assets (css/js/img)
   cacert.pem            CA bundle for TLS (curl SSL handle on PS5)
-  fonts/                DejaVu TTFs + fonts.conf (FONTCONFIG_FILE)
+  fonts/                Noto, Liberation and DejaVu fonts + fonts.conf
+                        (FONTCONFIG_FILE; see "Fonts" below)
   config.json           home url, user agent, language (see below);
                         shipped as config.json.sample
-  LICENSES/             GPL-3.0 (the ELF), MPL-2.0 notice (cacert.pem), DejaVu
+  LICENSES/             GPL-3.0 (the ELF), MPL-2.0 notice (cacert.pem), one
+                        license text per font family (OFL 1.1, DejaVu)
   README-install.txt
   tabs.json             persisted session (core::Session; saved 5 s after a
                         tab/URL change and on Quit)
@@ -70,9 +72,70 @@ then overrides `SYSTEM_LANGUAGE` from `config.json`):
 
 `elfldr_spawn_fds` copies the parent's `environ` into each child
 (`elfldr_set_environ`, the shsrv pattern), so the auxiliary processes see
-the same values. `fonts.conf` maps the generic families (`sans-serif`,
-`serif`, `monospace`, `system-ui`, ...) and common web fonts to DejaVu; no
-CJK font is shipped (Noto Sans CJK is ~100 MB per weight).
+the same values.
+
+### Fonts
+
+The fonts are pinned (URL + sha256) in `scripts/ps5/fonts/fonts.lock` and
+staged by `scripts/ps5/fonts/stage-fonts.sh`, which `package.sh` runs;
+downloads are cached in `third_party/dl/fonts/`, archives are unpacked
+into their own directory under `build-deps/fonts/`. 68 MB in all:
+
+| Family | Version | Files | Size |
+|---|---|---|---|
+| Noto Sans, Noto Serif | 2.015 | Regular, Bold, Italic, Bold Italic (hinted TTF) | 5.5 MB |
+| Noto Sans Mono | 2.014 | Regular, Bold | 1.2 MB |
+| Liberation Sans, Serif, Mono | 2.1.5 | Regular, Bold, Italic, Bold Italic | 4.4 MB |
+| Noto Color Emoji | 2.051 | `NotoColorEmoji.ttf` (CBDT bitmaps) | 10.7 MB |
+| Noto Sans CJK | 2.004 | `NotoSansCJK-{Regular,Bold}.ttc` (JP, KR, SC, TC, HK + Mono CJK) | 39.5 MB |
+| DejaVu | 2.37 | as before, without DejaVuMathTeXGyre | 11 MB |
+
+All are SIL OFL 1.1 except DejaVu (Bitstream Vera / public domain); the
+license texts are in `LICENSES/`.
+
+fontconfig is built with `/user/homebrew/etc/fonts/fonts.conf`, which does
+not exist on the console, and no `conf.d` is loaded, so the generated
+`fonts.conf` holds every mapping:
+
+- `sans-serif`, `system-ui`, `cursive`, `fantasy` → Noto Sans, Liberation
+  Sans, DejaVu Sans, Noto Sans CJK SC, Noto Color Emoji; `serif` → Noto
+  Serif, Liberation Serif, DejaVu Serif, CJK, emoji; `monospace` →
+  Liberation Mono, Noto Sans Mono, DejaVu Sans Mono, Noto Sans Mono CJK SC;
+  `emoji` → Noto Color Emoji.
+- Arial and Helvetica → Liberation Sans first, Times and Times New Roman →
+  Liberation Serif first, Courier and Courier New → Liberation Mono
+  (metric-compatible, so layouts sized for those fonts keep their line
+  breaks), then the generic list.
+- Common platform and web families (`-apple-system`, `BlinkMacSystemFont`,
+  Segoe UI, Roboto, Helvetica Neue, Verdana, Tahoma, Open Sans, Inter,
+  Ubuntu, Georgia, Consolas, Menlo, Monaco, Apple Color Emoji, Segoe UI
+  Emoji, ...) → the matching generic list.
+- A catch-all appends Noto Sans to every request, so an unknown family
+  (and a request with no family) still resolves to a font instead of
+  WebKit's last-resort path. The cost: an unknown first family in a CSS
+  stack resolves to Noto Sans instead of falling through to the next one
+  (`"Merriweather", Georgia, serif` renders in Noto Sans).
+- Per-language CJK faces: WebKit's per-character fallback sorts all fonts
+  for the page language with no family, and every face of the CJK
+  collection claims every CJK language, so `ja`, `ko`, `zh-tw`, `zh-hk`,
+  `zh-mo`, `zh-cn`, `zh-sg` and `zh` each append their own face.
+
+Rules for editing the generator: every alias binds `same` and the
+catch-all binds `strong`, because Skia's fontconfig font manager drops the
+weak families after the last strong one and rejects a match whose family
+is not in what is left; and each `<alias>` tests one family (blocks
+listing several families did not take effect for all of them).
+
+The cache directory `<cachedir>` is `/data/ps5browser/cache/fontconfig`;
+fontconfig creates it (and its parents) on the first start, which scans
+the fonts once (the CJK collections are the slow part). `fc-cache` is not
+needed on the console.
+
+`scripts/ps5/fonts/check-fonts.sh` checks the staged `fonts.conf` on the
+host: it rewrites `<dir>`/`<cachedir>` to the staged files and a fresh
+cache directory, runs `fc-match` for each mapped family, the language
+fallbacks and an unknown family, and fails if a match leaves the bundled
+fonts or the cache directory is not created.
 
 Sizes of the current build (Release, `--gc-sections`, ffmpeg engine on):
 `ps5browser.elf` 169 MB as linked, **162 MB shipped** (`llvm-strip
@@ -83,7 +146,8 @@ untested). About 87 MB `.text`, 19 MB `.rodata`, 22 MB `.bss`, no `PT_TLS`.
 `NEEDED`: `libkernel_web`, `libSceLibcInternal`, `libSceNet` plus, through
 SDL2, `libSceSystemService`, `libSceUserService`, `libScePad`,
 `libSceAudioOut`, `libSceVideoOut`, `libSceKeyboard`, `libSceImeDialog`
-(all `.sprx` system modules). The whole package is about 175 MB.
+(all `.sprx` system modules). The whole package is about 235 MB, 68 MB of
+it fonts.
 
 The ELF path used when re-spawning the auxiliary processes is resolved by
 `ps5_spawn_resolve_self_path()`: `PS5BROWSER_SELF_PATH` env →
