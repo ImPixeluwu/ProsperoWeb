@@ -3,11 +3,14 @@
 // The WebKit spawn contract (webkit-port/include/ps5webkit/spawn.h) and the
 // spawn broker role. PS5 target only.
 //
-// The UI runs as the hbldr big app, and rfork+ptrace+execve from a big app
+// The UI runs as the foreground big app (the hbldr app websrv starts, or
+// the native title PRWB00001), and rfork+ptrace+execve from a big app
 // panics the console kernel. So by default (PROSPEROWEB_SPAWN_MODE=broker)
-// the UI asks the spawn broker, a plain payload started through websrv, to
-// spawn for it; PROSPEROWEB_SPAWN_MODE=direct keeps the in-process spawner
-// (spawn.c) for plain-payload (elfldr) launches. See README.md.
+// the UI asks the spawn broker, a plain payload, to spawn for it. The UI
+// starts the broker through elfldr (127.0.0.1:9021) or websrv's /hbldr
+// (127.0.0.1:8080), PROSPEROWEB_BROKER_LOADER=auto|elfldr|websrv;
+// PROSPEROWEB_SPAWN_MODE=direct keeps the in-process spawner (spawn.c) for
+// plain-payload (elfldr) launches. See README.md and docs/native-title.md.
 
 #include <atomic>
 #include <cerrno>
@@ -32,6 +35,7 @@
 #include "broker_server.h"
 #include "cpuset_assign_ps5.h"
 #include "spawn_backend.h"
+#include "title_paths.h"
 
 extern char** environ;
 
@@ -52,6 +56,8 @@ constexpr int kSpawnTimeoutMs = 60000;
 constexpr int kTerminateTimeoutMs = 5000;
 constexpr int kPingTimeoutMs = 5000;
 constexpr const char* kDefaultWebsrv = "127.0.0.1:8080";
+constexpr const char* kDefaultElfldr = "127.0.0.1:9021";
+constexpr int kElfldrTimeoutMs = 30000;  // elfldr reads the ELF before it answers
 
 long long ms_since(Clock::time_point t) {
   return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t).count();
@@ -119,21 +125,29 @@ std::string dir_of(const std::string& path) {
   return slash == std::string::npos || slash == 0 ? "/" : path.substr(0, slash);
 }
 
+// The broker's settings: it resolves the same endpoints as we do.
+std::vector<std::string> broker_env(const std::string& self_path) {
+  std::vector<std::string> env = {"PROSPEROWEB_ROLE=spawn-broker"};
+  const char* sock = std::getenv("PROSPEROWEB_SPAWN_SOCK");
+  if (sock && sock[0]) {
+    env.push_back(std::string("PROSPEROWEB_SPAWN_SOCK=") + sock);
+  }
+  env.push_back("PROSPEROWEB_SPAWN_PORT=" +
+                std::to_string(broker_tcp_port(std::getenv("PROSPEROWEB_SPAWN_PORT"))));
+  env.push_back("PROSPEROWEB_SELF_PATH=" + self_path);
+  return env;
+}
+
 // Asks websrv to start "<self_path>" as a daemon payload in the broker role.
 bool start_broker_via_websrv(const std::string& self_path) {
   const std::string websrv = env_or("PROSPEROWEB_WEBSRV", kDefaultWebsrv);
   // argv[0] (also the process name) is the role; --role= and
   // PROSPEROWEB_ROLE say the same in case a loader rewrites argv[0].
   const std::string args = "spawn-broker --role=spawn-broker";
-  // The broker resolves the same endpoints as we do: forward the overrides.
-  std::string env = "PROSPEROWEB_ROLE=spawn-broker";
-  const char* sock = std::getenv("PROSPEROWEB_SPAWN_SOCK");
-  if (sock && sock[0]) {
-    env += " PROSPEROWEB_SPAWN_SOCK=" + websrv_escape_token(sock);
+  std::string env;
+  for (const auto& entry : broker_env(self_path)) {
+    env += (env.empty() ? "" : " ") + websrv_escape_token(entry);
   }
-  env += " PROSPEROWEB_SPAWN_PORT=" +
-         std::to_string(broker_tcp_port(std::getenv("PROSPEROWEB_SPAWN_PORT")));
-  env += " PROSPEROWEB_SELF_PATH=" + websrv_escape_token(self_path);
   const std::string target =
       websrv_broker_target(self_path, dir_of(self_path), args, env);
   const auto t0 = Clock::now();
@@ -147,6 +161,59 @@ bool start_broker_via_websrv(const std::string& self_path) {
   ps5_log_printf("websrv: GET http://%s%s -> HTTP %d in %lldms", websrv.c_str(),
                  target.c_str(), code, ms_since(t0));
   return code == 200;
+}
+
+// Asks elfldr to load "<self_path>" from the console's file system as a
+// payload in the broker role. elfldr passes no environment, so the
+// settings travel as --env= arguments (main() exports them).
+bool start_broker_via_elfldr(const std::string& self_path) {
+  const std::string elfldr = env_or("PROSPEROWEB_ELFLDR", kDefaultElfldr);
+  const std::string line =
+      elfldr_payload_line(self_path, elfldr_broker_args(broker_env(self_path)));
+  const auto t0 = Clock::now();
+  std::string reply;
+  std::string error;
+  const int rc = elfldr_send(elfldr, line, kElfldrTimeoutMs, &reply, &error);
+  if (rc < 0) {
+    ps5_log_printf("elfldr: %s <- %s -> failed: %s", elfldr.c_str(), line.c_str(),
+                   error.c_str());
+    return false;
+  }
+  ps5_log_printf("elfldr: %s <- %s -> %s in %lldms", elfldr.c_str(), line.c_str(),
+                 rc == 0 ? (reply.empty() ? "accepted" : reply.c_str()) : reply.c_str(),
+                 ms_since(t0));
+  return rc == 0;
+}
+
+// Starts the broker with the loaders PROSPEROWEB_BROKER_LOADER allows.
+// "auto" (the default) tries both: elfldr first in the native title (no
+// websrv needed), websrv first when websrv's tile started the UI (it is
+// running then). main() sets PROSPEROWEB_TITLE_UI_ROOT only in the title.
+bool start_broker(const std::string& self_path) {
+  const std::string loader = env_or("PROSPEROWEB_BROKER_LOADER", "auto");
+  std::vector<std::string> order;
+  if (loader == "elfldr" || loader == "websrv") {
+    order = {loader};
+  } else {
+    if (loader != "auto") {
+      ps5_log_printf("spawn: unknown PROSPEROWEB_BROKER_LOADER=%s, using auto", loader.c_str());
+    }
+    const bool native = !env_or("PROSPEROWEB_TITLE_UI_ROOT", "").empty();
+    order = native ? std::vector<std::string>{"elfldr", "websrv"}
+                   : std::vector<std::string>{"websrv", "elfldr"};
+  }
+  for (size_t i = 0; i < order.size(); i++) {
+    ps5_log_printf("spawn: starting the broker %s via %s (loader %s, attempt %zu/%zu)",
+                   self_path.c_str(), order[i].c_str(), loader.c_str(), i + 1, order.size());
+    const bool ok = order[i] == "elfldr" ? start_broker_via_elfldr(self_path)
+                                         : start_broker_via_websrv(self_path);
+    if (ok) {
+      return true;
+    }
+  }
+  ps5_log_line("spawn: no loader started the broker (elfldr on 127.0.0.1:9021 or websrv on "
+               "127.0.0.1:8080 must be running)");
+  return false;
 }
 
 std::atomic<ps5_spawn_progress_fn> g_progress{nullptr};
@@ -175,8 +242,8 @@ bool ensure_broker(const std::string& self_path, bool may_start) {
       ps5_log_printf("spawn: broker not reachable: %s", failures.c_str());
       return false;
     }
-    ps5_log_printf("spawn: broker not running (%s), asking websrv", failures.c_str());
-    if (!start_broker_via_websrv(self_path)) {
+    ps5_log_printf("spawn: broker not running (%s)", failures.c_str());
+    if (!start_broker(self_path)) {
       return false;
     }
     if (!g_client->connect_wait(kBrokerStartTimeoutMs, 100, &failures)) {
@@ -251,9 +318,29 @@ int spawn_via_broker(const char* const* argv, const int* fds, int nfds) {
   for (int i = 0; argv[i]; i++) {
     jargv.push_back(argv[i]);
   }
-  json jenv = json::array();
+  // The native title reads its files as /app0, which the children (plain
+  // payloads) do not have: hand them the folder as they see it
+  // (title_paths.h; main() exports both roots).
+  // PROSPEROWEB_UI_ONLY_ENV names variables that are the UI's own (the
+  // native title runs JSC without JIT); the children keep their defaults.
+  const std::string ui_only = " " + env_or("PROSPEROWEB_UI_ONLY_ENV", "") + " ";
+  std::vector<std::string> env;
   for (char** e = environ; e && *e; e++) {
-    jenv.push_back(*e);
+    const std::string entry = *e;
+    const std::string name = entry.substr(0, entry.find('='));
+    if (name == "PROSPEROWEB_UI_ONLY_ENV" || ui_only.find(" " + name + " ") != std::string::npos) {
+      continue;
+    }
+    env.push_back(entry);
+  }
+  const std::string ui_root = env_or("PROSPEROWEB_TITLE_UI_ROOT", "");
+  const std::string child_root = env_or("PROSPEROWEB_TITLE_CHILD_ROOT", "");
+  if (!ui_root.empty() && !child_root.empty() && ui_root != child_root) {
+    env = rebase_env(env, ui_root, child_root);
+  }
+  json jenv = json::array();
+  for (const auto& entry : env) {
+    jenv.push_back(entry);
   }
   msg["argv"] = std::move(jargv);
   msg["env"] = std::move(jenv);
