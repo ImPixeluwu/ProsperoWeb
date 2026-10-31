@@ -37,6 +37,9 @@ public:
     RefPtr<FFmpegMSETrackFormat> formatForTrack(TrackID) const;
 
     unsigned identifier() const { return m_identifier; }
+    // Console diagnostics of seeks.
+    void noteSeek();
+    unsigned appendsSinceSeek() const { return m_appends - m_appendsAtSeek; }
     size_t platformMaximumBufferSize() const final;
     bool canSwitchToType(const ContentType&) final;
     void removedFromMediaSource() final;
@@ -77,6 +80,8 @@ private:
     // Console log bookkeeping.
     uint64_t m_bytesAppended { 0 };
     unsigned m_appends { 0 };
+    unsigned m_appendsAtSeek { 0 };
+    double m_seekAt { -1 };
     uint64_t m_lastContentSize { 0 };
     double m_appendFirst { 0 };
     double m_appendLast { 0 };

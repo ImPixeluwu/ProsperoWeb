@@ -122,5 +122,43 @@ inline bool mseShouldStall(const TimeRangeSet& buffered, double position, double
     return buffered.bufferedAhead(position) < threshold;
 }
 
+// MARK: - Seeks
+
+// A seek goes through three phases: waiting for the page to append data at
+// the target (MediaSourcePrivate::waitForTarget), waiting for the
+// re-enqueued samples to be decoded, done. The page decides what to fetch
+// from currentTime (the target while seeking) and buffered.
+enum class MSESeekPhase { WaitingForData, WaitingForFrames, Done };
+
+struct MSESeekInputs {
+    bool dataAvailable { false }; // waitForTarget resolved and samples re-enqueued
+    bool videoReady { true }; // a frame of the new serial shown, or no/hidden/broken video
+    bool audioReady { true }; // audio of the new serial decoded, or no/broken audio
+    double secondsSinceReenqueue { 0 };
+};
+
+inline constexpr double mseSeekFrameTimeout = 3.0;
+
+inline MSESeekPhase mseSeekPhase(const MSESeekInputs& in)
+{
+    if (!in.dataAvailable)
+        return MSESeekPhase::WaitingForData;
+    if ((in.videoReady && in.audioReady) || in.secondsSinceReenqueue > mseSeekFrameTimeout)
+        return MSESeekPhase::Done;
+    return MSESeekPhase::WaitingForFrames;
+}
+
+// Console log while diagnosing seeks and stalls: every append of the first
+// eight, then every 20th, but all of them for 30 s after a seek and while
+// the position is not buffered.
+inline bool mseShouldLogAppend(unsigned appendNumber, double secondsSinceSeek, bool positionBuffered)
+{
+    if (appendNumber <= 8 || !(appendNumber % 20))
+        return true;
+    if (secondsSinceSeek >= 0 && secondsSinceSeek < 30)
+        return true;
+    return !positionBuffered;
+}
+
 } // namespace FFmpegMedia
 } // namespace WebCore

@@ -208,6 +208,8 @@ private:
     bool m_stalled { false };
     // Console log bookkeeping.
     double m_seekStartedAt { 0 };
+    double m_seekAnnouncedAt { 0 };
+    double m_lastSeekWaitLog { 0 };
     double m_lastStatsAt { 0 };
     unsigned m_loggedFirstFrameSerial { 0 };
 };

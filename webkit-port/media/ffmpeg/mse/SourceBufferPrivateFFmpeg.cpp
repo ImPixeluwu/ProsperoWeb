@@ -15,6 +15,7 @@
 #include "MediaSourcePrivateFFmpeg.h"
 #include "SharedBuffer.h"
 #include "SourceBufferPrivateClient.h"
+#include <wtf/MonotonicTime.h>
 #include <wtf/NativePromise.h>
 #include <wtf/text/StringBuilder.h>
 
@@ -164,9 +165,13 @@ Ref<MediaPromise> SourceBufferPrivateFFmpeg::appendInternal(Ref<SharedBuffer>&& 
     }
 
     unsigned samples = m_parser.lastAppendSamples();
-    // Each append once while starting, then every 20th (YouTube appends a
-    // few times per second).
-    if (m_appends <= 8 || !(m_appends % 20) || !samples) {
+    double sinceSeek = m_seekAt < 0 ? -1 : MonotonicTime::now().secondsSinceEpoch().seconds() - m_seekAt;
+    bool positionBuffered = true;
+    if (RefPtr mediaSource = m_mediaSource.get()) {
+        auto position = mediaSource->currentTime();
+        positionBuffered = mediaSource->buffered().contain(position);
+    }
+    if (FFmpegMedia::mseShouldLogAppend(m_appends, sinceSeek, positionBuffered) || !samples) {
         if (samples)
             ffmpegMediaLog("mse: #%u append %zu bytes -> %u samples (%.3f-%.3f), buffer %llu KiB of %zu KiB, %llu KiB appended in %u appends",
                 m_identifier, bytes.size(), samples, m_appendFirst, m_appendLast, static_cast<unsigned long long>(contentSize >> 10),
@@ -175,6 +180,12 @@ Ref<MediaPromise> SourceBufferPrivateFFmpeg::appendInternal(Ref<SharedBuffer>&& 
             ffmpegMediaLog("mse: #%u append %zu bytes -> no samples (%zu bytes pending)", m_identifier, bytes.size(), m_parser.pendingBytes());
     }
     return MediaPromise::createAndResolve();
+}
+
+void SourceBufferPrivateFFmpeg::noteSeek()
+{
+    m_appendsAtSeek = m_appends;
+    m_seekAt = MonotonicTime::now().secondsSinceEpoch().seconds();
 }
 
 void SourceBufferPrivateFFmpeg::resetParserStateInternal()
@@ -246,6 +257,8 @@ void SourceBufferPrivateFFmpeg::appendParserDidParseSample(const FFmpegParsedTra
 
 void SourceBufferPrivateFFmpeg::flush(TrackID trackID)
 {
+    if (m_seekAt >= 0 && MonotonicTime::now().secondsSinceEpoch().seconds() - m_seekAt < 30)
+        ffmpegMediaLog("mse: #%u flush track %llu", m_identifier, static_cast<unsigned long long>(trackID));
     if (RefPtr player = this->player())
         player->flushTrack(*this, trackID);
 }

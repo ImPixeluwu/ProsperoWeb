@@ -464,6 +464,35 @@ TEST_SUITE("media_mse_policy") {
     CHECK(readyLevelFromBuffered(buffered, 22, 22, true, true) == ReadyLevel::HaveEnoughData);
   }
 
+  TEST_CASE("seek phases") {
+    MSESeekInputs in;
+    in.dataAvailable = false;
+    CHECK(mseSeekPhase(in) == MSESeekPhase::WaitingForData);
+    in.secondsSinceReenqueue = 100; // no data: never times out, the page must append
+    CHECK(mseSeekPhase(in) == MSESeekPhase::WaitingForData);
+    in.dataAvailable = true;
+    in.secondsSinceReenqueue = 0.1;
+    in.videoReady = false;
+    CHECK(mseSeekPhase(in) == MSESeekPhase::WaitingForFrames);
+    in.videoReady = true;
+    in.audioReady = false;
+    CHECK(mseSeekPhase(in) == MSESeekPhase::WaitingForFrames);
+    in.audioReady = true;
+    CHECK(mseSeekPhase(in) == MSESeekPhase::Done);
+    in.videoReady = false;
+    in.secondsSinceReenqueue = mseSeekFrameTimeout + 0.1;
+    CHECK(mseSeekPhase(in) == MSESeekPhase::Done);
+  }
+
+  TEST_CASE("append logging around seeks") {
+    CHECK(mseShouldLogAppend(3, -1, true));
+    CHECK_FALSE(mseShouldLogAppend(9, -1, true));
+    CHECK(mseShouldLogAppend(40, -1, true));
+    CHECK(mseShouldLogAppend(9, 2.0, true));
+    CHECK_FALSE(mseShouldLogAppend(9, 31.0, true));
+    CHECK(mseShouldLogAppend(9, 31.0, false));
+  }
+
   TEST_CASE("stalls") {
     TimeRangeSet buffered;
     buffered.add(0, 4);

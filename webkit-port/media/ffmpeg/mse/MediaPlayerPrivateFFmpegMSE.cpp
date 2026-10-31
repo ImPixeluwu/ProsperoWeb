@@ -25,6 +25,8 @@
 #include <wtf/MonotonicTime.h>
 #include <wtf/NativePromise.h>
 #include <wtf/TZoneMallocInlines.h>
+#include <wtf/text/StringBuilder.h>
+#include <wtf/text/StringConcatenateNumbers.h>
 
 namespace WebCore {
 
@@ -639,6 +641,11 @@ Ref<MediaTimePromise> MediaPlayerPrivateFFmpegMSE::seekToTarget(const SeekTarget
     ffmpegMediaLog("mse: seek to %.3f (from %.3f)", time, currentTime().toDouble());
     unsigned generation = ++m_seekGeneration;
     m_seekStartedAt = now;
+    m_seekAnnouncedAt = now;
+    for (auto& sourceBuffer : mediaSource->sourceBuffers()) {
+        if (sourceBuffer->platformType() == MediaPlatformType::FFmpeg)
+            static_cast<SourceBufferPrivateFFmpeg&>(sourceBuffer.get()).noteSeek();
+    }
     m_loggedFirstFrameSerial = 0;
     m_seeking = true;
     m_seekReenqueued = false;
@@ -647,8 +654,10 @@ Ref<MediaTimePromise> MediaPlayerPrivateFFmpegMSE::seekToTarget(const SeekTarget
     flushPipeline(m_video, time);
     flushPipeline(m_audio, time);
     m_clock.reset(time, now);
+    m_lastSeekWaitLog = now;
+    // readyState follows in the tick: notifying the element synchronously
+    // would re-enter HTMLMediaElement::seekTask.
     updatePlaybackRunning();
-    updateReadyState();
 
     m_seekPromise.emplace(PlatformMediaError::Cancelled);
     Ref<MediaTimePromise> promise = m_seekPromise->promise();
@@ -678,6 +687,8 @@ Ref<MediaTimePromise> MediaPlayerPrivateFFmpegMSE::seekToTarget(const SeekTarget
                 return;
             protectedThis->m_seekReenqueued = true;
             protectedThis->m_seekStartedAt = monotonicNow();
+            ffmpegMediaLog("mse: seek samples re-enqueued (queues v %zu a %zu)", protectedThis->m_video.queue ? protectedThis->m_video.queue->level().packets : 0,
+                protectedThis->m_audio.queue ? protectedThis->m_audio.queue->level().packets : 0);
             protectedThis->scheduleTick(0_s);
         });
     });
@@ -686,15 +697,43 @@ Ref<MediaTimePromise> MediaPlayerPrivateFFmpegMSE::seekToTarget(const SeekTarget
 
 void MediaPlayerPrivateFFmpegMSE::finishSeekIfReady(double now)
 {
-    if (!m_seeking || !m_seekReenqueued)
+    if (!m_seeking)
         return;
     RefPtr video = m_videoDecoder;
     RefPtr audio = m_audioDecoder;
-    bool videoReady = !video || !m_pageVisible || video->hasFatalError()
+    FFmpegMedia::MSESeekInputs inputs;
+    inputs.dataAvailable = m_seekReenqueued;
+    inputs.videoReady = !video || !m_pageVisible || video->hasFatalError()
         || (m_currentFrame && m_currentFrame->serial == m_video.serial) || video->reachedEnd(m_video.serial);
-    bool audioReady = !audio || audio->hasFatalError() || audio->hasData(m_audio.serial) || audio->drained(m_audio.serial);
-    bool timedOut = now - m_seekStartedAt > seekCompletionTimeout;
-    if ((!videoReady || !audioReady) && !timedOut)
+    inputs.audioReady = !audio || audio->hasFatalError() || audio->hasData(m_audio.serial) || audio->drained(m_audio.serial);
+    inputs.secondsSinceReenqueue = now - m_seekStartedAt;
+    auto phase = FFmpegMedia::mseSeekPhase(inputs);
+    if (phase == FFmpegMedia::MSESeekPhase::WaitingForData) {
+        // The page has not appended data at the target yet: say what the
+        // MediaSource holds, so a stuck seek shows who is waiting for whom.
+        if (now - m_lastSeekWaitLog >= statsIntervalSeconds) {
+            m_lastSeekWaitLog = now;
+            StringBuilder ranges;
+            if (RefPtr mediaSource = m_mediaSourcePrivate) {
+                auto buffered = mediaSource->buffered();
+                for (unsigned i = 0; i < buffered.length() && i < 6; ++i)
+                    ranges.append(i ? " "_s : ""_s, FormattedNumber::fixedPrecision(buffered.start(i).toDouble(), 6), '-', FormattedNumber::fixedPrecision(buffered.end(i).toDouble(), 6));
+                for (auto& sourceBuffer : mediaSource->sourceBuffers()) {
+                    if (sourceBuffer->platformType() == MediaPlatformType::FFmpeg) {
+                        auto& buffer = static_cast<SourceBufferPrivateFFmpeg&>(sourceBuffer.get());
+                        ranges.append(" | #"_s, buffer.identifier(), ": "_s, buffer.appendsSinceSeek(), " appends since the seek"_s);
+                    }
+                }
+            }
+            ffmpegMediaLog("mse: seek to %.3f still waiting for data after %.0f s; buffered %s", m_seekTime, now - m_seekAnnouncedAt,
+                ranges.isEmpty() ? "none" : ranges.toString().utf8().legacyCStringPointer());
+        }
+        return;
+    }
+    bool timedOut = !inputs.videoReady || !inputs.audioReady;
+    bool videoReady = inputs.videoReady;
+    bool audioReady = inputs.audioReady;
+    if (phase != FFmpegMedia::MSESeekPhase::Done)
         return;
 
     ffmpegMediaLog("mse: seek finished at %.3f in %.0f ms after re-enqueue%s", m_seekTime, (now - m_seekStartedAt) * 1000,
