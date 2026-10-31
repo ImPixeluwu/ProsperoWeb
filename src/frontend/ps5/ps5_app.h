@@ -40,6 +40,10 @@ class Ps5App {
   void composite_and_present();
   void draw_splash();
   std::vector<SDL_Rect> derive_chrome_rects();
+  // Remote diagnostics (ps5_diagnostics.h).
+  void poll_diagnostic_requests(std::uint64_t now);
+  void dump_screen(SDL_Surface* surface);
+  void run_form_probe();
 
   static void frame_trampoline(void* self);
 
@@ -73,6 +77,17 @@ class Ps5App {
   // SDL's own dialog pump sends Return when it consumes our dialog's end;
   // the matching auto-release must not reach the page either.
   bool swallow_return_up_ = false;
+  // Share: a short press goes to the shell on release, a press held for
+  // kShareLongPressMs dumps the screen instead.
+  static constexpr std::uint64_t kShareLongPressMs = 1000;
+  bool share_down_ = false;
+  bool share_long_fired_ = false;
+  std::uint64_t share_down_ticks_ = 0;
+  // Diagnostics requests: files polled once per second; a pending screen dump
+  // is taken from the next composed frame.
+  static constexpr std::uint64_t kRequestPollMs = 1000;
+  std::uint64_t last_request_poll_ticks_ = 0;
+  bool screenshot_pending_ = false;
   bool l2_down_ = false;
   bool r2_down_ = false;
   std::uint64_t last_frame_ticks_ = 0;

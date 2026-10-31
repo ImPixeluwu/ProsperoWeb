@@ -13,6 +13,7 @@
 
 #include "ps5browser/core/gamepad.h"
 #include "ps5browser/core/page_scripts.h"
+#include "ps5_diagnostics.h"
 #include "ps5_log.h"
 #include "ps5_runtime_env.h"
 
@@ -56,6 +57,8 @@ constexpr const char* kInputTraceScript = R"JS((function () {
 )JS";
 
 constexpr const char* kBaseDir = kPs5DataDir;
+
+std::string tmp_path(const std::string& name) { return std::string(kBaseDir) + "/tmp/" + name; }
 constexpr std::uint32_t kFrameMs = 16;  // ~60 Hz
 
 std::optional<core::Button> sdl_button_to_core(SDL_GameControllerButton b) {
@@ -315,6 +318,12 @@ void Ps5App::frame() {
   }
   pump_sdl_events();
   handle_axis_motion();
+  if (share_down_ && !share_long_fired_ && now - share_down_ticks_ >= kShareLongPressMs) {
+    share_long_fired_ = true;
+    screenshot_pending_ = true;
+    log_line("screenshot: requested by a Share long press");
+  }
+  poll_diagnostic_requests(now);
   // Page and chrome script messages (see WkWebView::poll_all()).
   WkWebView::poll_all();
   controller_->tick(dt);
@@ -400,9 +409,108 @@ void Ps5App::pump_sdl_events() {
 }
 
 void Ps5App::handle_controller_button(const SDL_ControllerButtonEvent& e, bool pressed) {
-  if (auto b = sdl_button_to_core(static_cast<SDL_GameControllerButton>(e.button))) {
-    controller_->on_button(*b, pressed);
+  auto b = sdl_button_to_core(static_cast<SDL_GameControllerButton>(e.button));
+  if (!b) {
+    return;
   }
+  if (*b == core::Button::Share) {
+    // Decided on release: a long press (see frame()) is a screen dump and
+    // never reaches the shell; a short one is delivered as a whole.
+    if (pressed) {
+      share_down_ = true;
+      share_long_fired_ = false;
+      share_down_ticks_ = SDL_GetTicks64();
+    } else if (share_down_) {
+      share_down_ = false;
+      if (!share_long_fired_) {
+        controller_->on_button(*b, true);
+        controller_->on_button(*b, false);
+      }
+    }
+    return;
+  }
+  controller_->on_button(*b, pressed);
+}
+
+void Ps5App::poll_diagnostic_requests(std::uint64_t now) {
+  if (now - last_request_poll_ticks_ < kRequestPollMs) {
+    return;
+  }
+  last_request_poll_ticks_ = now;
+  if (take_request_file(tmp_path(kScreenshotRequestFile))) {
+    log_printf("screenshot: requested by %s", kScreenshotRequestFile);
+    screenshot_pending_ = true;
+  }
+  if (take_request_file(tmp_path(kProbeRequestFile))) {
+    log_printf("probe: requested by %s", kProbeRequestFile);
+    run_form_probe();
+  }
+}
+
+void Ps5App::dump_screen(SDL_Surface* surface) {
+  screenshot_pending_ = false;
+  const std::uint64_t t0 = SDL_GetTicks64();
+  // The window surface is ABGR8888 (R, G, B, A bytes); convert anything else.
+  SDL_Surface* converted = nullptr;
+  SDL_Surface* src = surface;
+  if (surface->format->format != SDL_PIXELFORMAT_ABGR8888) {
+    converted = SDL_ConvertSurfaceFormat(surface, SDL_PIXELFORMAT_ABGR8888, 0);
+    if (!converted) {
+      log_printf("screenshot: converting the surface failed: %s", SDL_GetError());
+      return;
+    }
+    src = converted;
+  }
+  const std::string png = encode_png_rgbx(static_cast<const std::uint8_t*>(src->pixels),
+                                          src->w, src->h, src->pitch);
+  const int w = src->w;
+  const int h = src->h;
+  if (converted) {
+    SDL_FreeSurface(converted);
+  }
+  if (png.empty()) {
+    log_line("screenshot: PNG encoding failed");
+    return;
+  }
+  const std::string path = tmp_path("screen-" + std::to_string(t0) + ".png");
+  const bool ok = write_file_atomically(path, png);
+  const bool latest_ok = write_file_atomically(tmp_path(kScreenLatestFile), png);
+  if (ok) {
+    log_printf("screenshot: written %s (%llu ms, %dx%d, %zu bytes%s)", path.c_str(),
+               static_cast<unsigned long long>(SDL_GetTicks64() - t0), w, h, png.size(),
+               latest_ok ? ", also screen-latest.png" : "");
+  }
+}
+
+void Ps5App::run_form_probe() {
+  auto* view = static_cast<Ps5EngineView*>(controller_->active_view());
+  if (!view) {
+    log_line("probe: no active page");
+    return;
+  }
+  const std::uint64_t t0 = SDL_GetTicks64();
+  view->web().evaluate(form_probe_script(), [t0](std::optional<std::string> result) {
+    if (!result) {
+      log_line("probe: the page script returned no result (failed, or no page process)");
+      return;
+    }
+    const auto doc = nlohmann::json::parse(*result, nullptr, /*allow_exceptions=*/false);
+    std::string text = *result;
+    if (!doc.is_discarded()) {
+      text = doc.dump(2, ' ', false, nlohmann::json::error_handler_t::replace);
+    }
+    text += '\n';
+    const std::string path = tmp_path("probe-" + std::to_string(t0) + ".json");
+    const bool ok = write_file_atomically(path, text);
+    write_file_atomically(tmp_path(kProbeLatestFile), text);
+    if (ok) {
+      const auto controls = doc.is_object() ? doc.find("controlCount") : doc.end();
+      log_printf("probe: written %s (%llu ms, %s controls, %s)", path.c_str(),
+                 static_cast<unsigned long long>(SDL_GetTicks64() - t0),
+                 controls != doc.end() ? controls->dump().c_str() : "?",
+                 doc.is_object() ? doc.value("url", std::string("?")).c_str() : "?");
+    }
+  });
 }
 
 void Ps5App::handle_axis_motion() {
@@ -585,6 +693,10 @@ void Ps5App::composite_and_present() {
     for (; x < width_; x++) {
       orow[x] = argb_to_abgr(page[x]);
     }
+  }
+  // The composed frame, before the flip hands the buffer to the display.
+  if (screenshot_pending_) {
+    dump_screen(surface);
   }
   if (SDL_MUSTLOCK(surface)) {
     SDL_UnlockSurface(surface);

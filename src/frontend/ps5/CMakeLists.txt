@@ -69,6 +69,7 @@ set(_frontend_sources
   ps5_app.cpp
   ps5_chrome_ui.cpp
   ps5_config.cpp
+  ps5_diagnostics.cpp
   ps5_engine_view.cpp
   ps5_ime.cpp
   ps5_log.cpp
