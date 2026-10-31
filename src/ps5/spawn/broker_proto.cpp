@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "broker_proto.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 
 #include <sys/socket.h>
@@ -186,6 +188,43 @@ BrokerRecv broker_recv_frame(int sock, nlohmann::json* msg, std::vector<int>* fd
   return BrokerRecv::kOk;
 }
 
+std::string BrokerEndpoint::describe() const {
+  return tcp ? "tcp 127.0.0.1:" + std::to_string(port) : "unix " + path;
+}
+
+std::vector<std::string> broker_socket_paths(const char* env_sock) {
+  std::vector<std::string> paths;
+  for (const char* p : {env_sock, kBrokerTmpSocket, kBrokerDataSocket}) {
+    if (p && p[0] && std::find(paths.begin(), paths.end(), p) == paths.end()) {
+      paths.emplace_back(p);
+    }
+  }
+  return paths;
+}
+
+int broker_tcp_port(const char* env_port) {
+  if (!env_port || !env_port[0]) {
+    return kBrokerDefaultPort;
+  }
+  char* end = nullptr;
+  const long v = std::strtol(env_port, &end, 10);
+  return *end == '\0' && v > 0 && v <= 65535 ? static_cast<int>(v) : kBrokerDefaultPort;
+}
+
+std::vector<BrokerEndpoint> broker_endpoints(const char* env_sock, const char* env_port) {
+  std::vector<BrokerEndpoint> out;
+  for (auto& path : broker_socket_paths(env_sock)) {
+    BrokerEndpoint e;
+    e.path = std::move(path);
+    out.push_back(std::move(e));
+  }
+  BrokerEndpoint tcp;
+  tcp.tcp = true;
+  tcp.port = broker_tcp_port(env_port);
+  out.push_back(std::move(tcp));
+  return out;
+}
+
 std::string broker_get_string(const nlohmann::json& msg, const char* key,
                               const std::string& fallback) {
   auto it = msg.find(key);
@@ -216,6 +255,29 @@ bool broker_get_strings(const nlohmann::json& msg, const char* key,
     out->push_back(v.get<std::string>());
   }
   return true;
+}
+
+BrokerSrcFds broker_get_src_fds(const nlohmann::json& msg, std::vector<int>* out,
+                                std::string* why) {
+  out->clear();
+  auto it = msg.find("src_fds");
+  if (it == msg.end() || (it->is_array() && it->empty())) {
+    return BrokerSrcFds::kAbsent;
+  }
+  if (!it->is_array() || it->size() > static_cast<size_t>(kBrokerMaxFds)) {
+    *why = "src_fds must be an array of at most " + std::to_string(kBrokerMaxFds) +
+           " descriptors";
+    return BrokerSrcFds::kInvalid;
+  }
+  for (const auto& v : *it) {
+    if (!v.is_number_integer() || v.get<long long>() < 0 || v.get<long long>() > 0x7fffffff) {
+      *why = "src_fds entries must be descriptor numbers";
+      out->clear();
+      return BrokerSrcFds::kInvalid;
+    }
+    out->push_back(static_cast<int>(v.get<long long>()));
+  }
+  return BrokerSrcFds::kPresent;
 }
 
 }  // namespace ps5browser::spawn

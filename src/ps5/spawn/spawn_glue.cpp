@@ -18,6 +18,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <fcntl.h>
@@ -38,7 +39,12 @@ using namespace ps5browser::spawn;
 using nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
-constexpr int kBrokerStartTimeoutMs = 10000;
+constexpr int kBrokerStartTimeoutMs = 5000;
+// After this many consecutive spawns without a broker, wait kBackoffMs before
+// the next attempt: WebKit relaunches a failed process right away, forever,
+// and every attempt asks websrv to start another broker.
+constexpr int kBackoffAfterFailures = 2;
+constexpr int kBackoffMs = 30000;
 constexpr int kWebsrvTimeoutMs = 30000;  // websrv reads the ELF before it answers
 constexpr int kSpawnTimeoutMs = 60000;
 constexpr int kTerminateTimeoutMs = 5000;
@@ -56,7 +62,18 @@ std::string env_or(const char* name, const char* fallback) {
 
 const char* getenv_const(const char* name) { return std::getenv(name); }
 
-std::string socket_path() { return env_or("PS5BROWSER_SPAWN_SOCK", kBrokerDefaultSocket); }
+std::vector<BrokerEndpoint> endpoints() {
+  return broker_endpoints(std::getenv("PS5BROWSER_SPAWN_SOCK"),
+                          std::getenv("PS5BROWSER_SPAWN_PORT"));
+}
+
+std::string describe(const std::vector<BrokerEndpoint>& eps) {
+  std::string out;
+  for (const auto& ep : eps) {
+    out += (out.empty() ? "" : ", ") + ep.describe();
+  }
+  return out;
+}
 
 bool direct_mode() {
   static const bool direct = [] {
@@ -92,6 +109,8 @@ void on_child_exit(int pid, int status) {
 std::mutex g_mu;  // serialises spawns and terminates
 std::unique_ptr<BrokerClient> g_client;
 std::set<int> g_direct_pids;  // children of a PS5BROWSER_SPAWN_FALLBACK=direct spawn
+int g_broker_failures = 0;    // consecutive spawns that found no broker
+Clock::time_point g_backoff_until{};
 
 std::string dir_of(const std::string& path) {
   const size_t slash = path.rfind('/');
@@ -104,9 +123,15 @@ bool start_broker_via_websrv(const std::string& self_path) {
   // argv[0] (also the process name) is the role; --role= and
   // PS5BROWSER_ROLE say the same in case a loader rewrites argv[0].
   const std::string args = "spawn-broker --role=spawn-broker";
-  const std::string env = "PS5BROWSER_ROLE=spawn-broker PS5BROWSER_SPAWN_SOCK=" +
-                          websrv_escape_token(socket_path()) +
-                          " PS5BROWSER_SELF_PATH=" + websrv_escape_token(self_path);
+  // The broker resolves the same endpoints as we do: forward the overrides.
+  std::string env = "PS5BROWSER_ROLE=spawn-broker";
+  const char* sock = std::getenv("PS5BROWSER_SPAWN_SOCK");
+  if (sock && sock[0]) {
+    env += " PS5BROWSER_SPAWN_SOCK=" + websrv_escape_token(sock);
+  }
+  env += " PS5BROWSER_SPAWN_PORT=" +
+         std::to_string(broker_tcp_port(std::getenv("PS5BROWSER_SPAWN_PORT")));
+  env += " PS5BROWSER_SELF_PATH=" + websrv_escape_token(self_path);
   const std::string target =
       websrv_broker_target(self_path, dir_of(self_path), args, env);
   const auto t0 = Clock::now();
@@ -127,26 +152,31 @@ bool ensure_broker(const std::string& self_path, bool may_start) {
   if (g_client && g_client->connected()) {
     return true;
   }
+  const std::vector<BrokerEndpoint> eps = endpoints();
   if (!g_client) {
-    g_client = std::make_unique<BrokerClient>(socket_path(), on_child_exit);
+    g_client = std::make_unique<BrokerClient>(eps, on_child_exit);
   }
   const auto t0 = Clock::now();
-  ps5_log_printf("spawn: broker connecting to %s", socket_path().c_str());
-  if (!g_client->connect_once()) {
+  ps5_log_printf("spawn: broker connecting, trying %s", describe(eps).c_str());
+  std::string failures;
+  if (!g_client->connect_once(&failures)) {
     if (!may_start) {
-      ps5_log_printf("spawn: broker not reachable: %s", std::strerror(errno));
+      ps5_log_printf("spawn: broker not reachable: %s", failures.c_str());
       return false;
     }
-    ps5_log_printf("spawn: broker not running (%s), asking websrv", std::strerror(errno));
+    ps5_log_printf("spawn: broker not running (%s), asking websrv", failures.c_str());
     if (!start_broker_via_websrv(self_path)) {
       return false;
     }
-    if (!g_client->connect_wait(kBrokerStartTimeoutMs)) {
+    if (!g_client->connect_wait(kBrokerStartTimeoutMs, 100, &failures)) {
       ps5_log_printf("spawn: broker did not come up within %dms (%s)", kBrokerStartTimeoutMs,
-                     std::strerror(errno));
+                     failures.c_str());
       return false;
     }
   }
+  const BrokerEndpoint ep = g_client->endpoint();
+  ps5_log_printf("spawn: broker connected via %s%s", ep.describe().c_str(),
+                 ep.tcp ? " (descriptors passed by rdup from this pid)" : "");
   json reply;
   if (!g_client->request(json{{"op", "ping"}}, nullptr, 0, &reply, kPingTimeoutMs) ||
       !broker_get_bool(reply, "ok", false)) {
@@ -156,6 +186,40 @@ bool ensure_broker(const std::string& self_path, bool may_start) {
   ps5_log_printf("spawn: broker ready pid=%lld in %lldms", broker_get_int(reply, "pid", -1),
                  ms_since(t0));
   return true;
+}
+
+// Waits out a back-off set by earlier failures, without holding g_mu (a
+// terminate must not wait for it).
+void wait_for_backoff(const char* role) {
+  long long left;
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    left = std::chrono::duration_cast<std::chrono::milliseconds>(g_backoff_until -
+                                                                 Clock::now())
+               .count();
+  }
+  if (left > 0) {
+    ps5_log_printf("spawn: role=%s waiting %lldms (broker back-off)", role, left);
+    std::this_thread::sleep_for(std::chrono::milliseconds(left));
+  }
+}
+
+// Caller holds g_mu.
+void note_broker_result(bool ok) {
+  if (ok) {
+    if (g_broker_failures >= kBackoffAfterFailures) {
+      ps5_log_line("spawn: broker available again, back-off cleared");
+    }
+    g_broker_failures = 0;
+    return;
+  }
+  g_broker_failures++;
+  if (g_broker_failures >= kBackoffAfterFailures) {
+    g_backoff_until = Clock::now() + std::chrono::milliseconds(kBackoffMs);
+    ps5_log_printf("spawn: no broker %d times in a row, backing off %dms before the next "
+                   "attempt",
+                   g_broker_failures, kBackoffMs);
+  }
 }
 
 int spawn_via_broker(const char* const* argv, const int* fds, int nfds) {
@@ -170,7 +234,7 @@ int spawn_via_broker(const char* const* argv, const int* fds, int nfds) {
     return -1;
   }
 
-  json msg{{"op", "spawn"}, {"elf", path}, {"nfds", nfds}};
+  json msg{{"op", "spawn"}, {"elf", path}};
   json jargv = json::array();
   for (int i = 0; argv[i]; i++) {
     jargv.push_back(argv[i]);
@@ -182,14 +246,39 @@ int spawn_via_broker(const char* const* argv, const int* fds, int nfds) {
   msg["argv"] = std::move(jargv);
   msg["env"] = std::move(jenv);
 
+  // With the direct fallback a missing broker costs no websrv round-trips
+  // after the first, so there is nothing to back off from.
+  const bool fallback_direct = env_or("PS5BROWSER_SPAWN_FALLBACK", "") == "direct";
+  if (!fallback_direct) {
+    wait_for_backoff(role);
+  }
   std::lock_guard<std::mutex> lock(g_mu);
-  if (ensure_broker(path, /*may_start=*/true)) {
+  const bool have_broker = ensure_broker(path, /*may_start=*/true);
+  note_broker_result(have_broker || fallback_direct);
+  if (have_broker) {
+    // Over AF_UNIX the descriptors travel as SCM_RIGHTS. Over TCP they
+    // cannot: the frame names them and the broker rdups them out of this
+    // process. Either way the caller keeps its copies open until request()
+    // returns (the WebKit launcher closes the client end only after
+    // ps5_spawn_self() returns), so they still exist when the broker injects
+    // them into the child.
+    const bool tcp = g_client->endpoint().tcp;
+    int send_n = nfds;
+    if (tcp) {
+      msg["nfds"] = 0;
+      msg["src_pid"] = static_cast<int>(getpid());
+      msg["src_fds"] = json(std::vector<int>(fds, fds + nfds));
+      send_n = 0;
+    } else {
+      msg["nfds"] = nfds;
+    }
     const auto t0 = Clock::now();
     json reply;
-    if (g_client->request(msg, fds, nfds, &reply, kSpawnTimeoutMs)) {
+    if (g_client->request(msg, fds, send_n, &reply, kSpawnTimeoutMs)) {
       if (broker_get_bool(reply, "ok", false)) {
         const int pid = static_cast<int>(broker_get_int(reply, "pid", -1));
-        ps5_log_printf("spawn: role=%s pid=%d via broker in %lldms", role, pid, ms_since(t0));
+        ps5_log_printf("spawn: role=%s pid=%d via broker (%s) in %lldms", role, pid,
+                       tcp ? "tcp, rdup" : "unix, SCM_RIGHTS", ms_since(t0));
         return pid;
       }
       const int err = static_cast<int>(broker_get_int(reply, "errno", 0));
@@ -202,7 +291,7 @@ int spawn_via_broker(const char* const* argv, const int* fds, int nfds) {
     ps5_log_printf("spawn: role=%s: broker connection lost (%s)", role, std::strerror(errno));
   }
 
-  if (env_or("PS5BROWSER_SPAWN_FALLBACK", "") == "direct") {
+  if (fallback_direct) {
     ps5_log_printf("spawn: role=%s: no broker, PS5BROWSER_SPAWN_FALLBACK=direct, "
                    "spawning in-process",
                    role);
@@ -264,7 +353,7 @@ BrokerSpawnResult elfldr_hook(const BrokerSpawnRequest& req) {
   ps5_spawn_failure failure{};
   BrokerSpawnResult res;
   res.pid = ps5_spawn_elfldr(req.elf.c_str(), argv.data(), envp.data(), req.fds.data(),
-                             static_cast<int>(req.fds.size()), 0, &failure);
+                             static_cast<int>(req.fds.size()), req.src_pid, &failure);
   if (res.pid <= 0) {
     res.pid = -1;
     res.stage = failure.stage ? failure.stage : "unknown stage";
@@ -312,8 +401,11 @@ extern "C" int ps5_spawn_broker_main(void) {
   sigaction(SIGTERM, &sa, nullptr);
 
   BrokerServerOptions options;
-  options.socket_path = socket_path();
-  mkdir(dir_of(options.socket_path).c_str(), 0777);
+  options.socket_paths = broker_socket_paths(std::getenv("PS5BROWSER_SPAWN_SOCK"));
+  for (const auto& path : options.socket_paths) {
+    mkdir(dir_of(path).c_str(), 0777);  // best-effort; bind reports the real error
+  }
+  options.tcp_port = broker_tcp_port(std::getenv("PS5BROWSER_SPAWN_PORT"));
   broker_set_spawn_hook(elfldr_hook);
   return broker_serve(options, &g_stop);
 }

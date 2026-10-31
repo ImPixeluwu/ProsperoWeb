@@ -18,7 +18,11 @@ struct BrokerSpawnRequest {
   std::string elf;                // ELF to run (mapped once per path)
   std::vector<std::string> argv;  // argv[0] is the role name
   std::vector<std::string> env;   // the child's whole environment
-  std::vector<int> fds;           // broker-side descriptors -> child fd 3+i
+  std::vector<int> fds;           // descriptors of src_pid -> child fd 3+i
+  // Process that owns fds: 0 for the broker itself (they arrived as
+  // SCM_RIGHTS over AF_UNIX), the client's pid when the client named them
+  // over TCP ("src_pid"/"src_fds"; the backend copies them with rdup).
+  int src_pid = 0;
 };
 
 struct BrokerSpawnResult {
@@ -35,7 +39,13 @@ using BrokerSpawnHook = BrokerSpawnResult (*)(const BrokerSpawnRequest& request)
 void broker_set_spawn_hook(BrokerSpawnHook hook);
 
 struct BrokerServerOptions {
-  std::string socket_path;
+  // AF_UNIX paths tried in order; the first that binds is used.
+  std::vector<std::string> socket_paths;
+  // Loopback TCP port, listened on in addition to the AF_UNIX socket (and
+  // alone when no path binds). 0 picks an ephemeral port, -1 disables TCP.
+  int tcp_port = -1;
+  // If set, receives the bound TCP port (or -1) before clients are served.
+  std::atomic<int>* bound_tcp_port = nullptr;
   // Exit once no client is connected and no child is alive for this long.
   int idle_ms = 10000;
   // With no client for this long, kill the remaining children and exit.
@@ -45,7 +55,7 @@ struct BrokerServerOptions {
 };
 
 // Runs the broker until it is idle, *stop becomes true (may be null), or
-// a fatal socket error. Returns a process exit code (0 on a clean exit).
+// a fatal socket error (including: nothing could be listened on). Returns a process exit code (0 on a clean exit).
 int broker_serve(const BrokerServerOptions& options, const std::atomic<bool>* stop);
 
 }  // namespace ps5browser::spawn

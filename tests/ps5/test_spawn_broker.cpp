@@ -267,7 +267,8 @@ TEST_SUITE("broker_e2e") {
   TEST_CASE("spawn, exit notification, terminate, stop") {
     TempDir dir;
     BrokerServerOptions opt;
-    opt.socket_path = dir.path + "/spawn.sock";
+    const std::string sock = dir.path + "/spawn.sock";
+    opt.socket_paths = {sock};
     opt.idle_ms = 60000;
     opt.reap_interval_ms = 20;
     broker_set_spawn_hook(fake_spawn);
@@ -277,10 +278,10 @@ TEST_SUITE("broker_e2e") {
     std::thread server([&] { server_rc = broker_serve(opt, &stop); });
 
     Exits exits;
-    BrokerClient client(opt.socket_path, [&](int pid, int status) { exits.add(pid, status); });
+    BrokerClient client(sock, [&](int pid, int status) { exits.add(pid, status); });
     REQUIRE(client.connect_wait(5000, 10));
     struct stat st {};
-    REQUIRE(stat(opt.socket_path.c_str(), &st) == 0);
+    REQUIRE(stat(sock.c_str(), &st) == 0);
     CHECK((st.st_mode & 0777) == 0666);
 
     json reply;
@@ -344,7 +345,7 @@ TEST_SUITE("broker_e2e") {
     stop.store(true);
     server.join();
     CHECK(server_rc == 0);
-    CHECK(stat(opt.socket_path.c_str(), &st) != 0);  // removed on exit
+    CHECK(stat(sock.c_str(), &st) != 0);  // removed on exit
     CHECK_FALSE(client.request(json{{"op", "ping"}}, nullptr, 0, &reply, 2000));
     broker_set_spawn_hook(nullptr);
   }
@@ -352,13 +353,14 @@ TEST_SUITE("broker_e2e") {
   TEST_CASE("the broker exits once idle with no client and no children") {
     TempDir dir;
     BrokerServerOptions opt;
-    opt.socket_path = dir.path + "/spawn.sock";
+    const std::string sock = dir.path + "/spawn.sock";
+    opt.socket_paths = {sock};
     opt.idle_ms = 300;
     broker_set_spawn_hook(fake_spawn);
 
     std::thread server([&] { CHECK(broker_serve(opt, nullptr) == 0); });
     {
-      BrokerClient client(opt.socket_path, nullptr);
+      BrokerClient client(sock, nullptr);
       REQUIRE(client.connect_wait(5000, 10));
       // Connected: the idle clock does not run.
       std::this_thread::sleep_for(std::chrono::milliseconds(600));
@@ -374,9 +376,10 @@ TEST_SUITE("broker_e2e") {
   TEST_CASE("a stale socket file is replaced") {
     TempDir dir;
     BrokerServerOptions opt;
-    opt.socket_path = dir.path + "/spawn.sock";
+    const std::string sock = dir.path + "/spawn.sock";
+    opt.socket_paths = {sock};
     opt.idle_ms = 100;
-    const int fd = open(opt.socket_path.c_str(), O_CREAT | O_WRONLY, 0600);
+    const int fd = open(sock.c_str(), O_CREAT | O_WRONLY, 0600);
     REQUIRE(fd >= 0);
     close(fd);
     CHECK(broker_serve(opt, nullptr) == 0);

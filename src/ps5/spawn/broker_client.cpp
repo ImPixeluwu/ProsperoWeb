@@ -10,6 +10,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/un.h>
@@ -21,8 +22,62 @@ namespace ps5browser::spawn {
 
 using nlohmann::json;
 
+namespace {
+
+// Connects to one endpoint; returns the socket or -1 (errno set).
+int connect_endpoint(const BrokerEndpoint& ep) {
+  if (ep.tcp) {
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(static_cast<uint16_t>(ep.port));
+    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+      return -1;
+    }
+    if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+      const int err = errno;
+      close(fd);
+      errno = err;
+      return -1;
+    }
+    const int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    return fd;
+  }
+  sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  if (ep.path.empty() || ep.path.size() >= sizeof(addr.sun_path)) {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+  std::memcpy(addr.sun_path, ep.path.c_str(), ep.path.size() + 1);
+  const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) {
+    return -1;
+  }
+  if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    const int err = errno;
+    close(fd);
+    errno = err;
+    return -1;
+  }
+  return fd;
+}
+
+std::vector<BrokerEndpoint> unix_only(std::string path) {
+  BrokerEndpoint ep;
+  ep.path = std::move(path);
+  return {ep};
+}
+
+}  // namespace
+
+BrokerClient::BrokerClient(std::vector<BrokerEndpoint> endpoints, ExitCallback on_exit)
+    : endpoints_(std::move(endpoints)), on_exit_(std::move(on_exit)) {}
+
 BrokerClient::BrokerClient(std::string socket_path, ExitCallback on_exit)
-    : path_(std::move(socket_path)), on_exit_(std::move(on_exit)) {}
+    : BrokerClient(unix_only(std::move(socket_path)), std::move(on_exit)) {}
 
 BrokerClient::~BrokerClient() { disconnect(); }
 
@@ -31,41 +86,47 @@ bool BrokerClient::connected() {
   return sock_ >= 0 && !dead_;
 }
 
-bool BrokerClient::connect_once() {
+BrokerEndpoint BrokerClient::endpoint() {
+  std::lock_guard<std::mutex> lock(mu_);
+  return endpoint_;
+}
+
+bool BrokerClient::connect_once(std::string* failures) {
   if (connected()) {
     return true;
   }
   disconnect();  // a dead connection: join its reader first
 
-  sockaddr_un addr{};
-  addr.sun_family = AF_UNIX;
-  if (path_.size() >= sizeof(addr.sun_path)) {
-    errno = ENAMETOOLONG;
-    return false;
+  if (failures) {
+    failures->clear();
   }
-  std::memcpy(addr.sun_path, path_.c_str(), path_.size() + 1);
-  const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0) {
-    return false;
+  int err = ENOENT;
+  for (const auto& ep : endpoints_) {
+    const int fd = connect_endpoint(ep);
+    if (fd < 0) {
+      err = errno;
+      if (failures) {
+        *failures += (failures->empty() ? "" : "; ") + ep.describe() + ": " +
+                     std::strerror(err);
+      }
+      continue;
+    }
+    std::lock_guard<std::mutex> lock(mu_);
+    sock_ = fd;
+    endpoint_ = ep;
+    dead_ = false;
+    replies_.clear();
+    reader_ = std::thread([this, fd] { reader_main(fd); });
+    return true;
   }
-  if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    const int err = errno;
-    close(fd);
-    errno = err;
-    return false;
-  }
-  std::lock_guard<std::mutex> lock(mu_);
-  sock_ = fd;
-  dead_ = false;
-  replies_.clear();
-  reader_ = std::thread([this, fd] { reader_main(fd); });
-  return true;
+  errno = err;
+  return false;
 }
 
-bool BrokerClient::connect_wait(int timeout_ms, int interval_ms) {
+bool BrokerClient::connect_wait(int timeout_ms, int interval_ms, std::string* failures) {
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
   for (;;) {
-    if (connect_once()) {
+    if (connect_once(failures)) {
       return true;
     }
     if (std::chrono::steady_clock::now() >= deadline) {

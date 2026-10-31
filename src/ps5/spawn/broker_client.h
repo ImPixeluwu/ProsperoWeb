@@ -10,8 +10,11 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <nlohmann/json.hpp>
+
+#include "broker_proto.h"
 
 namespace ps5browser::spawn {
 
@@ -20,16 +23,25 @@ class BrokerClient {
   // Called on the reader thread for every {"ev":"exited"} notification.
   using ExitCallback = std::function<void(int pid, int status)>;
 
+  // Tries the endpoints in order on every connection attempt.
+  BrokerClient(std::vector<BrokerEndpoint> endpoints, ExitCallback on_exit);
+  // A single AF_UNIX endpoint.
   BrokerClient(std::string socket_path, ExitCallback on_exit);
   ~BrokerClient();
   BrokerClient(const BrokerClient&) = delete;
   BrokerClient& operator=(const BrokerClient&) = delete;
 
-  // One connection attempt. Returns false (errno set) if nobody listens.
-  bool connect_once();
+  // One connection attempt per endpoint, in order. Returns false (errno of
+  // the last endpoint) if nobody listens; *failures (may be null) then
+  // lists every endpoint with its error.
+  bool connect_once(std::string* failures = nullptr);
   // Retries connect_once() until it succeeds or timeout_ms passes.
-  bool connect_wait(int timeout_ms, int interval_ms = 100);
+  bool connect_wait(int timeout_ms, int interval_ms = 100,
+                    std::string* failures = nullptr);
   bool connected();
+  // The endpoint of the current connection (meaningful while connected):
+  // over TCP descriptors cannot be attached, they are named (src_fds).
+  BrokerEndpoint endpoint();
   void disconnect();
 
   // Sends msg (with fds attached) and waits for its reply. Requests are
@@ -41,13 +53,14 @@ class BrokerClient {
  private:
   void reader_main(int sock);
 
-  const std::string path_;
+  const std::vector<BrokerEndpoint> endpoints_;
   const ExitCallback on_exit_;
 
   std::mutex request_mu_;  // one request in flight
   std::mutex mu_;          // guards the fields below
   std::condition_variable cv_;
   int sock_ = -1;
+  BrokerEndpoint endpoint_;
   bool dead_ = false;  // the reader saw EOF or an error
   std::deque<nlohmann::json> replies_;
   std::thread reader_;

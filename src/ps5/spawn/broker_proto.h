@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Wire format of the spawn broker (see README.md, "Spawn broker"): frames
-// over an AF_UNIX stream socket, each a 4-byte big-endian payload length
-// followed by a UTF-8 JSON object. Descriptors travel as SCM_RIGHTS
-// ancillary data attached to the frame that announces them ("nfds").
+// over a stream socket (AF_UNIX, or loopback TCP where the console refuses
+// to bind AF_UNIX sockets), each a 4-byte big-endian payload length followed
+// by a UTF-8 JSON object. Over AF_UNIX, descriptors travel as SCM_RIGHTS
+// ancillary data attached to the frame that announces them ("nfds"); over
+// TCP the frame names them instead ("src_pid", "src_fds") and the broker
+// copies them out of the sender with rdup.
 //
 // Platform-independent (POSIX sockets only): compiled for the PS5 and the
 // host, where tests/ps5 exercises it.
@@ -23,8 +26,34 @@ inline constexpr size_t kBrokerMaxFrame = 1u << 20;
 // Upper bound of descriptors attached to one frame.
 inline constexpr int kBrokerMaxFds = 8;
 
-// Default socket path; PS5BROWSER_SPAWN_SOCK overrides it.
-inline constexpr const char* kBrokerDefaultSocket = "/data/ps5browser/tmp/spawn.sock";
+// AF_UNIX socket paths tried after $PS5BROWSER_SPAWN_SOCK, in order.
+inline constexpr const char* kBrokerTmpSocket = "/tmp/ps5browser-spawn.sock";
+inline constexpr const char* kBrokerDataSocket = "/data/ps5browser/tmp/spawn.sock";
+
+// Loopback TCP port of the broker; PS5BROWSER_SPAWN_PORT overrides it.
+inline constexpr int kBrokerDefaultPort = 17771;
+
+// One place the broker listens on / the client connects to.
+struct BrokerEndpoint {
+  bool tcp = false;
+  std::string path;  // AF_UNIX
+  int port = 0;      // TCP on 127.0.0.1
+
+  // "unix /tmp/ps5browser-spawn.sock" or "tcp 127.0.0.1:17771".
+  std::string describe() const;
+};
+
+// The AF_UNIX paths in the order both sides try them: env_sock (the value
+// of PS5BROWSER_SPAWN_SOCK, may be null or empty), kBrokerTmpSocket,
+// kBrokerDataSocket; duplicates dropped.
+std::vector<std::string> broker_socket_paths(const char* env_sock);
+
+// The TCP port from env_port (PS5BROWSER_SPAWN_PORT, may be null);
+// kBrokerDefaultPort if unset or not a port number.
+int broker_tcp_port(const char* env_port);
+
+// The client's connection order: every AF_UNIX path, then TCP.
+std::vector<BrokerEndpoint> broker_endpoints(const char* env_sock, const char* env_port);
 
 // Returns the length-prefixed encoding of msg.
 std::string broker_encode_frame(const nlohmann::json& msg);
@@ -55,5 +84,15 @@ bool broker_get_bool(const nlohmann::json& msg, const char* key, bool fallback);
 // Array of strings; false if the key is missing or not an array of strings.
 bool broker_get_strings(const nlohmann::json& msg, const char* key,
                         std::vector<std::string>* out);
+
+// "src_fds" of a spawn frame sent over TCP: descriptor numbers in the
+// sender's process (named by "src_pid") that the broker copies with rdup.
+enum class BrokerSrcFds {
+  kAbsent,   // missing or empty: descriptors, if any, came as SCM_RIGHTS
+  kPresent,  // *out holds them
+  kInvalid,  // not an array of 0..INT_MAX numbers, or too many; *why says
+};
+BrokerSrcFds broker_get_src_fds(const nlohmann::json& msg, std::vector<int>* out,
+                                std::string* why);
 
 }  // namespace ps5browser::spawn

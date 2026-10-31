@@ -10,6 +10,9 @@
 #include <mutex>
 #include <thread>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -84,7 +87,9 @@ class Server {
   int run(const std::atomic<bool>* stop);
 
  private:
-  bool listen_socket();
+  bool listen_all();
+  bool listen_unix(const std::string& path);
+  bool listen_tcp(int port);
   void reaper_main();
   void send_to_client(const json& msg);
   void drop_client(const char* why);
@@ -95,7 +100,12 @@ class Server {
   void kill_all_children();
 
   BrokerServerOptions opt_;
-  int listen_fd_ = -1;
+  struct Listener {
+    int fd;
+    bool tcp;
+    std::string unix_path;  // removed on exit
+  };
+  std::vector<Listener> listeners_;
 
   std::mutex send_mu_;  // guards client_fd_ for writers (the reaper)
   int client_fd_ = -1;  // only the main thread changes it
@@ -108,36 +118,101 @@ class Server {
   bool reaper_stop_ = false;
 };
 
-bool Server::listen_socket() {
+bool Server::listen_unix(const std::string& path) {
   sockaddr_un addr{};
   addr.sun_family = AF_UNIX;
-  if (opt_.socket_path.empty() || opt_.socket_path.size() >= sizeof(addr.sun_path)) {
-    ps5_log_printf("broker: invalid socket path '%s'", opt_.socket_path.c_str());
+  if (path.empty() || path.size() >= sizeof(addr.sun_path)) {
+    ps5_log_printf("broker: invalid socket path '%s'", path.c_str());
     return false;
   }
-  std::memcpy(addr.sun_path, opt_.socket_path.c_str(), opt_.socket_path.size() + 1);
+  std::memcpy(addr.sun_path, path.c_str(), path.size() + 1);
 
   // A stale socket from a broker that died; a live one would have been
   // found by the client before it asked for a new broker.
-  if (unlink(opt_.socket_path.c_str()) == 0) {
-    ps5_log_printf("broker: removed stale %s", opt_.socket_path.c_str());
+  if (unlink(path.c_str()) == 0) {
+    ps5_log_printf("broker: removed stale %s", path.c_str());
   }
-  listen_fd_ = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (listen_fd_ < 0) {
-    ps5_log_printf("broker: socket: %s", std::strerror(errno));
+  const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) {
+    ps5_log_printf("broker: socket(AF_UNIX) for %s: errno %d (%s)", path.c_str(), errno,
+                   std::strerror(errno));
     return false;
   }
-  if (bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    ps5_log_printf("broker: bind %s: %s", opt_.socket_path.c_str(), std::strerror(errno));
+  if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    ps5_log_printf("broker: bind unix %s: errno %d (%s)", path.c_str(), errno,
+                   std::strerror(errno));
+    close(fd);
     return false;
   }
   // The UI runs as a big app with another identity; let it connect.
-  if (chmod(opt_.socket_path.c_str(), 0666) != 0) {
-    ps5_log_printf("broker: chmod 0666 %s: %s", opt_.socket_path.c_str(),
-                   std::strerror(errno));
+  if (chmod(path.c_str(), 0666) != 0) {
+    ps5_log_printf("broker: chmod 0666 %s: %s", path.c_str(), std::strerror(errno));
   }
-  if (listen(listen_fd_, 4) != 0) {
-    ps5_log_printf("broker: listen: %s", std::strerror(errno));
+  if (listen(fd, 4) != 0) {
+    ps5_log_printf("broker: listen unix %s: errno %d (%s)", path.c_str(), errno,
+                   std::strerror(errno));
+    close(fd);
+    unlink(path.c_str());
+    return false;
+  }
+  listeners_.push_back({fd, false, path});
+  ps5_log_printf("broker: listening on unix %s", path.c_str());
+  return true;
+}
+
+bool Server::listen_tcp(int port) {
+  const int fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) {
+    ps5_log_printf("broker: socket(AF_INET): errno %d (%s)", errno, std::strerror(errno));
+    return false;
+  }
+  const int one = 1;
+  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);  // never reachable off-console
+  addr.sin_port = htons(static_cast<uint16_t>(port));
+  if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    ps5_log_printf("broker: bind tcp 127.0.0.1:%d: errno %d (%s)", port, errno,
+                   std::strerror(errno));
+    close(fd);
+    return false;
+  }
+  if (listen(fd, 4) != 0) {
+    ps5_log_printf("broker: listen tcp 127.0.0.1:%d: errno %d (%s)", port, errno,
+                   std::strerror(errno));
+    close(fd);
+    return false;
+  }
+  socklen_t len = sizeof(addr);
+  if (getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) == 0) {
+    port = ntohs(addr.sin_port);
+  }
+  if (opt_.bound_tcp_port) {
+    opt_.bound_tcp_port->store(port);
+  }
+  listeners_.push_back({fd, true, ""});
+  ps5_log_printf("broker: listening on tcp 127.0.0.1:%d", port);
+  return true;
+}
+
+// The first AF_UNIX path that binds, plus loopback TCP. TCP is listened on
+// even when AF_UNIX works: the UI (a big app) may not see the broker's
+// filesystem namespace the same way, and then it falls back to TCP.
+bool Server::listen_all() {
+  for (const auto& path : opt_.socket_paths) {
+    if (listen_unix(path)) {
+      break;
+    }
+  }
+  if (opt_.tcp_port >= 0) {
+    listen_tcp(opt_.tcp_port);
+  }
+  if (opt_.bound_tcp_port && (listeners_.empty() || !listeners_.back().tcp)) {
+    opt_.bound_tcp_port->store(-1);
+  }
+  if (listeners_.empty()) {
+    ps5_log_line("broker: no AF_UNIX path and no TCP port could be listened on");
     return false;
   }
   return true;
@@ -209,7 +284,33 @@ json Server::do_spawn(const json& msg, std::vector<int>* fds) {
                        "nfds=" + std::to_string(nfds) + " but " +
                            std::to_string(fds->size()) + " descriptors arrived");
   }
-  req.fds = *fds;
+  std::vector<int> src_fds;
+  std::string why;
+  switch (broker_get_src_fds(msg, &src_fds, &why)) {
+    case BrokerSrcFds::kInvalid:
+      return error_reply("request", EINVAL, why);
+    case BrokerSrcFds::kAbsent:
+      req.fds = *fds;  // ours now: they came as SCM_RIGHTS
+      break;
+    case BrokerSrcFds::kPresent: {
+      if (!fds->empty()) {
+        return error_reply("request", EINVAL, "both SCM_RIGHTS descriptors and src_fds");
+      }
+      const long long src_pid = broker_get_int(msg, "src_pid", 0);
+      if (src_pid <= 0 || src_pid > 0x7fffffff) {
+        return error_reply("request", EINVAL, "src_fds needs a positive src_pid");
+      }
+      req.src_pid = static_cast<int>(src_pid);
+      req.fds = std::move(src_fds);
+      std::string list;
+      for (int fd : req.fds) {
+        list += (list.empty() ? "" : ",") + std::to_string(fd);
+      }
+      ps5_log_printf("broker: role=%s takes fds [%s] from pid %d (rdup)", req.argv[0].c_str(),
+                     list.c_str(), req.src_pid);
+      break;
+    }
+  }
 
   const BrokerSpawnHook hook = g_hook.load();
   if (!hook) {
@@ -304,14 +405,10 @@ void Server::kill_all_children() {
 }
 
 int Server::run(const std::atomic<bool>* stop) {
-  if (!listen_socket()) {
-    if (listen_fd_ >= 0) {
-      close(listen_fd_);
-    }
+  if (!listen_all()) {
     return 1;
   }
-  ps5_log_printf("broker: listening on %s, pid %d", opt_.socket_path.c_str(),
-                 static_cast<int>(getpid()));
+  ps5_log_printf("broker: ready, pid %d", static_cast<int>(getpid()));
 
   std::thread reaper([this] { reaper_main(); });
   auto alone_since = Clock::now();  // no client since then
@@ -337,8 +434,15 @@ int Server::run(const std::atomic<bool>* stop) {
       }
     }
 
-    pollfd pfd[2] = {{listen_fd_, POLLIN, 0}, {client_fd_, POLLIN, 0}};
-    const int n = poll(pfd, client_fd_ >= 0 ? 2 : 1, kPollMs);
+    std::vector<pollfd> pfd;
+    for (const auto& l : listeners_) {
+      pfd.push_back({l.fd, POLLIN, 0});
+    }
+    const size_t client_slot = pfd.size();
+    if (client_fd_ >= 0) {
+      pfd.push_back({client_fd_, POLLIN, 0});
+    }
+    const int n = poll(pfd.data(), pfd.size(), kPollMs);
     if (n < 0 && errno == EINTR) {
       continue;
     }
@@ -348,23 +452,37 @@ int Server::run(const std::atomic<bool>* stop) {
       break;
     }
 
-    if (pfd[0].revents & POLLIN) {
-      const int fd = accept(listen_fd_, nullptr, nullptr);
-      if (fd >= 0) {
-        if (client_fd_ >= 0) {
-          drop_client("replaced by a new connection");
-        }
-        std::lock_guard<std::mutex> lock(send_mu_);
-        client_fd_ = fd;
-        ps5_log_printf("broker: client connected, %zu children alive", child_count());
+    bool accepted = false;
+    for (size_t i = 0; i < listeners_.size() && !accepted; i++) {
+      if (!(pfd[i].revents & POLLIN)) {
         continue;
       }
-      if (errno != EINTR && errno != EAGAIN && errno != ECONNABORTED) {
-        ps5_log_printf("broker: accept: %s", std::strerror(errno));
+      const int fd = accept(listeners_[i].fd, nullptr, nullptr);
+      if (fd < 0) {
+        if (errno != EINTR && errno != EAGAIN && errno != ECONNABORTED) {
+          ps5_log_printf("broker: accept: %s", std::strerror(errno));
+        }
+        continue;
       }
+      if (listeners_[i].tcp) {
+        const int one = 1;
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+      }
+      if (client_fd_ >= 0) {
+        drop_client("replaced by a new connection");
+      }
+      std::lock_guard<std::mutex> lock(send_mu_);
+      client_fd_ = fd;
+      ps5_log_printf("broker: client connected over %s, %zu children alive",
+                     listeners_[i].tcp ? "tcp" : "unix", child_count());
+      accepted = true;
+    }
+    if (accepted) {
+      continue;
     }
 
-    if (client_fd_ >= 0 && (pfd[1].revents & (POLLIN | POLLHUP | POLLERR))) {
+    if (client_fd_ >= 0 && client_slot < pfd.size() &&
+        (pfd[client_slot].revents & (POLLIN | POLLHUP | POLLERR))) {
       json msg;
       std::vector<int> fds;
       const BrokerRecv r = broker_recv_frame(client_fd_, &msg, &fds);
@@ -385,8 +503,12 @@ int Server::run(const std::atomic<bool>* stop) {
   reaper.join();
   kill_all_children();
   drop_client("broker exiting");
-  close(listen_fd_);
-  unlink(opt_.socket_path.c_str());
+  for (const auto& l : listeners_) {
+    close(l.fd);
+    if (!l.unix_path.empty()) {
+      unlink(l.unix_path.c_str());
+    }
+  }
   ps5_log_printf("broker: exiting (%d)", rc);
   return rc;
 }
