@@ -317,6 +317,7 @@ endless relaunches hammer websrv.
 | `PS5BROWSER_AUDIO_AHEAD_MS` | `100` | audio the WebProcess keeps queued in the UI's server (20-900 ms): lower is less latency, higher survives longer stalls |
 | `PS5BROWSER_AUDIO_TEST` | unset | `1`: the UI plays a 1 s 440 Hz test tone at startup |
 | `PS5BROWSER_MEDIA_FRAME_THREADS` | unset | `1`: frame-threaded video decoding (default: slice threads only) |
+| `PS5BROWSER_PRESENT_THREAD` | unset | `0`: present on the main thread (blocks the run loop in the flip wait; for A/B comparisons, see [Performance](#performance)) |
 
 Any variable can also be set from `config.json` as `"env": {"NAME": "value"}`
 (applied in every process over the defaults above).
@@ -385,8 +386,10 @@ Phase 1 uses the non-accelerated raster path (no EGL/GLES at runtime):
   them.
 - The SDL2 PS5 window surface is `SDL_PIXELFORMAT_ABGR8888`
   (`SDL_ps5video.c`), so the compositor swaps R/B when copying the ARGB32
-  backbuffer into the window surface, then `SDL_UpdateWindowSurface` →
-  `PS5_Tilemap_Blit` → `sceVideoOutSubmitFlip`.
+  caches into the window surface (an AVX2 byte shuffle fused into the copy,
+  `src/ps5/display/compose.cpp`), then `SDL_UpdateWindowSurfaceRects` →
+  `PS5_Tilemap_Blit` → `sceVideoOutSubmitFlip` on the presenter thread
+  (`ps5_presenter.h`).
 - The content view is painted into a content-only cache at
   `ShellController::content_top()` (below the 96 px band unless the chrome is
   hidden), dirty rects only. The chrome view (a second `WKView` loading
@@ -395,6 +398,129 @@ Phase 1 uses the non-accelerated raster path (no EGL/GLES at runtime):
   source-over) over the page into the window surface, only inside
   `ShellController::chrome_rects()` (band, OSK panel, pointer, whole window
   under a menu/notice) of the last few frames; see `Ps5App::composite_and_present`.
+- Damage flows end to end as a small coalesced region
+  (`display::Region`, at most 8 rects): `setViewNeedsDisplay` rects →
+  `WKPagePaint` per rect → compose those rects (plus chrome rects that
+  appeared, moved or vanished, and chrome repaints inside chrome rects) →
+  present those rects. An idle page composes and presents nothing.
+
+## Performance
+
+### Where a video frame's time goes (non-accelerated path)
+
+```
+WebProcess main thread                          UI main thread                         presenter thread
+------------------------------------------      -----------------------------------    -------------------------------
+FFmpeg tick (8 ms) picks the frame, repaint()
+DrawingArea display: Skia rasters the dirty
+  rect (the video scaled into the element)
+  into a ShareableBitmap
+Messages::DrawingAreaProxy::Update  ------->    BackingStore::incorporateUpdate (copy)
+                                    <-------    DisplayDidRefresh (sent at once)
+                                                setViewNeedsDisplay -> request_frame()
+                                                frame(): WKPagePaint rect -> page cache
+                                                compose rect -> window surface (swap,
+                                                  chrome blend)                -------> SDL_UpdateWindowSurfaceRects:
+                                                                                        de-tile bounding box, flip,
+                                                                                        wait for the flip (<= 16.7 ms)
+                                                frame() requested again  <--------------
+```
+
+The media stats line (`media: stats: ... dropped (+N presenter)`) counts
+frames the WebProcess's FFmpeg tick skipped because the next one was already
+due: its main thread ran late, i.e. painting in the WebProcess (or anything
+else on that thread) took longer than a frame. Decoder drops are 0 on the
+console, so decoding keeps up; the presenter drops show the paint path is the
+limit.
+
+### The perf line (log.txt, UI)
+
+Every 5 s while anything is painted or presented, one line:
+
+```
+perf 5.0s: ui 61.2 fps | ndisp page 24.0/s 230kpx chrome 1.0/s 3kpx | paint page 24.0/s 0.41/1.20ms 230kpx chrome 1.0/s 0.05/0.05ms 3kpx | compose 24.0/s 0.20/0.50ms 233kpx | present 24.0/s 9.10/16.80ms 1.0 rects 233kpx waits 0
+```
+
+- `ui` — frame-loop iterations per second (paced by flips, the 16 ms tick
+  and `setViewNeedsDisplay`).
+- `ndisp page|chrome` — `setViewNeedsDisplay` calls per second and their
+  average area (kpx = 1000 pixels). For a playing video this is the
+  WebProcess update rate the UI sees: below the video frame rate means the
+  WebProcess paints slower than the video plays.
+- `paint page|chrome` — `WKPagePaint` calls per second, avg/max ms, average
+  area (copies from the UI backing store into our caches).
+- `compose` — rects composed into the window surface per second, avg/max ms,
+  average area.
+- `present` — `SDL_UpdateWindowSurfaceRects` per second, avg/max ms
+  **including the wait for the flip** (so up to ~16.7 ms is normal, it runs
+  on the presenter thread), rects per present, average area.
+- `waits` — frames whose damage had to wait because the previous flip was
+  still in flight (it is composed right after the flip).
+
+Reading it: `ndisp page` ≈ video fps and `present` ≈ the same → the UI keeps
+up. `ndisp page` well below the video fps with low `paint`/`compose` times →
+the WebProcess is the bottleneck (see the overlay plan below).
+
+### SDL present path facts
+
+- `SDL_ps5video.c` `PS5_CreateWindowFramebuffer` (l. 41-64) always creates an
+  ABGR8888 surface; the video-out buffers are registered with a fixed
+  attribute (`sceVideoOutSetBufferAttribute2(..., 0x8000000022000000, ...)`,
+  l. 160 / 236). There is no ARGB variant without patching SDL, and
+  `WKPagePaint` always writes N32 premultiplied (BGRA bytes,
+  `WKPagePrivatePlayStation.cpp:288`), hence the swap in the compose copy.
+- `PS5_UpdateWindowFramebuffer` (l. 67-109) honours the rects:
+  `PS5_Tilemap_Blit` (`SDL_ps5tilemap.c` l. 195-246) de-tiles only the
+  bounding box of the rects, unioned with the damage the other of the two
+  scanout buffers missed since its last flip (aligned to 4 px x 8 rows).
+  `SDL_UpdateWindowSurface` passes the full window, i.e. a full 1920x1080
+  de-tile (8 MB) per frame.
+- It then calls `sceVideoOutSubmitFlip` and blocks in `sceKernelWaitEqueue`
+  until the flip event (l. 101-106), flip rate 0 = 60 Hz: up to one vblank
+  per present. Before the presenter thread this wait ran on the main
+  thread, i.e. inside WebKit's run loop.
+
+### Next step: a video overlay path (not implemented)
+
+If the UI side keeps up but `ndisp page` stays below the video frame rate,
+the remaining cost is in the WebProcess: per frame, Skia draws the decoded
+image scaled into the element (CPU, bilinear), the DrawingArea copies it into
+the ShareableBitmap, the UI copies it into its backing store and again into
+our cache. An overlay removes all four:
+
+1. WebProcess (`MediaPlayerPrivateFFmpeg`, owned by the media work): when the
+   element is drawn with a translation/scale-only CTM, `paint()` clears its
+   rect (`CompositeOperator::Clear`: the hole) instead of drawing the frame,
+   and reports the device rect (`context.getCTM().mapRect(rect)` clipped to
+   the clip bounds; in the non-AC path that is view coordinates) plus the
+   frame id. Rotated or 3D-transformed videos, and canvas `drawImage` of the
+   video, keep the current painting path.
+2. Frames go through shared memory: a ring of 3 buffers per player, written
+   by `sws_scale` directly in the surface's ABGR8888 at the destination
+   size (no Skia scaling, no swap), announced over a loopback socket like
+   the audio forwarding (`PS5BROWSER_AUDIO_PORT` model: one connection per
+   element, a tiny header `{player, frame, rect, buffer index}`).
+   Needs a shared-memory primitive across the spawned processes
+   (`shm_open` or an fd passed via the broker's `pt_dup` path) — to verify
+   on the console first.
+3. UI: a video-overlay server keeps the latest frame per player and its rect.
+   The page cache keeps alpha where the hole is (clear the rect before
+   `WKPagePaint`, as for the chrome), and compose becomes video → page
+   (source-over, so captions and controls drawn over the video stay on top)
+   → chrome, only for damaged rects; a new frame damages its rect without
+   any WebKit paint. Hole-punch semantics match WebKit's
+   `MediaPlayerPrivateHolePunch` (AC-only, hence not reusable directly).
+4. Sync: the WebProcess still decides which frame is due (its A/V clock);
+   the UI shows the latest announced one at the next vblank. Hide the
+   overlay when the page reports no rect for a frame (scrolled out, element
+   removed, tab switched).
+
+Effort: about 4-6 working days — WebProcess side 2 days (paint hook, rect
+reporting, shm ring, sws to ABGR), UI side 1.5 days (server, compose order,
+damage), shared-memory plumbing and console verification 1-2 days. It needs
+a WebKit rebuild for step 1. Expected effect: the WebProcess per-frame cost
+drops to the YUV→RGB conversion (already done today), so presenter drops
+should go to ~0 for 1080p30 and the UI cost becomes one scaled blit per frame.
 
 ## Text input
 
