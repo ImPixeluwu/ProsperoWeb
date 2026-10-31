@@ -216,7 +216,8 @@ build_stub() {
 build_native_eboot() {
     [[ -f "${VIDEODEC2_STUB}" ]] || die "${VIDEODEC2_STUB} not found (built with prosperoweb_native)"
     log "checking ${NATIVE_ELF}"
-    python3 -I "${ROOT}/scripts/ps5/native/check-eboot.py" "${LLVM_BIN}" "${NATIVE_ELF}" \
+    python3 -I "${ROOT}/scripts/ps5/native/check-eboot.py" --imports-out "${WORK}/imports.txt" \
+        "${LLVM_BIN}" "${NATIVE_ELF}" \
         "${SDK}/target/lib" "${VIDEODEC2_STUB}" | sed 's/^/[native]   /'
     [[ ${PIPESTATUS[0]} -eq 0 ]] || die "native ELF check failed"
     make_eboot "${NATIVE_ELF}" "${APP}/eboot.bin" "${VIDEODEC2_STUB}" \
@@ -244,6 +245,8 @@ fi
 if [[ "${STUB_USED}" == 0 ]]; then
     [[ -f "${PAYLOAD_ELF}" ]] || die "${PAYLOAD_ELF} not found (run scripts/ps5/package.sh)"
     cp -- "${PAYLOAD_ELF}" "${APP}/prosperoweb.elf"
+    # The import slots by offset: the start-up code names unresolved ones.
+    cp -- "${WORK}/imports.txt" "${APP}/imports.txt"
     log "prosperoweb.elf: the payload for the broker and children ($(stat -c %s "${APP}/prosperoweb.elf") bytes)"
 fi
 
