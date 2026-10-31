@@ -410,6 +410,11 @@ void HostApp::run_next_input() {
     std::fprintf(stderr, "ps5browser-host: input %s\n", name.c_str());
     shell_->on_button(*b, true);
     input_release_ = *b;
+  } else if (int x = 0, y = 0; std::sscanf(name.c_str(), "pointer:%dx%d", &x, &y) == 2) {
+    // Places the pointer (window coordinates) for a following "cross", e.g.
+    // to press a chrome button; the shell treats it like a mouse move.
+    std::fprintf(stderr, "ps5browser-host: input %s\n", name.c_str());
+    shell_->on_mouse_move(static_cast<float>(x), static_cast<float>(y));
   } else if (name != "wait") {
     std::fprintf(stderr, "ps5browser-host: unknown input '%s'\n", name.c_str());
   }

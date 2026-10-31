@@ -25,7 +25,8 @@ void usage(const char* argv0) {
       "  --chrome-dir DIR      directory with chrome.html\n"
       "  --input LIST          press gamepad buttons after start, comma separated\n"
       "                        (cross,circle,square,triangle,l1,r1,l2,r2,l3,r3,up,down,\n"
-      "                        left,right,options,share,touchpad,wait)\n"
+      "                        left,right,options,share,touchpad,wait, or pointer:XxY\n"
+      "                        to place the pointer in window coordinates)\n"
       "  --input-delay-ms N    delay before the first --input button (default 1500)\n"
       "  --input-step-ms N     delay between --input buttons (default 250)\n",
       argv0);
