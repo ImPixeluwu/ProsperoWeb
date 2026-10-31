@@ -315,6 +315,8 @@ void Ps5App::frame() {
   }
   pump_sdl_events();
   handle_axis_motion();
+  // Page and chrome script messages (see WkWebView::poll_all()).
+  WkWebView::poll_all();
   controller_->tick(dt);
   composite_and_present();
 

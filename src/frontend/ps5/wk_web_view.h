@@ -11,6 +11,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -56,7 +58,9 @@ class WkWebView {
     std::function<void(const std::string& title)> title_changed;
     std::function<void(bool can_back, bool can_forward)> nav_state_changed;
     std::function<void(const std::string& url)> create_new_page;
-    // Body of a window.webkit.messageHandlers.<name>.postMessage(), as JSON.
+    // Body of a window.webkit.messageHandlers.<name>.postMessage(), as JSON
+    // (a string body is passed as is). Delivered natively when WebKit has
+    // user message handlers, otherwise through the bridge (poll_all()).
     std::function<void(const std::string& json)> script_message;
   };
 
@@ -102,6 +106,12 @@ class WkWebView {
            const std::string& text);
 
   void run_javascript(const std::string& js);
+  // Runs body as an async function in the main frame, without a user
+  // gesture (`return` a value). done receives the result as a string (a
+  // non-string result serialised as JSON), or nullopt if the script failed
+  // or the page has no process. done is not called once the view is gone.
+  using EvaluateDone = std::function<void(std::optional<std::string> result)>;
+  void evaluate(const std::string& body, EvaluateDone done);
   void set_user_agent(const std::string& user_agent);
   void request_exit_fullscreen();
 
@@ -113,6 +123,20 @@ class WkWebView {
   // needs_display rect since the last call.
   DirtyRect take_dirty();
 
+  // Script-message bridge. The PlayStation WebKit port builds without
+  // ENABLE_USER_MESSAGE_HANDLERS, so window.webkit.messageHandlers does not
+  // exist there. Every view injects a document-start shim that provides
+  // window.webkit.messageHandlers.<name>.postMessage() and queues the bodies
+  // (subframes forward theirs to the top frame); poll_all() drains the
+  // queues through evaluate() and delivers them to script_message. When
+  // native handlers do exist, the shim stands aside and polling stops after
+  // the first native message.
+  static void poll_all();
+  // Marks the view as having started a navigation (polling starts then).
+  void note_navigation() { navigated_ = true; }
+  // Called by the native handler trampoline.
+  void note_native_message();
+
  private:
   // C-API trampolines (clientInfo == this).
   static void s_needs_display(WKViewRef, WKRect, const void*);
@@ -121,6 +145,8 @@ class WkWebView {
   static void s_began_enter_fullscreen(WKViewRef, WKRect, WKRect, const void*);
   static void s_began_exit_fullscreen(WKViewRef, WKRect, WKRect, const void*);
   void notify_fullscreen_exited(const char* how);
+  void poll_script_messages(std::uint64_t now_ms);
+  void deliver_bridged(const std::string& batch);
 
   Callbacks cb_;
   WKViewRef view_ = nullptr;
@@ -135,6 +161,15 @@ class WkWebView {
   std::string name_;
   bool needs_display_logged_ = false;
   bool paint_logged_ = false;
+
+  // Expires with the view: pending evaluate() completions check it.
+  std::shared_ptr<char> alive_ = std::make_shared<char>(0);
+  bool navigated_ = false;
+  bool native_messages_ = false;
+  bool bridge_logged_ = false;
+  bool poll_in_flight_ = false;
+  std::uint64_t poll_started_ms_ = 0;
+  std::uint64_t last_poll_ms_ = 0;
 };
 
 }  // namespace ps5browser::frontend

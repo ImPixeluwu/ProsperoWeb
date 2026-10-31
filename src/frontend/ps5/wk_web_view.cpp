@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "wk_web_view.h"
 
+#include <algorithm>
+#include <chrono>
+
 #include <nlohmann/json.hpp>
 
 #include <WebKit/WKArray.h>
@@ -40,6 +43,86 @@ namespace {
 WkWebView* self_of(const void* ci) {
   return const_cast<WkWebView*>(static_cast<const WkWebView*>(ci));
 }
+
+// Every live view, for WkWebView::poll_all().
+std::vector<WkWebView*>& all_views() {
+  static std::vector<WkWebView*> views;
+  return views;
+}
+
+std::uint64_t now_ms() {
+  return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+// How often each view's bridge queue is drained, and when a drain that never
+// completed (a crashed WebProcess) stops blocking the next one.
+constexpr std::uint64_t kBridgePollMs = 40;
+constexpr std::uint64_t kBridgePollTimeoutMs = 3000;
+// Name of the top frame's drain function (see bridge_script()).
+constexpr const char* kBridgeDrain = "__ps5browserBridge";
+
+// The document-start shim behind WkWebView::poll_all(). JS builtins are
+// captured before page scripts run, so a page cannot break the queue by
+// replacing them. String bodies are queued as is, anything else as JSON,
+// which is what the native handler hands script_message as well.
+std::string bridge_script(const std::string& handler_name) {
+  return std::string(R"JS((function (name) {
+  'use strict';
+  var w = window;
+  try {
+    if (w.webkit && w.webkit.messageHandlers && w.webkit.messageHandlers[name]) return;
+  } catch (e) {
+    return;
+  }
+  var stringify = JSON.stringify;
+  var resolve = Promise.resolve.bind(Promise);
+  var defineProperty = Object.defineProperty;
+  var freeze = Object.freeze;
+  var DRAIN = ')JS") + kBridgeDrain + R"JS(';
+  var isTop = w === w.top;
+  var queue = [];
+  function enqueue(text) {
+    if (queue.length >= 1024) return;  // nobody drains: drop, do not grow
+    queue[queue.length] = text;
+  }
+  function postMessage(body) {
+    var text = typeof body === 'string' ? body : stringify(body);
+    if (typeof text !== 'string') return resolve();
+    if (isTop) {
+      enqueue(text);
+    } else {
+      try { w.top.postMessage({ __ps5browserBridge: name, body: text }, '*'); } catch (e) {}
+    }
+    return resolve();
+  }
+  var handlers = {};
+  handlers[name] = freeze({ postMessage: postMessage });
+  try {
+    defineProperty(w, 'webkit', { value: freeze({ messageHandlers: freeze(handlers) }) });
+  } catch (e) {
+    return;
+  }
+  if (!isTop) return;
+  w.addEventListener('message', function (ev) {
+    var d = ev.data;
+    if (d && typeof d === 'object' && d.__ps5browserBridge === name &&
+        typeof d.body === 'string') {
+      ev.stopImmediatePropagation();
+      enqueue(d.body);
+    }
+  }, true);
+  defineProperty(w, DRAIN, {
+    value: function () {
+      if (!queue.length) return '';
+      var out = stringify(queue);
+      queue = [];
+      return out;
+    }
+  });
+})(')JS" + handler_name + "');\n";
+}
+
 
 // Converts a WKTypeRef (produced by WKScriptMessageGetBody) into JSON.
 nlohmann::json wk_value_to_json(WKTypeRef value) {
@@ -81,9 +164,31 @@ nlohmann::json wk_value_to_json(WKTypeRef value) {
   return nullptr;
 }
 
+struct EvaluateRequest {
+  std::weak_ptr<char> alive;
+  WkWebView::EvaluateDone done;
+};
+
+void evaluate_finished(WKTypeRef result, WKErrorRef error, void* context) {
+  std::unique_ptr<EvaluateRequest> req(static_cast<EvaluateRequest*>(context));
+  if (req->alive.expired() || !req->done) {
+    return;
+  }
+  std::optional<std::string> out;
+  if (result && !error) {
+    if (WKGetTypeID(result) == WKStringGetTypeID()) {
+      out = to_std_string(static_cast<WKStringRef>(result));
+    } else {
+      out = wk_value_to_json(result).dump();
+    }
+  }
+  req->done(std::move(out));
+}
+
 // --- navigation client ----------------------------------------------------
 
 void nav_did_start(WKPageRef, WKNavigationRef, WKTypeRef, const void* ci) {
+  self_of(ci)->note_navigation();
   auto& cb = self_of(ci)->callbacks();
   if (cb.load_started) {
     cb.load_started();
@@ -174,6 +279,7 @@ WKPageRef ui_create_new_page(WKPageRef, WKPageConfigurationRef,
 
 void script_message(WKScriptMessageRef message, WKCompletionListenerRef reply,
                      const void* ci) {
+  self_of(ci)->note_native_message();
   auto& cb = self_of(ci)->callbacks();
   if (cb.script_message && message) {
     // A string body is passed through as is (it is expected to hold JSON
@@ -265,7 +371,11 @@ WkWebView::WkWebView(WKContextRef context, WKWebsiteDataStoreRef data_store,
                      bool fullscreen_enabled, Callbacks callbacks)
     : cb_(std::move(callbacks)), name_(message_handler_name) {
   content_controller_ = WKUserContentControllerCreate();
-  for (const auto& src : user_scripts) {
+  std::vector<std::string> scripts;
+  scripts.reserve(user_scripts.size() + 1);
+  scripts.push_back(bridge_script(message_handler_name));  // before any user of it
+  scripts.insert(scripts.end(), user_scripts.begin(), user_scripts.end());
+  for (const auto& src : scripts) {
     auto s = make_wk_string(src);
     WKUserScriptRef script = WKUserScriptCreateWithSource(
         s.get(), kWKInjectAtDocumentStart, /*forMainFrameOnly=*/false);
@@ -332,9 +442,13 @@ WkWebView::WkWebView(WKContextRef context, WKWebsiteDataStoreRef data_store,
   ui_client.base.clientInfo = this;
   ui_client.createNewPage = &ui_create_new_page;
   WKPageSetPageUIClient(page_, &ui_client.base);
+
+  all_views().push_back(this);
 }
 
 WkWebView::~WkWebView() {
+  auto& views = all_views();
+  views.erase(std::remove(views.begin(), views.end(), this), views.end());
   // The view owns the page; release the pieces we created.
   if (view_) {
     WKRelease(view_);
@@ -350,6 +464,7 @@ WkWebView::~WkWebView() {
 // --- navigation / geometry --------------------------------------------------
 
 void WkWebView::load_url(const std::string& url) {
+  navigated_ = true;
   WKURLRef u = WKURLCreateWithUTF8CString(url.c_str());
   WKPageLoadURL(page_, u);
   WKRelease(u);
@@ -412,6 +527,72 @@ void WkWebView::key(std::uint32_t keysym, std::uint32_t wk_modifiers,
 void WkWebView::run_javascript(const std::string& js) {
   auto s = make_wk_string(js);
   WKPageEvaluateJavaScriptInMainFrame(page_, s.get(), nullptr, nullptr);
+}
+
+void WkWebView::evaluate(const std::string& body, EvaluateDone done) {
+  auto s = make_wk_string(body);
+  auto* req = new EvaluateRequest{alive_, std::move(done)};
+  WKPageCallAsyncJavaScriptWithoutUserGesture(page_, s.get(), nullptr, nullptr, req,
+                                              &evaluate_finished);
+}
+
+// --- script-message bridge --------------------------------------------------
+
+void WkWebView::poll_all() {
+  const std::uint64_t now = now_ms();
+  // Delivery happens in evaluate() completions, never inside this loop, so
+  // no view can go away while it runs.
+  for (WkWebView* view : all_views()) {
+    view->poll_script_messages(now);
+  }
+}
+
+void WkWebView::note_native_message() {
+  if (!native_messages_) {
+    native_messages_ = true;
+    log_printf("view %s: native script messages, bridge polling stops", name_.c_str());
+  }
+}
+
+void WkWebView::poll_script_messages(std::uint64_t now) {
+  if (native_messages_ || !navigated_ || now - last_poll_ms_ < kBridgePollMs) {
+    return;
+  }
+  if (poll_in_flight_ && now - poll_started_ms_ < kBridgePollTimeoutMs) {
+    return;
+  }
+  last_poll_ms_ = now;
+  poll_started_ms_ = now;
+  poll_in_flight_ = true;
+  evaluate(std::string("return typeof window.") + kBridgeDrain + " === 'function' ? window." +
+               kBridgeDrain + "() : '';",
+           [this](std::optional<std::string> batch) {
+             poll_in_flight_ = false;
+             if (batch && !batch->empty()) {
+               deliver_bridged(*batch);
+             }
+           });
+}
+
+void WkWebView::deliver_bridged(const std::string& batch) {
+  const auto items = nlohmann::json::parse(batch, nullptr, /*allow_exceptions=*/false);
+  if (!items.is_array()) {
+    return;
+  }
+  if (!bridge_logged_) {
+    bridge_logged_ = true;
+    log_printf("view %s: script messages arrive through the bridge (%zu queued)",
+               name_.c_str(), items.size());
+  }
+  const std::weak_ptr<char> alive = alive_;
+  for (const auto& item : items) {
+    if (alive.expired()) {
+      return;  // a message closed this view
+    }
+    if (item.is_string() && cb_.script_message) {
+      cb_.script_message(item.get<std::string>());
+    }
+  }
 }
 
 void WkWebView::set_user_agent(const std::string& user_agent) {

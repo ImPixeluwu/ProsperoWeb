@@ -12,8 +12,6 @@ namespace ps5browser::frontend {
 
 namespace {
 
-constexpr int kClicksToLog = 8;
-
 // Shown when chrome.html is missing or fails to load: the active tab's title
 // and URL in the band, a pointer ring, and a hint to reinstall the chrome.
 // Gamepad shortcuts keep working; the controls of the real chrome do not.
@@ -65,13 +63,10 @@ Ps5ChromeUi::Ps5ChromeUi(WKContextRef context, WKWebsiteDataStoreRef data_store,
     }
     const std::string type = doc.is_object() ? doc.value("type", std::string()) : std::string();
     if (type == "click_trace") {
-      // chrome.js reports what a click activated; log the first few.
-      if (clicks_logged_ < kClicksToLog) {
-        ++clicks_logged_;
-        log_printf("chrome: click at %d,%d -> %s (%s)", doc.value("x", -1), doc.value("y", -1),
-                   doc.value("handler", std::string("?")).c_str(),
-                   doc.value("target", std::string("?")).c_str());
-      }
+      // chrome.js reports what a click activated.
+      log_printf("chrome: click at %d,%d -> %s (%s)", doc.value("x", -1), doc.value("y", -1),
+                 doc.value("handler", std::string("?")).c_str(),
+                 doc.value("target", std::string("?")).c_str());
       return;
     }
     if (!first_event_logged_) {
@@ -120,6 +115,9 @@ void Ps5ChromeUi::render(const nlohmann::json& state) {
 }
 
 void Ps5ChromeUi::click(int x, int y) {
+  // Every attempt is logged; what it activated follows as a click_trace line
+  // once the chrome's script message arrives.
+  log_printf("chrome: click attempt at %d,%d", x, y);
   // Window coordinates == chrome-local CSS pixels (the chrome view spans the
   // whole surface at scale 1). The trusted move keeps :hover right; the
   // activation goes through chrome.js click(x, y) (elementFromPoint +
@@ -129,8 +127,7 @@ void Ps5ChromeUi::click(int x, int y) {
   web_->pointer_move(x, y);
   web_->run_javascript("window.ps5chrome && window.ps5chrome.click(" + std::to_string(x) + "," +
                        std::to_string(y) + ")");
-  if (clicks_logged_ < kClicksToLog && fallback_loaded_) {
-    ++clicks_logged_;
+  if (fallback_loaded_) {
     log_printf("chrome: click at %d,%d -> fallback chrome (no controls)", x, y);
   }
 }
