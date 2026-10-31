@@ -26,7 +26,7 @@ std::string system_language_tag(const std::string& language);
 // Sets FONTCONFIG_FILE, FONTCONFIG_PATH, PROSPEROWEB_CA_BUNDLE,
 // SYSTEM_LANGUAGE (en-US), TMPDIR and HOME for files under base_dir, unless
 // already set, then exports base_dir/config.json "env" (overriding), then
-// defaults JSC_useJIT and JSC_useWasm to false, and creates the temp
+// defaults JSC_useJIT and JSC_useWasm to true, and creates the temp
 // directory. Any process role.
 void setup_runtime_env(const std::string& base_dir);
 

@@ -340,8 +340,8 @@ endless relaunches hammer websrv.
 | `PROSPEROWEB_WEBSRV` | `127.0.0.1:8080` | websrv address (IPv4 literal) used to start the broker |
 | `PROSPEROWEB_SELF_PATH` | `/data/prosperoweb/prosperoweb.elf` | the ELF the broker runs as itself and spawns for the children |
 | `PROSPEROWEB_ROLE` | — | role fallback (`spawn-broker` for the broker) |
-| `JSC_useJIT` | `false` | JavaScriptCore baseline/DFG JIT (see [JavaScript JIT and WebAssembly](#javascript-jit-and-webassembly)) |
-| `JSC_useWasm` | `false` | WebAssembly (IPInt interpreter, plus the JIT's entry thunks when `JSC_useJIT` is on) |
+| `JSC_useJIT` | `true` | JavaScriptCore baseline/DFG JIT (see [JavaScript JIT and WebAssembly](#javascript-jit-and-webassembly)) |
+| `JSC_useWasm` | `true` | WebAssembly (IPInt interpreter, plus the JIT's entry thunks when `JSC_useJIT` is on) |
 | `PROSPEROWEB_MEDIA_AUDIO` | unset | first media audio sink tried: `remote` (default when `PROSPEROWEB_AUDIO_PORT` is set), `sdl` (output in the WebProcess, inaudible on the console) or `null` (silent) |
 | `PROSPEROWEB_AUDIO_PORT` | `17772` | loopback TCP port of the UI's audio server (UI and WebProcess); `off` disables the server and the forwarding |
 | `PROSPEROWEB_AUDIO_AHEAD_MS` | `100` | audio the WebProcess keeps queued in the UI's server (20-900 ms): lower is less latency, higher survives longer stalls |
@@ -725,13 +725,22 @@ and `ENABLE_WEBASSEMBLY_OMGJIT` depend on `ENABLE_FTL_JIT`
 (`Source/cmake/WebKitFeatures.cmake`), and `useWasmFastMemory` is forced off
 on PlayStation (`Source/JavaScriptCore/runtime/Options.cpp:1044`).
 
-Both are **off at run time by default**: `setup_runtime_env()`
+Both are **on by default**: `setup_runtime_env()`
 (`src/frontend/ps5/ps5_runtime_env.cpp`, run by `main()` for every role)
-sets `JSC_useJIT=false` and `JSC_useWasm=false` unless already set, so the
-browser behaves like the LLInt-only build until a test turns them on.
+sets `JSC_useJIT=true` and `JSC_useWasm=true` unless already set.
 JavaScriptCore reads every `JSC_<option>` with `getenv()` when it
 initialises its options (`Options.cpp:1120` → `overrideOptionWithHeuristic`,
-`Options.cpp:400`). With `useJIT=false`:
+`Options.cpp:400`).
+
+Verified on a console: `src/chrome-ui/bench.html` (packaged as
+`chrome/bench.html`; recursive calls, a tight loop, object allocation and
+sorting, JSON round trips) took 645 ms in total with the JIT and
+WebAssembly on, against 1107 ms with both off, about 1.7x faster; browsing
+YouTube, rezka and Google with the JIT on showed no crashes. The page also
+reports whether `WebAssembly` is exposed.
+
+To fall back to the interpreter, set them to `false` (see below). With
+`useJIT=false`:
 
 - no executable memory is reserved: `enableAssembler()` returns before
   `ExecutableAllocator::initializeUnderlyingAllocator()`
@@ -750,17 +759,16 @@ With `useWasm=false`, `disableAllWasmOptions()` runs (`Options.cpp:858`),
 thunks or signalling memory are set up (`InitializeThreading.cpp:136`,
 `:147`) and the `WebAssembly` global is not exposed.
 
-To test, add to `/data/prosperoweb/config.json` (the values are exported in
-every process; the UI's environment also reaches the children):
+To turn them off, add to `/data/prosperoweb/config.json` (the values are
+exported in every process; the UI's environment also reaches the children):
 
 ```json
-{ "env": { "JSC_useJIT": "true" } }
+{ "env": { "JSC_useJIT": "false", "JSC_useWasm": "false" } }
 ```
 
-or `{ "env": { "JSC_useJIT": "true", "JSC_useWasm": "true" } }` for
-WebAssembly as well (`JSC_useWasm` alone, without the JIT, leaves only the
-IPInt interpreter; JSC allows it, but it is untested here). Each
-process logs `env JSC_useJIT=true (config.json)` at start. If JIT memory
+(`JSC_useJIT=false` with `JSC_useWasm=true` leaves only the IPInt
+interpreter for WebAssembly; JSC allows it, but it is untested here). Each
+process logs `env JSC_useJIT=false (config.json)` at start. If JIT memory
 cannot be reserved, JSC falls back to the interpreter by itself. If the JIT
 crashes, the WebProcess dies: klog shows `A user thread receives a fatal
 signal`, `signal: 4 (SIGILL)`, `10 (SIGBUS)` or `11 (SIGSEGV)`, `proc name:

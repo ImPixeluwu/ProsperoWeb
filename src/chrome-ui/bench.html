@@ -1,0 +1,19 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>JS bench</title>
+<style>body{background:#121418;color:#eee;font:32px/1.5 sans-serif;margin:40px}button{font-size:32px;padding:16px 32px}</style></head>
+<body><button id="go">Run JS benchmark</button><pre id="out">press the button</pre>
+<script>
+function fib(n){return n<2?n:fib(n-1)+fib(n-2);}
+function loops(){let s=0;for(let i=0;i<3e7;i++){s=(s+i*7)%1000003;}return s;}
+function objs(){let a=[];for(let i=0;i<3e5;i++){a.push({x:i,y:String(i)});}a.sort((p,q)=>q.x-p.x);return a.length;}
+function json(){let o={a:[]};for(let i=0;i<2e4;i++)o.a.push({i:i,s:'v'+i});let t=0;for(let k=0;k<20;k++)t+=JSON.parse(JSON.stringify(o)).a.length;return t;}
+function run(name,f){const t=performance.now();f();return name+': '+(performance.now()-t).toFixed(0)+' ms';}
+document.getElementById('go').onclick=function(){
+  const out=document.getElementById('out'); out.textContent='running...';
+  setTimeout(function(){
+    const r=[run('fib(27)',()=>fib(27)),run('loop 3e7',loops),run('objects+sort',objs),run('JSON x20',json)];
+    const total=r.map(s=>+s.split(': ')[1].split(' ')[0]).reduce((a,b)=>a+b,0);
+    out.textContent=r.join('\n')+'\nTOTAL: '+total+' ms\nWebAssembly: '+(typeof WebAssembly);
+    console.log('bench '+r.join(' | ')+' | total '+total);
+  },50);
+};
+</script></body></html>

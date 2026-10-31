@@ -24,6 +24,7 @@ It is early software (version 0.1.0): expect rough edges, and launch it only the
 - HTML5 Fullscreen API and a chrome-hiding fullscreen mode.
 - HTML5 `<video>`/`<audio>` through an ffmpeg engine: Media Source Extensions (YouTube-style players; H.264 up to 1080p by default), progressive MP4/WebM and native HLS; software decoding (H.264, HEVC, VP8, VP9; AAC, MP3, Opus and others). Video is composed by the UI process under the page, audio is mixed and played by the UI process.
 - Bundled fonts with Latin, Cyrillic, CJK and colour emoji coverage (Noto, Noto CJK, Noto Color Emoji, Liberation, DejaVu).
+- JavaScript JIT (baseline + DFG; FTL off) and WebAssembly, ~1.7x faster than the interpreter on a micro-benchmark; `config.json` `"env"` can turn them off ([docs/ps5-runtime.md](docs/ps5-runtime.md#javascript-jit-and-webassembly)).
 - English and Russian UI.
 - DRM notice: known DRM-only sites and pages that request EME get a clear message instead of a broken player.
 
@@ -33,7 +34,6 @@ It is early software (version 0.1.0): expect rough edges, and launch it only the
 - **No DRM sites** (Netflix, Disney+, Kinopoisk, Okko, ...): there is no CDM, by design.
 - **No GPU acceleration**: software rendering only; no WebGL, no CSS 3D, no GPU compositing.
 - **No WebAudio.**
-- **JIT and WebAssembly** are compiled in but off by default; JavaScript runs on the interpreter unless `config.json` `"env"` enables them ([docs/ps5-runtime.md](docs/ps5-runtime.md#javascript-jit-and-webassembly)).
 - **The native home-screen title is not finished** (see below); today the browser starts from the websrv tile.
 
 See also [docs/architecture.md](docs/architecture.md#non-goals).

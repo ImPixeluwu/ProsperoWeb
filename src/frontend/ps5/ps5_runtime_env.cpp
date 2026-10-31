@@ -114,12 +114,13 @@ void setup_runtime_env(const std::string& base_dir) {
   // players send their frames there instead of painting them into the page.
   set_default("PROSPEROWEB_VIDEO_PORT", "17773");
   apply_config_env(base_dir);
-  // JavaScriptCore is built with the baseline/DFG JIT and WebAssembly, but
-  // both stay off unless config.json "env" enables them: executable memory
-  // for a payload is unproven on the console. JSC reads JSC_<option> from
-  // the environment when it initialises its options.
-  set_default("JSC_useJIT", "false");
-  set_default("JSC_useWasm", "false");
+  // JavaScriptCore is built with the baseline/DFG JIT and WebAssembly; both
+  // are on by default (verified on a console: about 1.7x faster than the
+  // interpreter, no crashes while browsing). config.json "env" or the
+  // environment can still turn them off ("false"). JSC reads JSC_<option>
+  // from the environment when it initialises its options.
+  set_default("JSC_useJIT", "true");
+  set_default("JSC_useWasm", "true");
   if (mkdir(tmp.c_str(), 0755) != 0 && errno != EEXIST) {
     log_printf("mkdir(%s) failed: %s", tmp.c_str(), std::strerror(errno));
   }
