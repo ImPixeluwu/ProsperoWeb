@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "prosperobrowser/core/drm_policy.h"
+#include "prosperoweb/core/drm_policy.h"
 
 #include <array>
 
 #include "text_utils.h"
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 namespace {
 
@@ -74,4 +74,4 @@ bool DrmPolicy::record_eme_request(std::string_view origin, std::string_view key
   return should_notify(origin);
 }
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

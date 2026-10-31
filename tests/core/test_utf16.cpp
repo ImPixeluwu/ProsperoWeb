@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <doctest/doctest.h>
 
-#include "prosperobrowser/core/utf16.h"
+#include "prosperoweb/core/utf16.h"
 
-using namespace prosperobrowser::core;
+using namespace prosperoweb::core;
 
 TEST_SUITE("utf16") {
   TEST_CASE("ASCII, Cyrillic and astral code points round-trip") {

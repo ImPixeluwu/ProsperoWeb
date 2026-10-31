@@ -4,12 +4,12 @@
 // no PS5 kernel access: compiled on both host and target and unit-tested on
 // the host (tests/ps5).
 
-#include "prosperobrowser/spawn/spawn.h"
+#include "prosperoweb/spawn/spawn.h"
 
 #include <string.h>
 
 // Fixed install location of our own ELF, next to its data directory.
-static const char kDefaultSelfPath[] = "/data/prosperobrowser/prosperobrowser.elf";
+static const char kDefaultSelfPath[] = "/data/prosperoweb/prosperoweb.elf";
 
 int ps5_spawn_resolve_self_path(const char* argv0,
                                 const char* (*getenv_fn)(const char*),
@@ -21,7 +21,7 @@ int ps5_spawn_resolve_self_path(const char* argv0,
   const char* chosen = NULL;
 
   if (getenv_fn) {
-    const char* env = getenv_fn("PROSPEROBROWSER_SELF_PATH");
+    const char* env = getenv_fn("PROSPEROWEB_SELF_PATH");
     if (env && env[0] != '\0') {
       chosen = env;
     }

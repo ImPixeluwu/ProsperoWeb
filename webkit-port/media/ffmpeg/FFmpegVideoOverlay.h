@@ -10,7 +10,7 @@
 // (controls, captions) stays on top.
 //
 // A player owns one FFmpegVideoOverlay when overlays are enabled (default
-// on PlayStation; PROSPEROBROWSER_VIDEO_OVERLAY=0 turns them off, =1 on
+// on PlayStation; PROSPEROWEB_VIDEO_OVERLAY=0 turns them off, =1 on
 // elsewhere). The player's tick calls update(): it reads the element's video
 // box in view coordinates (layout, scrolling, fullscreen) and decides whether
 // the hole is punched. It is not when the overlay cannot show the video as

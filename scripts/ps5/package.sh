@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Assemble the PS5 distribution from a linked prosperobrowser.elf:
+# Assemble the PS5 distribution from a linked prosperoweb.elf:
 #
-#   dist/prosperobrowser/                 -> copy to /data/prosperobrowser/ on the console
-#     prosperobrowser.elf                 debug info stripped (symbols kept)
+#   dist/prosperoweb/                     -> copy to /data/prosperoweb/ on the console
+#     prosperoweb.elf                     debug info stripped (symbols kept)
 #     chrome/                             HTML chrome (src/chrome-ui)
 #     cacert.pem                          curl's CA bundle (MPL-2.0)
 #     fonts/                              Noto, Liberation, DejaVu + fonts.conf (FONTCONFIG_FILE)
 #     config.json.sample                  copy to config.json to override defaults
-#     LICENSES/                           GPL-3.0 (ProsperoBrowser), MPL-2.0 notice (cacert),
+#     LICENSES/                           GPL-3.0 (ProsperoWeb), MPL-2.0 notice (cacert),
 #                                         font licenses
 #     README-install.txt
-#   dist/homebrew/prosperobrowser/        -> copy to /data/homebrew/prosperobrowser/ (websrv
+#   dist/homebrew/prosperoweb/            -> copy to /data/homebrew/prosperoweb/ (websrv
 #                                         tile, the only supported way to launch the browser)
-#     homebrew.js                         launches /data/prosperobrowser/prosperobrowser.elf
+#     homebrew.js                         launches /data/prosperoweb/prosperoweb.elf
 #     sce_sys/icon0.png                   512x512 tile icon      (assets/sce_sys/)
 #     sce_sys/pic0.png, pic1.png          1920x1080 backgrounds  (assets/sce_sys/)
 #     sce_sys/param.json                  title identity from assets/app.json
 #
-#   scripts/ps5/package.sh [path/to/prosperobrowser.elf]
+#   scripts/ps5/package.sh [path/to/prosperoweb.elf]
 #
 # cacert.pem is cached in build-dist/dl/ and verified against curl.se's
 # published .sha256. Fonts are pinned in scripts/ps5/fonts/fonts.lock and
@@ -27,21 +27,21 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-ELF="${1:-${ROOT}/build-ps5/src/frontend/ps5/prosperobrowser.elf}"
+ELF="${1:-${ROOT}/build-ps5/src/frontend/ps5/prosperoweb.elf}"
 SDK="${PS5_PAYLOAD_SDK:-/opt/ps5-payload-sdk}"
 WORK="${ROOT}/build-dist"
 DL="${WORK}/dl"
 DIST="${ROOT}/dist"
-OUT="${DIST}/prosperobrowser"
-TILE="${DIST}/homebrew/prosperobrowser"
-INSTALL_DIR="/data/prosperobrowser"
+OUT="${DIST}/prosperoweb"
+TILE="${DIST}/homebrew/prosperoweb"
+INSTALL_DIR="/data/prosperoweb"
 
 CACERT_URL="https://curl.se/ca/cacert.pem"
 
 log() { printf '[package] %s\n' "$*"; }
 die() { printf '[package] error: %s\n' "$*" >&2; exit 1; }
 
-[[ -f "${ELF}" ]] || die "${ELF} not found; build the prosperobrowser target first"
+[[ -f "${ELF}" ]] || die "${ELF} not found; build the prosperoweb target first"
 for t in curl sha256sum tar python3; do
     command -v "${t}" >/dev/null || die "${t} is required"
 done
@@ -72,7 +72,7 @@ mkdir -p "${OUT}/chrome" "${OUT}/fonts" "${OUT}/LICENSES" "${TILE}/sce_sys"
 # elfldr and the spawner only need the program headers, the section headers
 # and the SHT_RELA sections, so debug info can go. The symbol table stays
 # for crash backtraces.
-"${SDK}/bin/llvm-strip" --strip-debug -o "${OUT}/prosperobrowser.elf" "${ELF}"
+"${SDK}/bin/llvm-strip" --strip-debug -o "${OUT}/prosperoweb.elf" "${ELF}"
 
 cp -- "${ROOT}"/src/chrome-ui/*.html "${ROOT}"/src/chrome-ui/*.css "${ROOT}"/src/chrome-ui/*.js "${OUT}/chrome/"
 cp -- "${DL}/cacert.pem" "${OUT}/cacert.pem"
@@ -89,13 +89,13 @@ https://mozilla.org/MPL/2.0/.
 EOF
 
 cat > "${OUT}/LICENSES/README.txt" <<'EOF'
-prosperobrowser.elf is free software under the GNU General Public License,
+prosperoweb.elf is free software under the GNU General Public License,
 version 3 or later (GPL-3.0-or-later.txt). It statically links WebKit
 (LGPL-2.1 / BSD), Skia (BSD-3-Clause), ICU (Unicode-3.0), FreeType (FTL),
 HarfBuzz (MIT), libwpe (BSD-2-Clause), curl (curl), OpenSSL (Apache-2.0),
 SQLite (public domain), libxml2 (MIT), fontconfig (MIT), SDL2 (Zlib) and
 FFmpeg with x264, which makes the combined binary GPL. The corresponding
-source is the ProsperoBrowser repository at the commit this package was built
+source is the ProsperoWeb repository at the commit this package was built
 from, plus the upstream sources listed in its scripts/ps5/build-deps.sh and
 scripts/ps5/fetch-webkit.sh.
 
@@ -124,14 +124,14 @@ EOF
 # in place instead of carrying a second 100+ MB copy.
 cat > "${TILE}/homebrew.js" <<EOF
 // SPDX-License-Identifier: GPL-3.0-or-later
-// websrv launcher entry for ProsperoBrowser (installed in ${INSTALL_DIR}).
+// websrv launcher entry for ProsperoWeb (installed in ${INSTALL_DIR}).
 async function main() {
     return {
-        mainText: "ProsperoBrowser",
+        mainText: "ProsperoWeb",
         secondaryText: "WebKit web browser",
         onclick: async () => {
             return {
-                path: "${INSTALL_DIR}/prosperobrowser.elf",
+                path: "${INSTALL_DIR}/prosperoweb.elf",
                 cwd: "${INSTALL_DIR}",
                 args: []
             };
@@ -145,7 +145,7 @@ EOF
 # install the folder as a native title, which fails without an eboot.bin and
 # leaves a "installing" title with no home-screen tile. The native-title
 # identity (param.json, backgrounds) is staged separately for a future
-# eboot.bin build under build-dist/native/PRSB00001/ (docs/store-submission.md).
+# eboot.bin build under build-dist/native/PRWB00001/ (docs/store-submission.md).
 cp -- "${ROOT}"/assets/sce_sys/icon0.png "${TILE}/sce_sys/"
 NATIVE="${ROOT}/build-dist/native/sce_sys"
 mkdir -p "${NATIVE}"
@@ -180,7 +180,7 @@ with open(sys.argv[2], "w", encoding="utf-8", newline="\n") as out:
 PY
 
 cat > "${OUT}/README-install.txt" <<EOF
-ProsperoBrowser - installation
+ProsperoWeb - installation
 ==============================
 
 Requirements: a jailbroken PS5 running ps5-payload-dev/websrv (port 8080),
@@ -189,16 +189,16 @@ optionally klogsrv (port 3232) to read the debug output.
 
 1. Copy the files (FTP, ftpsrv on port 2121):
 
-     prosperobrowser/          -> ${INSTALL_DIR}/
-     homebrew/prosperobrowser/ -> /data/homebrew/prosperobrowser/   (the websrv tile)
+     prosperoweb/          -> ${INSTALL_DIR}/
+     homebrew/prosperoweb/ -> /data/homebrew/prosperoweb/   (the websrv tile)
 
    For example with lftp:
 
-     lftp -p 2121 PS5_IP -e "mirror -R prosperobrowser ${INSTALL_DIR}; mirror -R homebrew/prosperobrowser /data/homebrew/prosperobrowser; quit"
+     lftp -p 2121 PS5_IP -e "mirror -R prosperoweb ${INSTALL_DIR}; mirror -R homebrew/prosperoweb /data/homebrew/prosperoweb; quit"
 
    The browser must live in ${INSTALL_DIR}: it re-launches
-   ${INSTALL_DIR}/prosperobrowser.elf for its WebProcess and NetworkProcess
-   (override with PROSPEROBROWSER_SELF_PATH), and reads its fonts, CA bundle
+   ${INSTALL_DIR}/prosperoweb.elf for its WebProcess and NetworkProcess
+   (override with PROSPEROWEB_SELF_PATH), and reads its fonts, CA bundle
    and chrome from there.
 
    Upgrading from ps5browser (installed in /data/ps5browser): remove the
@@ -209,16 +209,16 @@ optionally klogsrv (port 3232) to read the debug output.
    ${INSTALL_DIR}/ and logs "migrate: copied <n> items from
    /data/ps5browser"; /data/ps5browser paths in the copied config.json
    are pointed at ${INSTALL_DIR}. PS5BROWSER_* variables (also in config.json "env")
-   still work for this release; rename them to PROSPEROBROWSER_*.
+   still work for this release; rename them to PROSPEROWEB_*.
 
 2. Optional: copy config.json.sample to config.json and edit it.
 
 3. Launch ONLY through the websrv tile: open http://PS5_IP:8080/ (or the
-   Homebrew Launcher app) and select the "ProsperoBrowser" tile. websrv starts
+   Homebrew Launcher app) and select the "ProsperoWeb" tile. websrv starts
    the browser as the foreground app (hbldr, title FAKE00000), which is the
    only way it gets the screen and the controller.
 
-   Do NOT launch prosperobrowser.elf through elfldr (port 9021) or the Payload
+   Do NOT launch prosperoweb.elf through elfldr (port 9021) or the Payload
    Manager. That starts it as a background payload: there is no picture,
    and the UI plus its WebProcess and NetworkProcess keep running in the
    background (about 300 MB each) until the console runs out of memory and
@@ -232,10 +232,10 @@ optionally klogsrv (port 3232) to read the debug output.
    websrv (http://127.0.0.1:8080) to start its spawn broker, a background
    helper ("spawn-broker") that starts the WebProcess and NetworkProcess.
    Starting them from the browser itself panics the console. The broker
-   listens on 127.0.0.1:17771 (loopback only; PROSPEROBROWSER_SPAWN_PORT
+   listens on 127.0.0.1:17771 (loopback only; PROSPEROWEB_SPAWN_PORT
    changes it) and exits on its own after the browser quits.
 
-   PROSPEROBROWSER_SPAWN_MODE=direct (spawn without the broker) is only for a
+   PROSPEROWEB_SPAWN_MODE=direct (spawn without the broker) is only for a
    plain-payload launch through elfldr, used for debugging; never set it
    for the tile launch.
 
@@ -249,25 +249,25 @@ Logs:
     The file is appended to on every launch and written through to disk
     line by line, so it survives a crash or a power-off; fetch it over FTP.
     The last line shows where startup stopped.
-  - klog: the same lines (prefixed "[prosperobrowser]") plus the kernel's and
+  - klog: the same lines (prefixed "[prosperoweb]") plus the kernel's and
     the loader's messages. Start klogsrv and connect BEFORE launching:
       nc PS5_IP 3232 > klog.txt
-    Look for "[prosperobrowser]", "spawn:", "broker", "websrv:" and
+    Look for "[prosperoweb]", "spawn:", "broker", "websrv:" and
     "exit_value" lines.
 
 Environment the browser sets for itself (unless already set):
   FONTCONFIG_FILE=${INSTALL_DIR}/fonts/fonts.conf
   FONTCONFIG_PATH=${INSTALL_DIR}/fonts
-  PROSPEROBROWSER_CA_BUNDLE=${INSTALL_DIR}/cacert.pem
+  PROSPEROWEB_CA_BUNDLE=${INSTALL_DIR}/cacert.pem
   SYSTEM_LANGUAGE=en-US (from config.json "language")
-Media: PROSPEROBROWSER_MEDIA_AUDIO=null disables audio output.
+Media: PROSPEROWEB_MEDIA_AUDIO=null disables audio output.
 EOF
 
 # --- Report. ---------------------------------------------------------------
 size_of() { stat -c %s "$1"; }
-log "prosperobrowser.elf: $(size_of "${ELF}") bytes as linked, $(size_of "${OUT}/prosperobrowser.elf") bytes with --strip-debug"
-"${SDK}/bin/llvm-strip" --strip-all -o "${WORK}/prosperobrowser.strip-all.elf" "${ELF}"
-log "              ($(size_of "${WORK}/prosperobrowser.strip-all.elf") bytes with --strip-all, not shipped)"
+log "prosperoweb.elf: $(size_of "${ELF}") bytes as linked, $(size_of "${OUT}/prosperoweb.elf") bytes with --strip-debug"
+"${SDK}/bin/llvm-strip" --strip-all -o "${WORK}/prosperoweb.strip-all.elf" "${ELF}"
+log "              ($(size_of "${WORK}/prosperoweb.strip-all.elf") bytes with --strip-all, not shipped)"
 log "dist tree:"
-(cd "${DIST}" && find prosperobrowser homebrew -type f -printf '%10s  %p\n' | sort -k2)
+(cd "${DIST}" && find prosperoweb homebrew -type f -printf '%10s  %p\n' | sort -k2)
 du -sh "${OUT}" "${TILE}"

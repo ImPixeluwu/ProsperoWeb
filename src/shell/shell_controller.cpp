@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "prosperobrowser/shell/shell_controller.h"
+#include "prosperoweb/shell/shell_controller.h"
 
 #include <algorithm>
 #include <cmath>
 #include <ctime>
 #include <utility>
 
-#include "prosperobrowser/core/url_normalizer.h"
+#include "prosperoweb/core/url_normalizer.h"
 
-namespace prosperobrowser::shell {
+namespace prosperoweb::shell {
 
 using core::Action;
 using core::Button;
@@ -1395,4 +1395,4 @@ json ShellController::chrome_state() const {
   return state;
 }
 
-}  // namespace prosperobrowser::shell
+}  // namespace prosperoweb::shell

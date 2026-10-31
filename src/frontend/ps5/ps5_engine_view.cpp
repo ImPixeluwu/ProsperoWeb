@@ -19,7 +19,7 @@
 #include "ps5_log.h"
 #include "wk_helpers.h"
 
-namespace prosperobrowser::frontend {
+namespace prosperoweb::frontend {
 
 namespace {
 
@@ -139,7 +139,7 @@ Ps5EngineView::Ps5EngineView(shell::EngineViewClient& client, WKContextRef conte
     }
   };
 
-  web_ = std::make_unique<WkWebView>(context, data_store, "prosperobrowser", user_scripts,
+  web_ = std::make_unique<WkWebView>(context, data_store, "prosperoweb", user_scripts,
                                      /*fullscreen_enabled=*/true, std::move(cb));
   web_->set_size(1920, 1080);
   if (!user_agent.empty()) {
@@ -208,12 +208,12 @@ Ps5EngineFactory::Ps5EngineFactory(const std::string& base_dir,
   WKRelease(ctx_config);
 
   // Prewarm a WebProcess so opening the first tab does not pay the full spawn
-  // + WebKit startup latency. Gated by PROSPEROBROWSER_PREWARM (default on;
+  // + WebKit startup latency. Gated by PROSPEROWEB_PREWARM (default on;
   // "0"/"off" disables). The prewarmed process's pid shows in the broker's
   // spawn log ("spawn: role=WebProcess ... ok"); the C API reports no pid here.
-  if (const char* prewarm = std::getenv("PROSPEROBROWSER_PREWARM");
+  if (const char* prewarm = std::getenv("PROSPEROWEB_PREWARM");
       prewarm && (!std::strcmp(prewarm, "0") || !std::strcmp(prewarm, "off"))) {
-    log_line("prewarm: disabled (PROSPEROBROWSER_PREWARM=off)");
+    log_line("prewarm: disabled (PROSPEROWEB_PREWARM=off)");
   } else {
     WKContextSetPrewarmsProcessesAutomatically(context_, true);
     WKContextWarmInitialProcess(context_);
@@ -250,4 +250,4 @@ std::unique_ptr<shell::EngineView> Ps5EngineFactory::create(
                                          user_agent_);
 }
 
-}  // namespace prosperobrowser::frontend
+}  // namespace prosperoweb::frontend

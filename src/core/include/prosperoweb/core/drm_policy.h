@@ -7,7 +7,7 @@
 #include <string_view>
 #include <vector>
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 enum class Language : std::uint8_t { En, Ru };
 
@@ -41,4 +41,4 @@ class DrmPolicy {
   std::vector<EmeRequest> eme_requests_;
 };
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

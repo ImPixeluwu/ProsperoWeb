@@ -19,9 +19,9 @@
 #include "audio_server.h"
 
 using namespace WebCore::FFmpegMedia::AudioWire;
-using prosperobrowser::audio::AudioServer;
-using prosperobrowser::audio::Mixer;
-using prosperobrowser::audio::ServerOptions;
+using prosperoweb::audio::AudioServer;
+using prosperoweb::audio::Mixer;
+using prosperoweb::audio::ServerOptions;
 
 namespace {
 

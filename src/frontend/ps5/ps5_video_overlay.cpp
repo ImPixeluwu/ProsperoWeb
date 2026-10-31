@@ -11,13 +11,13 @@
 #include "ps5_log.h"
 #include "video_geometry.h"
 
-namespace prosperobrowser::frontend {
+namespace prosperoweb::frontend {
 
 namespace {
 
 // -1 = disabled.
 int configured_port() {
-  const char* value = std::getenv("PROSPEROBROWSER_VIDEO_PORT");
+  const char* value = std::getenv("PROSPEROWEB_VIDEO_PORT");
   if (!value || !*value) {
     return WebCore::FFmpegMedia::VideoWire::defaultPort;
   }
@@ -27,7 +27,7 @@ int configured_port() {
   char* end = nullptr;
   const long port = std::strtol(value, &end, 10);
   if (*end || port <= 0 || port > 65535) {
-    log_printf("video overlay: PROSPEROBROWSER_VIDEO_PORT=%s is not a port; disabled", value);
+    log_printf("video overlay: PROSPEROWEB_VIDEO_PORT=%s is not a port; disabled", value);
     return -1;
   }
   return static_cast<int>(port);
@@ -39,16 +39,16 @@ std::unique_ptr<Ps5VideoOverlay> Ps5VideoOverlay::start(std::function<void()> on
   const int port = configured_port();
   if (port < 0) {
     log_line(
-        "video overlay: server disabled (PROSPEROBROWSER_VIDEO_PORT); video is painted into pages");
+        "video overlay: server disabled (PROSPEROWEB_VIDEO_PORT); video is painted into pages");
     return nullptr;
   }
-  if (const char* mode = std::getenv("PROSPEROBROWSER_VIDEO_OVERLAY");
+  if (const char* mode = std::getenv("PROSPEROWEB_VIDEO_OVERLAY");
       mode && (!std::strcmp(mode, "0") || !std::strcmp(mode, "off"))) {
-    log_line("video overlay: players paint into pages (PROSPEROBROWSER_VIDEO_OVERLAY=0)");
+    log_line("video overlay: players paint into pages (PROSPEROWEB_VIDEO_OVERLAY=0)");
   }
   video::ServerOptions options;
   options.port = port;
-  const char* scale = std::getenv("PROSPEROBROWSER_VIDEO_SCALE");
+  const char* scale = std::getenv("PROSPEROWEB_VIDEO_SCALE");
   options.filter = scale && !std::strcmp(scale, "nearest") ? display::ScaleFilter::Nearest
                                                             : display::ScaleFilter::Bilinear;
   options.on_update = std::move(on_update);
@@ -91,4 +91,4 @@ std::vector<display::VideoLayer> Ps5VideoOverlay::layers(const video::VideoServe
   return out;
 }
 
-}  // namespace prosperobrowser::frontend
+}  // namespace prosperoweb::frontend

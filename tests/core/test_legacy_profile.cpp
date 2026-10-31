@@ -10,14 +10,14 @@
 #include <sstream>
 #include <string>
 
-#include "prosperobrowser/core/legacy_profile.h"
+#include "prosperoweb/core/legacy_profile.h"
 
-using namespace prosperobrowser::core;
+using namespace prosperoweb::core;
 
 namespace {
 
 std::string make_temp_dir() {
-  char tmpl[] = "/tmp/prosperobrowser-legacy-XXXXXX";
+  char tmpl[] = "/tmp/prosperoweb-legacy-XXXXXX";
   REQUIRE(::mkdtemp(tmpl) != nullptr);
   return tmpl;
 }
@@ -40,20 +40,20 @@ bool exists(const std::string& path) { return ::access(path.c_str(), F_OK) == 0;
 
 TEST_SUITE("legacy_profile") {
   TEST_CASE("legacy env names map to the new prefix") {
-    CHECK(renamed_env_name("PS5BROWSER_CA_BUNDLE") == "PROSPEROBROWSER_CA_BUNDLE");
+    CHECK(renamed_env_name("PS5BROWSER_CA_BUNDLE") == "PROSPEROWEB_CA_BUNDLE");
     CHECK(renamed_env_name("PS5BROWSER_") == "");
-    CHECK(renamed_env_name("PROSPEROBROWSER_CA_BUNDLE") == "");
+    CHECK(renamed_env_name("PROSPEROWEB_CA_BUNDLE") == "");
     CHECK(renamed_env_name("HOME") == "");
   }
 
   TEST_CASE("legacy env vars are adopted unless the new name is set") {
     ::setenv("PS5BROWSER_TEST_ADOPT", "old", 1);
-    ::unsetenv("PROSPEROBROWSER_TEST_ADOPT");
+    ::unsetenv("PROSPEROWEB_TEST_ADOPT");
     ::setenv("PS5BROWSER_TEST_KEEP", "old", 1);
-    ::setenv("PROSPEROBROWSER_TEST_KEEP", "new", 1);
+    ::setenv("PROSPEROWEB_TEST_KEEP", "new", 1);
     const auto adopted = adopt_legacy_env();
-    CHECK(std::string(std::getenv("PROSPEROBROWSER_TEST_ADOPT")) == "old");
-    CHECK(std::string(std::getenv("PROSPEROBROWSER_TEST_KEEP")) == "new");
+    CHECK(std::string(std::getenv("PROSPEROWEB_TEST_ADOPT")) == "old");
+    CHECK(std::string(std::getenv("PROSPEROWEB_TEST_KEEP")) == "new");
     bool saw_adopt = false;
     bool saw_keep = false;
     for (const auto& name : adopted) {
@@ -63,8 +63,8 @@ TEST_SUITE("legacy_profile") {
     CHECK(saw_adopt);
     CHECK_FALSE(saw_keep);
     CHECK(adopt_legacy_env().empty());  // nothing left to adopt
-    for (const char* name : {"PS5BROWSER_TEST_ADOPT", "PROSPEROBROWSER_TEST_ADOPT",
-                             "PS5BROWSER_TEST_KEEP", "PROSPEROBROWSER_TEST_KEEP"}) {
+    for (const char* name : {"PS5BROWSER_TEST_ADOPT", "PROSPEROWEB_TEST_ADOPT",
+                             "PS5BROWSER_TEST_KEEP", "PROSPEROWEB_TEST_KEEP"}) {
       ::unsetenv(name);
     }
   }
@@ -72,7 +72,7 @@ TEST_SUITE("legacy_profile") {
   TEST_CASE("the profile is copied once, missing items only") {
     const std::string root = make_temp_dir();
     const std::string from = root + "/ps5browser";
-    const std::string to = root + "/new/prosperobrowser";
+    const std::string to = root + "/new/prosperoweb";
     REQUIRE(::mkdir(from.c_str(), 0755) == 0);
     write_file(from + "/tabs.json", "old tabs");
     write_file(from + "/history.json", "old history");

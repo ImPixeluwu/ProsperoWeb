@@ -107,7 +107,7 @@ private:
 
 // Forwards samples to the UI process's audio server (FFmpegAudioWire.h).
 // A writer thread pulls from the render callback whenever less than the
-// target (100 ms, PROSPEROBROWSER_AUDIO_AHEAD_MS) is queued on the server, so the
+// target (100 ms, PROSPEROWEB_AUDIO_AHEAD_MS) is queued on the server, so the
 // main thread never touches the socket. latency() follows the server's
 // played reports, which makes the engine's audio clock track what is heard.
 class RemoteAudioSink final : public AudioSink {
@@ -116,7 +116,7 @@ public:
     static std::unique_ptr<AudioSink> create(RenderCallback& render, int port)
     {
         auto sink = std::unique_ptr<RemoteAudioSink>(new RemoteAudioSink(WTF::move(render)));
-        if (const char* ahead = getenv("PROSPEROBROWSER_AUDIO_AHEAD_MS"); ahead && atoi(ahead) > 0)
+        if (const char* ahead = getenv("PROSPEROWEB_AUDIO_AHEAD_MS"); ahead && atoi(ahead) > 0)
             sink->m_client.setTargetAhead(atoi(ahead) / 1000.0);
         std::string error;
         if (!sink->m_client.connect(port, 300, error)) {
@@ -289,11 +289,11 @@ private:
 
 #endif
 
-// The audio server's port: PROSPEROBROWSER_AUDIO_PORT (the UI exports it), else
+// The audio server's port: PROSPEROWEB_AUDIO_PORT (the UI exports it), else
 // the default on PlayStation. 0 when forwarding is off.
 int remotePort()
 {
-    const char* value = getenv("PROSPEROBROWSER_AUDIO_PORT");
+    const char* value = getenv("PROSPEROWEB_AUDIO_PORT");
     if (!value || !*value) {
 #if PLATFORM(PLAYSTATION)
         return FFmpegMedia::AudioWire::defaultPort;
@@ -315,14 +315,14 @@ std::unique_ptr<AudioSink> AudioSink::createNull(RenderCallback&& render)
 
 std::unique_ptr<AudioSink> AudioSink::create(RenderCallback&& render)
 {
-    const char* requested = getenv("PROSPEROBROWSER_MEDIA_AUDIO");
+    const char* requested = getenv("PROSPEROWEB_MEDIA_AUDIO");
     std::string mode = requested ? requested : "";
     if (mode == "null") {
-        ffmpegMediaLog("audio sink: PROSPEROBROWSER_MEDIA_AUDIO=null, using the null sink");
+        ffmpegMediaLog("audio sink: PROSPEROWEB_MEDIA_AUDIO=null, using the null sink");
         return createNull(WTF::move(render));
     }
     if (!mode.empty() && mode != "remote" && mode != "sdl")
-        ffmpegMediaLog("audio sink: unknown PROSPEROBROWSER_MEDIA_AUDIO=%s, using the default order", mode.c_str());
+        ffmpegMediaLog("audio sink: unknown PROSPEROWEB_MEDIA_AUDIO=%s, using the default order", mode.c_str());
 
     int port = remotePort();
     if (mode == "remote" && !port)

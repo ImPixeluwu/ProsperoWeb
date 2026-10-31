@@ -4,9 +4,9 @@
 // spawn broker role. PS5 target only.
 //
 // The UI runs as the hbldr big app, and rfork+ptrace+execve from a big app
-// panics the console kernel. So by default (PROSPEROBROWSER_SPAWN_MODE=broker)
+// panics the console kernel. So by default (PROSPEROWEB_SPAWN_MODE=broker)
 // the UI asks the spawn broker, a plain payload started through websrv, to
-// spawn for it; PROSPEROBROWSER_SPAWN_MODE=direct keeps the in-process spawner
+// spawn for it; PROSPEROWEB_SPAWN_MODE=direct keeps the in-process spawner
 // (spawn.c) for plain-payload (elfldr) launches. See README.md.
 
 #include <atomic>
@@ -37,7 +37,7 @@ extern char** environ;
 
 namespace {
 
-using namespace prosperobrowser::spawn;
+using namespace prosperoweb::spawn;
 using nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
@@ -65,8 +65,8 @@ std::string env_or(const char* name, const char* fallback) {
 const char* getenv_const(const char* name) { return std::getenv(name); }
 
 std::vector<BrokerEndpoint> endpoints() {
-  return broker_endpoints(std::getenv("PROSPEROBROWSER_SPAWN_SOCK"),
-                          std::getenv("PROSPEROBROWSER_SPAWN_PORT"));
+  return broker_endpoints(std::getenv("PROSPEROWEB_SPAWN_SOCK"),
+                          std::getenv("PROSPEROWEB_SPAWN_PORT"));
 }
 
 std::string describe(const std::vector<BrokerEndpoint>& eps) {
@@ -79,10 +79,10 @@ std::string describe(const std::vector<BrokerEndpoint>& eps) {
 
 bool direct_mode() {
   static const bool direct = [] {
-    const std::string mode = env_or("PROSPEROBROWSER_SPAWN_MODE", "broker");
+    const std::string mode = env_or("PROSPEROWEB_SPAWN_MODE", "broker");
     const bool d = mode == "direct";
     if (!d && mode != "broker") {
-      ps5_log_printf("spawn: unknown PROSPEROBROWSER_SPAWN_MODE=%s, using broker", mode.c_str());
+      ps5_log_printf("spawn: unknown PROSPEROWEB_SPAWN_MODE=%s, using broker", mode.c_str());
     }
     ps5_log_printf("spawn: mode %s", d ? "direct (in-process rfork)" : "broker");
     return d;
@@ -110,7 +110,7 @@ void on_child_exit(int pid, int status) {
 
 std::mutex g_mu;  // serialises spawns and terminates
 std::unique_ptr<BrokerClient> g_client;
-std::set<int> g_direct_pids;  // children of a PROSPEROBROWSER_SPAWN_FALLBACK=direct spawn
+std::set<int> g_direct_pids;  // children of a PROSPEROWEB_SPAWN_FALLBACK=direct spawn
 int g_broker_failures = 0;    // consecutive spawns that found no broker
 Clock::time_point g_backoff_until{};
 
@@ -121,19 +121,19 @@ std::string dir_of(const std::string& path) {
 
 // Asks websrv to start "<self_path>" as a daemon payload in the broker role.
 bool start_broker_via_websrv(const std::string& self_path) {
-  const std::string websrv = env_or("PROSPEROBROWSER_WEBSRV", kDefaultWebsrv);
+  const std::string websrv = env_or("PROSPEROWEB_WEBSRV", kDefaultWebsrv);
   // argv[0] (also the process name) is the role; --role= and
-  // PROSPEROBROWSER_ROLE say the same in case a loader rewrites argv[0].
+  // PROSPEROWEB_ROLE say the same in case a loader rewrites argv[0].
   const std::string args = "spawn-broker --role=spawn-broker";
   // The broker resolves the same endpoints as we do: forward the overrides.
-  std::string env = "PROSPEROBROWSER_ROLE=spawn-broker";
-  const char* sock = std::getenv("PROSPEROBROWSER_SPAWN_SOCK");
+  std::string env = "PROSPEROWEB_ROLE=spawn-broker";
+  const char* sock = std::getenv("PROSPEROWEB_SPAWN_SOCK");
   if (sock && sock[0]) {
-    env += " PROSPEROBROWSER_SPAWN_SOCK=" + websrv_escape_token(sock);
+    env += " PROSPEROWEB_SPAWN_SOCK=" + websrv_escape_token(sock);
   }
-  env += " PROSPEROBROWSER_SPAWN_PORT=" +
-         std::to_string(broker_tcp_port(std::getenv("PROSPEROBROWSER_SPAWN_PORT")));
-  env += " PROSPEROBROWSER_SELF_PATH=" + websrv_escape_token(self_path);
+  env += " PROSPEROWEB_SPAWN_PORT=" +
+         std::to_string(broker_tcp_port(std::getenv("PROSPEROWEB_SPAWN_PORT")));
+  env += " PROSPEROWEB_SELF_PATH=" + websrv_escape_token(self_path);
   const std::string target =
       websrv_broker_target(self_path, dir_of(self_path), args, env);
   const auto t0 = Clock::now();
@@ -260,7 +260,7 @@ int spawn_via_broker(const char* const* argv, const int* fds, int nfds) {
 
   // With the direct fallback a missing broker costs no websrv round-trips
   // after the first, so there is nothing to back off from.
-  const bool fallback_direct = env_or("PROSPEROBROWSER_SPAWN_FALLBACK", "") == "direct";
+  const bool fallback_direct = env_or("PROSPEROWEB_SPAWN_FALLBACK", "") == "direct";
   if (!fallback_direct) {
     wait_for_backoff(role);
   }
@@ -304,7 +304,7 @@ int spawn_via_broker(const char* const* argv, const int* fds, int nfds) {
   }
 
   if (fallback_direct) {
-    ps5_log_printf("spawn: role=%s: no broker, PROSPEROBROWSER_SPAWN_FALLBACK=direct, "
+    ps5_log_printf("spawn: role=%s: no broker, PROSPEROWEB_SPAWN_FALLBACK=direct, "
                    "spawning in-process",
                    role);
     const int pid = ps5_spawn_direct(argv, fds, nfds);
@@ -314,7 +314,7 @@ int spawn_via_broker(const char* const* argv, const int* fds, int nfds) {
     return pid;
   }
   ps5_log_printf("spawn: role=%s FAILED: no spawn broker (in-process spawning from the "
-                 "big app panics the console; PROSPEROBROWSER_SPAWN_FALLBACK=direct forces it)",
+                 "big app panics the console; PROSPEROWEB_SPAWN_FALLBACK=direct forces it)",
                  role);
   return -1;
 }
@@ -427,11 +427,11 @@ extern "C" int ps5_spawn_broker_main(void) {
   sigaction(SIGTERM, &sa, nullptr);
 
   BrokerServerOptions options;
-  options.socket_paths = broker_socket_paths(std::getenv("PROSPEROBROWSER_SPAWN_SOCK"));
+  options.socket_paths = broker_socket_paths(std::getenv("PROSPEROWEB_SPAWN_SOCK"));
   for (const auto& path : options.socket_paths) {
     mkdir(dir_of(path).c_str(), 0777);  // best-effort; bind reports the real error
   }
-  options.tcp_port = broker_tcp_port(std::getenv("PROSPEROBROWSER_SPAWN_PORT"));
+  options.tcp_port = broker_tcp_port(std::getenv("PROSPEROWEB_SPAWN_PORT"));
   broker_set_spawn_hook(elfldr_hook);
   return broker_serve(options, &g_stop);
 }

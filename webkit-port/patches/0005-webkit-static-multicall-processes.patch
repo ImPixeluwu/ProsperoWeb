@@ -151,7 +151,7 @@ index 0a6968d20..8caba173f 100644
      UIProcess/API/C/playstation/WKViewClient.h
  )
 diff --git a/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp b/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp
-index f510f5eeb..14856ea21 100644
+index f510f5eeb..a669c8c67 100644
 --- a/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp
 +++ b/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp
 @@ -36,13 +36,21 @@
@@ -198,7 +198,7 @@ index f510f5eeb..14856ea21 100644
 +    memcpy(identifierString.data(), coreProcessIdentifierString, sizeof coreProcessIdentifierString);
 +    ProcessLauncher::ProcessType processType = m_launchOptions.processType;
 +
-+    static NeverDestroyed<Ref<WorkQueue>> spawnQueue(WorkQueue::create("com.prosperobrowser.spawn"_s));
++    static NeverDestroyed<Ref<WorkQueue>> spawnQueue(WorkQueue::create("com.prosperoweb.spawn"_s));
 +    spawnQueue.get()->dispatch([protectedThis = Ref { *this }, processType, identifierString, socketPair = WTF::move(socketPair)]() mutable {
 +        const char* processName = "WebProcess";
 +        if (processType == ProcessLauncher::ProcessType::Network)

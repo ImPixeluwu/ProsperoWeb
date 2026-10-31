@@ -5,9 +5,9 @@
 #include <optional>
 #include <string>
 
-#include "prosperobrowser/core/storage.h"
+#include "prosperoweb/core/storage.h"
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 // Storage backed by a std::map; intended for tests.
 class InMemoryStorage final : public Storage {
@@ -21,4 +21,4 @@ class InMemoryStorage final : public Storage {
   std::map<std::string, std::string> data_;
 };
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

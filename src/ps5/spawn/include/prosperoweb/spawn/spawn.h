@@ -8,8 +8,8 @@
 // The pure (platform-independent) helpers in this header are compiled on the
 // host as well, so they can be unit-tested without ptrace or the PS5 kernel.
 
-#ifndef PROSPEROBROWSER_SPAWN_SPAWN_H
-#define PROSPEROBROWSER_SPAWN_SPAWN_H
+#ifndef PROSPEROWEB_SPAWN_SPAWN_H
+#define PROSPEROWEB_SPAWN_SPAWN_H
 
 #include <stddef.h>
 
@@ -43,7 +43,7 @@ void ps5_spawn_set_progress(ps5_spawn_progress_fn fn, void* data);
 // --- Logging, provided by the executable (src/frontend/ps5/ps5_log.cpp). ---
 //
 // The spawner reports every spawn and every child-side failure through these,
-// so they reach /data/prosperobrowser/log.txt and not only stderr. Thread-safe:
+// so they reach /data/prosperoweb/log.txt and not only stderr. Thread-safe:
 // WebKit launches processes from a work queue thread.
 
 void ps5_log_line(const char* line);
@@ -57,8 +57,8 @@ void ps5_log_printf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
 // Resolves the path of our own ELF image, used as the program to re-exec.
 // Strategy, in order:
-//   1. the PROSPEROBROWSER_SELF_PATH environment variable, if set and non-empty;
-//   2. the fixed install path /data/prosperobrowser/prosperobrowser.elf;
+//   1. the PROSPEROWEB_SELF_PATH environment variable, if set and non-empty;
+//   2. the fixed install path /data/prosperoweb/prosperoweb.elf;
 //   3. argv0, but only if it is an absolute path (begins with '/').
 // getenv_fn is the environment lookup (pass the real getenv; tests inject a
 // stub). The result is copied into out_path (always NUL-terminated when the
@@ -89,4 +89,4 @@ int ps5_spawn_build_fd_table(const int* fds, int nfds, int src_pid,
 }
 #endif
 
-#endif  // PROSPEROBROWSER_SPAWN_SPAWN_H
+#endif  // PROSPEROWEB_SPAWN_SPAWN_H

@@ -3,10 +3,10 @@
 
 #include <vector>
 
-#include "prosperobrowser/core/touchpad_model.h"
+#include "prosperoweb/core/touchpad_model.h"
 
-using prosperobrowser::core::TouchContact;
-using prosperobrowser::core::TouchpadModel;
+using prosperoweb::core::TouchContact;
+using prosperoweb::core::TouchpadModel;
 
 namespace {
 

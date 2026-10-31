@@ -10,7 +10,7 @@
 #include "cpu_mask.h"
 #include "cpuset_assign.h"
 
-using namespace prosperobrowser::cpu;
+using namespace prosperoweb::cpu;
 
 namespace {
 

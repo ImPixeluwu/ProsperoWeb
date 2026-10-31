@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "prosperobrowser/core/bookmarks.h"
-#include "prosperobrowser/core/history.h"
-#include "prosperobrowser/core/storage.h"
-#include "prosperobrowser/core/tab_manager.h"
+#include "prosperoweb/core/bookmarks.h"
+#include "prosperoweb/core/history.h"
+#include "prosperoweb/core/storage.h"
+#include "prosperoweb/core/tab_manager.h"
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 // Loads and saves browser state through a Storage under the keys
 // kTabsKey, kHistoryKey and kBookmarksKey. Does not own anything.
@@ -40,4 +40,4 @@ class Session {
   Storage& storage_;
 };
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

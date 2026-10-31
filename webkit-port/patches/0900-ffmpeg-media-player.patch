@@ -34,7 +34,7 @@ index b0fa88487..16fd4012c 100644
      ${WEBCORE_DIR}/platform/generic
 diff --git a/Source/WebCore/platform/FFmpeg.cmake b/Source/WebCore/platform/FFmpeg.cmake
 new file mode 100644
-index 000000000..23af75166
+index 000000000..404c079ac
 --- /dev/null
 +++ b/Source/WebCore/platform/FFmpeg.cmake
 @@ -0,0 +1,59 @@
@@ -42,7 +42,7 @@ index 000000000..23af75166
 +# and HLS through libavformat/libavcodec, and Media Source Extensions
 +# (platform/graphics/ffmpeg/mse, compiled to nothing without
 +# ENABLE_MEDIA_SOURCE). The sources in platform/graphics/ffmpeg are
-+# maintained in ProsperoBrowser's webkit-port/media/ffmpeg and copied here by
++# maintained in ProsperoWeb's webkit-port/media/ffmpeg and copied here by
 +# webkit-port/media/sync-to-tree.sh.
 +list(APPEND WebCore_PRIVATE_INCLUDE_DIRECTORIES
 +    "${WEBCORE_DIR}/platform/graphics/ffmpeg"
@@ -177,7 +177,7 @@ index 581158cda..6e43e6548 100644
  enum class MediaPlayerWirelessPlaybackTargetType : uint8_t {
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/AudioSink.cpp b/Source/WebCore/platform/graphics/ffmpeg/AudioSink.cpp
 new file mode 100644
-index 000000000..2146ab256
+index 000000000..6777de3ab
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/AudioSink.cpp
 @@ -0,0 +1,348 @@
@@ -290,7 +290,7 @@ index 000000000..2146ab256
 +
 +// Forwards samples to the UI process's audio server (FFmpegAudioWire.h).
 +// A writer thread pulls from the render callback whenever less than the
-+// target (100 ms, PROSPEROBROWSER_AUDIO_AHEAD_MS) is queued on the server, so the
++// target (100 ms, PROSPEROWEB_AUDIO_AHEAD_MS) is queued on the server, so the
 +// main thread never touches the socket. latency() follows the server's
 +// played reports, which makes the engine's audio clock track what is heard.
 +class RemoteAudioSink final : public AudioSink {
@@ -299,7 +299,7 @@ index 000000000..2146ab256
 +    static std::unique_ptr<AudioSink> create(RenderCallback& render, int port)
 +    {
 +        auto sink = std::unique_ptr<RemoteAudioSink>(new RemoteAudioSink(WTF::move(render)));
-+        if (const char* ahead = getenv("PROSPEROBROWSER_AUDIO_AHEAD_MS"); ahead && atoi(ahead) > 0)
++        if (const char* ahead = getenv("PROSPEROWEB_AUDIO_AHEAD_MS"); ahead && atoi(ahead) > 0)
 +            sink->m_client.setTargetAhead(atoi(ahead) / 1000.0);
 +        std::string error;
 +        if (!sink->m_client.connect(port, 300, error)) {
@@ -472,11 +472,11 @@ index 000000000..2146ab256
 +
 +#endif
 +
-+// The audio server's port: PROSPEROBROWSER_AUDIO_PORT (the UI exports it), else
++// The audio server's port: PROSPEROWEB_AUDIO_PORT (the UI exports it), else
 +// the default on PlayStation. 0 when forwarding is off.
 +int remotePort()
 +{
-+    const char* value = getenv("PROSPEROBROWSER_AUDIO_PORT");
++    const char* value = getenv("PROSPEROWEB_AUDIO_PORT");
 +    if (!value || !*value) {
 +#if PLATFORM(PLAYSTATION)
 +        return FFmpegMedia::AudioWire::defaultPort;
@@ -498,14 +498,14 @@ index 000000000..2146ab256
 +
 +std::unique_ptr<AudioSink> AudioSink::create(RenderCallback&& render)
 +{
-+    const char* requested = getenv("PROSPEROBROWSER_MEDIA_AUDIO");
++    const char* requested = getenv("PROSPEROWEB_MEDIA_AUDIO");
 +    std::string mode = requested ? requested : "";
 +    if (mode == "null") {
-+        ffmpegMediaLog("audio sink: PROSPEROBROWSER_MEDIA_AUDIO=null, using the null sink");
++        ffmpegMediaLog("audio sink: PROSPEROWEB_MEDIA_AUDIO=null, using the null sink");
 +        return createNull(WTF::move(render));
 +    }
 +    if (!mode.empty() && mode != "remote" && mode != "sdl")
-+        ffmpegMediaLog("audio sink: unknown PROSPEROBROWSER_MEDIA_AUDIO=%s, using the default order", mode.c_str());
++        ffmpegMediaLog("audio sink: unknown PROSPEROWEB_MEDIA_AUDIO=%s, using the default order", mode.c_str());
 +
 +    int port = remotePort();
 +    if (mode == "remote" && !port)
@@ -531,7 +531,7 @@ index 000000000..2146ab256
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/AudioSink.h b/Source/WebCore/platform/graphics/ffmpeg/AudioSink.h
 new file mode 100644
-index 000000000..7c81672e3
+index 000000000..0826619af
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/AudioSink.h
 @@ -0,0 +1,54 @@
@@ -568,8 +568,8 @@ index 000000000..7c81672e3
 +    // data is available).
 +    using RenderCallback = Function<void(std::span<float> interleaved)>;
 +
-+    // PROSPEROBROWSER_MEDIA_AUDIO selects the first sink tried: "remote" (the
-+    // default when PROSPEROBROWSER_AUDIO_PORT is set, and on PlayStation), "sdl"
++    // PROSPEROWEB_MEDIA_AUDIO selects the first sink tried: "remote" (the
++    // default when PROSPEROWEB_AUDIO_PORT is set, and on PlayStation), "sdl"
 +    // or "null". Failures fall through remote -> sdl -> null.
 +    static std::unique_ptr<AudioSink> create(RenderCallback&&);
 +    static std::unique_ptr<AudioSink> createNull(RenderCallback&&);
@@ -2400,7 +2400,7 @@ index 000000000..520339e4d
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegLog.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegLog.h
 new file mode 100644
-index 000000000..73004b61b
+index 000000000..bef2fb676
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegLog.h
 @@ -0,0 +1,43 @@
@@ -2408,7 +2408,7 @@ index 000000000..73004b61b
 +//
 +// Console diagnostics of the ffmpeg media engine. On the PS5 the shell
 +// executable defines ps5_log_line() (src/frontend/ps5/ps5_log.cpp), which
-+// prefixes "[ms role]" and appends to /data/prosperobrowser/log.txt; WebCore only
++// prefixes "[ms role]" and appends to /data/prosperoweb/log.txt; WebCore only
 +// sees a weak declaration, so builds without that symbol (the smoke test,
 +// other embedders) still link and log nothing. Lines start with "media:".
 +// Thread-safe: ps5_log_line is.
@@ -3754,7 +3754,7 @@ index 000000000..51fb9045b
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegSupportTable.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegSupportTable.h
 new file mode 100644
-index 000000000..2b61210b9
+index 000000000..ddc8a5d36
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegSupportTable.h
 @@ -0,0 +1,457 @@
@@ -3782,7 +3782,7 @@ index 000000000..2b61210b9
 +// Decoders available at run time. Defaults match the PS5 SDK ffmpeg 7.0.1
 +// build: native h264/hevc/vp8/vp9/aac/opus/vorbis/mp3/flac/ac3/eac3, but no
 +// software AV1 decoder (no libdav1d/libaom; ff_av1_decoder is hwaccel-only).
-+// The engine reports VP8/VP9 as unavailable unless PROSPEROBROWSER_MEDIA_VP9=1:
++// The engine reports VP8/VP9 as unavailable unless PROSPEROWEB_MEDIA_VP9=1:
 +// software VP9 is much slower than H.264, and players then pick H.264.
 +struct DecoderAvailability {
 +    bool h264 { true };
@@ -4099,7 +4099,7 @@ index 000000000..2b61210b9
 +// is "", so a player never picks a stream this build cannot decode in time.
 +// Video defaults to 1080p (software decoding on the console); the longer
 +// side may be either dimension, so portrait 1080x1920 fits too.
-+// PROSPEROBROWSER_MEDIA_MAX_VIDEO=3840x2160 raises it (parseVideoLimits()).
++// PROSPEROWEB_MEDIA_MAX_VIDEO=3840x2160 raises it (parseVideoLimits()).
 +struct VideoLimits {
 +    double maxLongSide { 1920 };
 +    double maxShortSide { 1088 };
@@ -4408,7 +4408,7 @@ index 000000000..4b6fe252f
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp
 new file mode 100644
-index 000000000..ad09b69fb
+index 000000000..5f5f03655
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp
 @@ -0,0 +1,459 @@
@@ -4446,17 +4446,17 @@ index 000000000..ad09b69fb
 +constexpr int maxOutputWidth = 1920;
 +constexpr int maxOutputHeight = 1080;
 +// Decoder threads: 6 of the Zen 2's 8 cores, leaving 2 for the UI process,
-+// networking and the audio decoder (PROSPEROBROWSER_MEDIA_THREADS=1..16).
++// networking and the audio decoder (PROSPEROWEB_MEDIA_THREADS=1..16).
 +// Frame and slice threading: frame threading is what scales H.264 and VP9
 +// across cores. The console crashes of run 4/5 that first pointed at the
 +// frame threads ("av:h264:df*") were the swscale overrun fixed in
 +// FFmpegPlaybackPolicy.h, not frame threading;
-+// PROSPEROBROWSER_MEDIA_FRAME_THREADS=0 goes back to slice threads only.
++// PROSPEROWEB_MEDIA_FRAME_THREADS=0 goes back to slice threads only.
 +constexpr int defaultDecoderThreads = 6;
 +
 +int decoderThreads()
 +{
-+    if (const char* value = getenv("PROSPEROBROWSER_MEDIA_THREADS")) {
++    if (const char* value = getenv("PROSPEROWEB_MEDIA_THREADS")) {
 +        int count = atoi(value);
 +        if (count >= 1 && count <= 16)
 +            return count;
@@ -4466,7 +4466,7 @@ index 000000000..ad09b69fb
 +
 +bool frameThreadsEnabled()
 +{
-+    const char* value = getenv("PROSPEROBROWSER_MEDIA_FRAME_THREADS");
++    const char* value = getenv("PROSPEROWEB_MEDIA_FRAME_THREADS");
 +    return !value || strcmp(value, "0");
 +}
 +
@@ -5052,7 +5052,7 @@ index 000000000..669e290a6
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.cpp b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.cpp
 new file mode 100644
-index 000000000..3c2b4a7f5
+index 000000000..ed994c536
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.cpp
 @@ -0,0 +1,238 @@
@@ -5094,7 +5094,7 @@ index 000000000..3c2b4a7f5
 +
 +bool overlaysEnabled()
 +{
-+    const char* value = getenv("PROSPEROBROWSER_VIDEO_OVERLAY");
++    const char* value = getenv("PROSPEROWEB_VIDEO_OVERLAY");
 +    if (value && *value)
 +        return strcmp(value, "0") && strcmp(value, "off");
 +#if PLATFORM(PLAYSTATION)
@@ -5107,7 +5107,7 @@ index 000000000..3c2b4a7f5
 +// -1 = disabled.
 +int overlayPort()
 +{
-+    const char* value = getenv("PROSPEROBROWSER_VIDEO_PORT");
++    const char* value = getenv("PROSPEROWEB_VIDEO_PORT");
 +    if (!value || !*value)
 +        return Wire::defaultPort;
 +    if (!strcmp(value, "off"))
@@ -5121,10 +5121,10 @@ index 000000000..3c2b4a7f5
 +
 +std::string fileDirectory()
 +{
-+    if (const char* value = getenv("PROSPEROBROWSER_VIDEO_SHM_DIR"); value && *value)
++    if (const char* value = getenv("PROSPEROWEB_VIDEO_SHM_DIR"); value && *value)
 +        return value;
 +#if PLATFORM(PLAYSTATION)
-+    return "/data/prosperobrowser/tmp";
++    return "/data/prosperoweb/tmp";
 +#else
 +    return "/tmp";
 +#endif
@@ -5183,13 +5183,13 @@ index 000000000..3c2b4a7f5
 +    static bool loggedDisabled;
 +    if (!overlaysEnabled()) {
 +        if (!std::exchange(loggedDisabled, true))
-+            ffmpegMediaLog("video overlay: off (PROSPEROBROWSER_VIDEO_OVERLAY), video is painted into the page");
++            ffmpegMediaLog("video overlay: off (PROSPEROWEB_VIDEO_OVERLAY), video is painted into the page");
 +        return nullptr;
 +    }
 +    int port = overlayPort();
 +    if (port < 0) {
 +        if (!std::exchange(loggedDisabled, true))
-+            ffmpegMediaLog("video overlay: off (PROSPEROBROWSER_VIDEO_PORT=%s)", getenv("PROSPEROBROWSER_VIDEO_PORT"));
++            ffmpegMediaLog("video overlay: off (PROSPEROWEB_VIDEO_PORT=%s)", getenv("PROSPEROWEB_VIDEO_PORT"));
 +        return nullptr;
 +    }
 +    return std::unique_ptr<FFmpegVideoOverlay>(new FFmpegVideoOverlay(nextPlayer++, port));
@@ -5203,7 +5203,7 @@ index 000000000..3c2b4a7f5
 +    config.port = port;
 +    config.pid = static_cast<uint32_t>(getpid());
 +    config.player = player;
-+    const char* forced = getenv("PROSPEROBROWSER_VIDEO_TRANSPORT");
++    const char* forced = getenv("PROSPEROWEB_VIDEO_TRANSPORT");
 +    config.force = Wire::parseTransport(forced);
 +    config.fileDirectory = fileDirectory();
 +    config.log = [](const std::string& line) {
@@ -5296,7 +5296,7 @@ index 000000000..3c2b4a7f5
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.h
 new file mode 100644
-index 000000000..3d9c9a054
+index 000000000..05f0dc586
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.h
 @@ -0,0 +1,78 @@
@@ -5312,7 +5312,7 @@ index 000000000..3d9c9a054
 +// (controls, captions) stays on top.
 +//
 +// A player owns one FFmpegVideoOverlay when overlays are enabled (default
-+// on PlayStation; PROSPEROBROWSER_VIDEO_OVERLAY=0 turns them off, =1 on
++// on PlayStation; PROSPEROWEB_VIDEO_OVERLAY=0 turns them off, =1 on
 +// elsewhere). The player's tick calls update(): it reads the element's video
 +// box in view coordinates (layout, scrolling, fullscreen) and decides whether
 +// the hole is punched. It is not when the overlay cannot show the video as
@@ -5380,7 +5380,7 @@ index 000000000..3d9c9a054
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlayClient.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlayClient.h
 new file mode 100644
-index 000000000..e6d6cbe73
+index 000000000..a32bfa5d7
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlayClient.h
 @@ -0,0 +1,646 @@
@@ -5390,7 +5390,7 @@ index 000000000..e6d6cbe73
 +// per media player. A sender thread connects to the UI process's overlay
 +// server, negotiates the pixel transport on the first frame (named shm
 +// object, then a file mapped MAP_SHARED, then pixels inline over TCP; or the
-+// one PROSPEROBROWSER_VIDEO_TRANSPORT forces) and then sends the newest geometry
++// one PROSPEROWEB_VIDEO_TRANSPORT forces) and then sends the newest geometry
 +// and frame whenever they change. Only the latest frame matters: a frame
 +// submitted while the previous one is still being sent replaces it.
 +//
@@ -5917,7 +5917,7 @@ index 000000000..e6d6cbe73
 +        ++m_generation;
 +        int fd;
 +        if (kind == Transport::Shm) {
-+            snprintf(name, sizeof(name), "/prosperobrowser-video-%u-%u-%u", m_config.pid, m_config.player, m_generation);
++            snprintf(name, sizeof(name), "/prosperoweb-video-%u-%u-%u", m_config.pid, m_config.player, m_generation);
 +            fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0666);
 +        } else {
 +            snprintf(name, sizeof(name), "%s/video-%u-%u-%u.shm", m_config.fileDirectory.c_str(), m_config.pid, m_config.player, m_generation);
@@ -6032,7 +6032,7 @@ index 000000000..e6d6cbe73
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlayWire.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlayWire.h
 new file mode 100644
-index 000000000..24efa3f85
+index 000000000..f6c28e0dc
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlayWire.h
 @@ -0,0 +1,571 @@
@@ -6045,7 +6045,7 @@ index 000000000..24efa3f85
 +// mode the video element paints a transparent hole instead, and the frames
 +// travel to the UI process here; the UI composes them under the page.
 +//
-+// Control channel: loopback TCP (PROSPEROBROWSER_VIDEO_PORT, default 17773), one
++// Control channel: loopback TCP (PROSPEROWEB_VIDEO_PORT, default 17773), one
 +// connection per player. Pixels go through shared memory when both processes
 +// can map the same object (a named POSIX shm object, else a file under the
 +// data directory mapped MAP_SHARED), otherwise inline over the socket.
@@ -6609,7 +6609,7 @@ index 000000000..24efa3f85
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp
 new file mode 100644
-index 000000000..a9d7ad69f
+index 000000000..720256bf4
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp
 @@ -0,0 +1,1038 @@
@@ -6805,7 +6805,7 @@ index 000000000..a9d7ad69f
 +        available.hevc = findSoftwareDecoder(AV_CODEC_ID_HEVC);
 +        // Software VP9 costs far more CPU than H.264 at the same size;
 +        // answering "" makes YouTube & co. serve H.264 instead.
-+        const char* vp9 = getenv("PROSPEROBROWSER_MEDIA_VP9");
++        const char* vp9 = getenv("PROSPEROWEB_MEDIA_VP9");
 +        bool allowVP9 = vp9 && !strcmp(vp9, "1");
 +        available.vp8 = allowVP9 && findSoftwareDecoder(AV_CODEC_ID_VP8);
 +        available.vp9 = allowVP9 && findSoftwareDecoder(AV_CODEC_ID_VP9);
@@ -6817,7 +6817,7 @@ index 000000000..a9d7ad69f
 +        available.flac = findSoftwareDecoder(AV_CODEC_ID_FLAC);
 +        available.ac3 = findSoftwareDecoder(AV_CODEC_ID_AC3);
 +        available.eac3 = findSoftwareDecoder(AV_CODEC_ID_EAC3);
-+        ffmpegMediaLog("codecs: VP8/VP9 %s (PROSPEROBROWSER_MEDIA_VP9), AV1 %s", available.vp9 ? "on" : "off", available.av1 ? "on" : "off");
++        ffmpegMediaLog("codecs: VP8/VP9 %s (PROSPEROWEB_MEDIA_VP9), AV1 %s", available.vp9 ? "on" : "off", available.av1 ? "on" : "off");
 +        return available;
 +    }();
 +    return decoders.get();
@@ -6827,9 +6827,9 @@ index 000000000..a9d7ad69f
 +{
 +    static NeverDestroyed<FFmpegMedia::VideoLimits> limits = [] {
 +        FFmpegMedia::VideoLimits value;
-+        if (const char* text = getenv("PROSPEROBROWSER_MEDIA_MAX_VIDEO"); text && !FFmpegMedia::parseVideoLimits(text, value))
++        if (const char* text = getenv("PROSPEROWEB_MEDIA_MAX_VIDEO"); text && !FFmpegMedia::parseVideoLimits(text, value))
 +            value = { };
-+        ffmpegMediaLog("codecs: video limit %.0fx%.0f (PROSPEROBROWSER_MEDIA_MAX_VIDEO)", value.maxLongSide, value.maxShortSide);
++        ffmpegMediaLog("codecs: video limit %.0fx%.0f (PROSPEROWEB_MEDIA_MAX_VIDEO)", value.maxLongSide, value.maxShortSide);
 +        return value;
 +    }();
 +    return limits.get();
@@ -7653,7 +7653,7 @@ index 000000000..a9d7ad69f
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.h b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.h
 new file mode 100644
-index 000000000..14fcd5909
+index 000000000..3c0eba5ba
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.h
 @@ -0,0 +1,206 @@
@@ -7716,9 +7716,9 @@ index 000000000..14fcd5909
 +    static MediaPlayer::SupportsType supportsType(const MediaEngineSupportParameters&);
 +
 +    // Shared with the MSE player (MediaPlayerPrivateFFmpegMSE).
-+    // VP8/VP9 count as unavailable unless PROSPEROBROWSER_MEDIA_VP9=1.
++    // VP8/VP9 count as unavailable unless PROSPEROWEB_MEDIA_VP9=1.
 +    static const FFmpegMedia::DecoderAvailability& decoderAvailability();
-+    // 1080p unless PROSPEROBROWSER_MEDIA_MAX_VIDEO=WxH.
++    // 1080p unless PROSPEROWEB_MEDIA_MAX_VIDEO=WxH.
 +    static const FFmpegMedia::VideoLimits& videoLimits();
 +    static void logSupportsType(const MediaEngineSupportParameters&, MediaPlayer::SupportsType);
 +    // Wraps the frame's pixels without copying; the image keeps the frame alive.

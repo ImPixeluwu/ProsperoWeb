@@ -8,17 +8,17 @@
 #include <string>
 #include <vector>
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 inline constexpr const char* kLegacyEnvPrefix = "PS5BROWSER_";
-inline constexpr const char* kEnvPrefix = "PROSPEROBROWSER_";
+inline constexpr const char* kEnvPrefix = "PROSPEROWEB_";
 
-// "PS5BROWSER_X" -> "PROSPEROBROWSER_X"; "" for any other name (including
+// "PS5BROWSER_X" -> "PROSPEROWEB_X"; "" for any other name (including
 // the bare prefix).
 std::string renamed_env_name(const std::string& name);
 
-// For every PS5BROWSER_X in the process environment whose PROSPEROBROWSER_X
-// is not set, exports PROSPEROBROWSER_X with the same value. Returns the
+// For every PS5BROWSER_X in the process environment whose PROSPEROWEB_X
+// is not set, exports PROSPEROWEB_X with the same value. Returns the
 // legacy names that were adopted, sorted. POSIX (environ, setenv).
 std::vector<std::string> adopt_legacy_env();
 
@@ -48,4 +48,4 @@ struct LegacyMigration {
 // partially copied directory then counts as present and is kept as is).
 LegacyMigration migrate_legacy_profile(const std::string& from_dir, const std::string& to_dir);
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

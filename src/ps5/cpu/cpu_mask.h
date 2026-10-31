@@ -16,7 +16,7 @@
 #include <string>
 #include <string_view>
 
-namespace prosperobrowser::cpu {
+namespace prosperoweb::cpu {
 
 constexpr std::size_t kMaxMaskBytes = 128;  // 1024 CPUs, FreeBSD's largest CPU_MAXSIZE
 
@@ -69,9 +69,9 @@ struct WidenPlan {
 };
 
 // `process` is the current mask; `root` the root set (nullptr: unknown);
-// `requested` an explicit mask (PROSPEROBROWSER_CPUMASK, nullptr: none).
+// `requested` an explicit mask (PROSPEROWEB_CPUMASK, nullptr: none).
 // An explicit mask is clipped to the root set; without one the target is
 // the whole root set. CPUs outside the root set are never added.
 WidenPlan plan_widen(const CpuMask& process, const CpuMask* root, const CpuMask* requested);
 
-}  // namespace prosperobrowser::cpu
+}  // namespace prosperoweb::cpu

@@ -3,7 +3,7 @@
 
 #include <cstdint>
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 // Tracks whether browser chrome is shown and whether the page holds the
 // HTML5 Fullscreen API.
@@ -39,4 +39,4 @@ class FullscreenController {
   State before_element_ = State::Normal;
 };
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

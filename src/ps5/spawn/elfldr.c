@@ -16,7 +16,7 @@ along with this program; see the file COPYING. If not, see
 
 /* Derived from ps5-payload-dev/elfldr (commit 2a8da002), elfldr.c, with the
    argv/environ handling pattern of ps5-payload-dev/shsrv (6f320637).
-   ProsperoBrowser changes:
+   ProsperoWeb changes:
      - elfldr_exec() -> elfldr_exec_fds(): instead of duplicating a single
        stdio descriptor onto 0/1/2, it keeps the deci_std* descriptors the
        rfork entry opened as 0/1/2 and injects a table of extra descriptors
@@ -26,9 +26,9 @@ along with this program; see the file COPYING. If not, see
        logged with its errno.
      - elfldr_spawn() -> elfldr_spawn_fds(): same signature change; also
        sets the child's environment from an envp argument (the UI's environ,
-       forwarded by the spawn broker; WebKit needs the PROSPEROBROWSER_*
+       forwarded by the spawn broker; WebKit needs the PROSPEROWEB_*
        variables).
-     - elfldr_read()/elfldr_find_pid() dropped (not used by ProsperoBrowser).
+     - elfldr_read()/elfldr_find_pid() dropped (not used by ProsperoWeb).
      - the load mirror is calloc'ed (memsz gaps reach the child as zeros), a
        replaced child descriptor is logged, and a child that fails to set up
        is reaped after SIGKILL.
@@ -374,7 +374,7 @@ elfldr_set_procname(pid_t pid, const char* name) {
 
 
 /* Copy the current environment into the child and point its "environ" at it.
-   Needed so the child UI/Web/Network role sees the PROSPEROBROWSER_* variables. */
+   Needed so the child UI/Web/Network role sees the PROSPEROWEB_* variables. */
 static int
 elfldr_set_environ(pid_t pid, char** envp) {
   size_t size = sizeof(char*);

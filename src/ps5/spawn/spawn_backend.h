@@ -3,10 +3,10 @@
 // Internal interface between the spawn front (spawn_glue.cpp: mode
 // selection, broker client, broker main) and the in-process elfldr spawner
 // (spawn.c). PS5 target only.
-#ifndef PROSPEROBROWSER_SPAWN_BACKEND_H
-#define PROSPEROBROWSER_SPAWN_BACKEND_H
+#ifndef PROSPEROWEB_SPAWN_BACKEND_H
+#define PROSPEROWEB_SPAWN_BACKEND_H
 
-#include "prosperobrowser/spawn/spawn.h"
+#include "prosperoweb/spawn/spawn.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,4 +37,4 @@ int ps5_terminate_direct(int pid);
 }
 #endif
 
-#endif  // PROSPEROBROWSER_SPAWN_BACKEND_H
+#endif  // PROSPEROWEB_SPAWN_BACKEND_H

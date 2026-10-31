@@ -57,9 +57,9 @@ public:
     static MediaPlayer::SupportsType supportsType(const MediaEngineSupportParameters&);
 
     // Shared with the MSE player (MediaPlayerPrivateFFmpegMSE).
-    // VP8/VP9 count as unavailable unless PROSPEROBROWSER_MEDIA_VP9=1.
+    // VP8/VP9 count as unavailable unless PROSPEROWEB_MEDIA_VP9=1.
     static const FFmpegMedia::DecoderAvailability& decoderAvailability();
-    // 1080p unless PROSPEROBROWSER_MEDIA_MAX_VIDEO=WxH.
+    // 1080p unless PROSPEROWEB_MEDIA_MAX_VIDEO=WxH.
     static const FFmpegMedia::VideoLimits& videoLimits();
     static void logSupportsType(const MediaEngineSupportParameters&, MediaPlayer::SupportsType);
     // Wraps the frame's pixels without copying; the image keeps the frame alive.

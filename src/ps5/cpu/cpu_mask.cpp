@@ -5,7 +5,7 @@
 #include <cerrno>
 #include <cstring>
 
-namespace prosperobrowser::cpu {
+namespace prosperoweb::cpu {
 
 namespace {
 
@@ -188,4 +188,4 @@ WidenPlan plan_widen(const CpuMask& process, const CpuMask* root, const CpuMask*
   return plan;
 }
 
-}  // namespace prosperobrowser::cpu
+}  // namespace prosperoweb::cpu

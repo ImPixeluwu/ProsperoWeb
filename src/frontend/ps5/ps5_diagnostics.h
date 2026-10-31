@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Remote diagnostics for the console: screen dumps and a form-control probe
-// of the active page, both written under /data/prosperobrowser/tmp so the
+// of the active page, both written under /data/prosperoweb/tmp so the
 // operator can fetch them over FTP. Requests come from the operator creating
 // a request file there (polled once per second, then deleted) or, for the
 // screen dump, from a long press of Share.
@@ -10,7 +10,7 @@
 #include <cstdint>
 #include <string>
 
-namespace prosperobrowser::frontend {
+namespace prosperoweb::frontend {
 
 // Request and output files, relative to the data directory's tmp/.
 inline constexpr const char* kScreenshotRequestFile = "screenshot.request";
@@ -35,4 +35,4 @@ std::string encode_png_rgbx(const std::uint8_t* pixels, int width, int height,
 // page computes for its first form controls and the page environment.
 const char* form_probe_script();
 
-}  // namespace prosperobrowser::frontend
+}  // namespace prosperoweb::frontend

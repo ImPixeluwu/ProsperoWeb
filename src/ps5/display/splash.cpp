@@ -6,7 +6,7 @@
 
 #include "compose.h"
 
-namespace prosperobrowser::display {
+namespace prosperoweb::display {
 
 namespace {
 
@@ -116,4 +116,4 @@ Rect paint_splash_progress(const SplashTarget& target, const SplashLayout& layou
   return intersect(track, Rect{0, 0, target.width, target.height});
 }
 
-}  // namespace prosperobrowser::display
+}  // namespace prosperoweb::display

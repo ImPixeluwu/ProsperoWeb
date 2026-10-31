@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "prosperobrowser/core/utf16.h"
+#include "prosperoweb/core/utf16.h"
 
 #include <cstdint>
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 namespace {
 
@@ -125,4 +125,4 @@ std::u16string utf16_truncate(std::u16string s, std::size_t max_units) {
   return s;
 }
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

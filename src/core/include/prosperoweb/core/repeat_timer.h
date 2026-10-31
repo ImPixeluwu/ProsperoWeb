@@ -3,7 +3,7 @@
 
 #include <cstdint>
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 // Auto-repeat for held buttons: fires once on press, then after
 // initial_delay_ms, then every interval_ms while held.
@@ -31,4 +31,4 @@ class RepeatTimer {
   std::uint64_t next_fire_ms_ = 0;
 };
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

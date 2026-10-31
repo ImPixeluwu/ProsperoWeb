@@ -6,9 +6,9 @@
 #include <span>
 #include <vector>
 
-#include "prosperobrowser/core/pointer_model.h"
+#include "prosperoweb/core/pointer_model.h"
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 // One finger on the touchpad. x and y are normalized to [0, 1] across the
 // pad (0, 0 = top-left); id stays the same while the finger stays down.
@@ -111,4 +111,4 @@ class TouchpadModel {
   Output out_;
 };
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

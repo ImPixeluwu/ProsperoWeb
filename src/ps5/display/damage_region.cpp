@@ -3,7 +3,7 @@
 
 #include <algorithm>
 
-namespace prosperobrowser::display {
+namespace prosperoweb::display {
 
 Rect intersect(const Rect& a, const Rect& b) {
   const int x0 = std::max(a.x, b.x);
@@ -126,4 +126,4 @@ void Region::coalesce() {
   }
 }
 
-}  // namespace prosperobrowser::display
+}  // namespace prosperoweb::display

@@ -3,7 +3,7 @@
 
 #include <algorithm>
 
-namespace prosperobrowser::core::detail {
+namespace prosperoweb::core::detail {
 
 namespace {
 
@@ -109,4 +109,4 @@ std::size_t utf8_length(std::string_view s) {
   return n;
 }
 
-}  // namespace prosperobrowser::core::detail
+}  // namespace prosperoweb::core::detail

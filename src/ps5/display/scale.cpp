@@ -6,7 +6,7 @@
 #include <cstring>
 #include <utility>
 
-namespace prosperobrowser::display {
+namespace prosperoweb::display {
 
 namespace {
 
@@ -176,4 +176,4 @@ void scale_image_reference(const ImageView& src, std::uint32_t* dst, int dst_w, 
   }
 }
 
-}  // namespace prosperobrowser::display
+}  // namespace prosperoweb::display

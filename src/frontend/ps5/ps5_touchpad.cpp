@@ -16,7 +16,7 @@ int scePadGetControllerInformation(int handle, void* info);
 int sceUserServiceGetLoginUserIdList(int user_ids[4]);
 }
 
-namespace prosperobrowser::frontend {
+namespace prosperoweb::frontend {
 
 namespace {
 
@@ -167,4 +167,4 @@ void Ps5Touchpad::read(SDL_GameController* pad, std::uint64_t now_ms,
   }
 }
 
-}  // namespace prosperobrowser::frontend
+}  // namespace prosperoweb::frontend

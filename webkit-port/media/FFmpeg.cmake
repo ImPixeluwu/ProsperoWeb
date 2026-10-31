@@ -2,7 +2,7 @@
 # and HLS through libavformat/libavcodec, and Media Source Extensions
 # (platform/graphics/ffmpeg/mse, compiled to nothing without
 # ENABLE_MEDIA_SOURCE). The sources in platform/graphics/ffmpeg are
-# maintained in ProsperoBrowser's webkit-port/media/ffmpeg and copied here by
+# maintained in ProsperoWeb's webkit-port/media/ffmpeg and copied here by
 # webkit-port/media/sync-to-tree.sh.
 list(APPEND WebCore_PRIVATE_INCLUDE_DIRECTORIES
     "${WEBCORE_DIR}/platform/graphics/ffmpeg"

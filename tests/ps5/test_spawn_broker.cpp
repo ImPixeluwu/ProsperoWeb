@@ -27,12 +27,12 @@
 #include "broker_proto.h"
 #include "broker_server.h"
 
-using namespace prosperobrowser::spawn;
+using namespace prosperoweb::spawn;
 using nlohmann::json;
 
 // The broker logs through the executable's ps5_log_*; print only on demand.
 extern "C" void ps5_log_line(const char* line) {
-  if (std::getenv("PROSPEROBROWSER_TEST_LOG")) {
+  if (std::getenv("PROSPEROWEB_TEST_LOG")) {
     std::fprintf(stderr, "[log] %s\n", line);
   }
 }
@@ -107,7 +107,7 @@ BrokerSpawnResult fake_spawn(const BrokerSpawnRequest& req) {
 struct TempDir {
   std::string path;
   TempDir() {
-    char tmpl[] = "/tmp/prosperobrowser-broker-XXXXXX";
+    char tmpl[] = "/tmp/prosperoweb-broker-XXXXXX";
     REQUIRE(mkdtemp(tmpl) != nullptr);
     path = tmpl;
   }
@@ -162,9 +162,9 @@ TEST_SUITE("broker_proto") {
   TEST_CASE("frames round-trip over a stream socket") {
     SocketPair sp;
     const json spawn{{"op", "spawn"},
-                     {"elf", "/data/prosperobrowser/prosperobrowser.elf"},
+                     {"elf", "/data/prosperoweb/prosperoweb.elf"},
                      {"argv", {"WebProcess", "7", "3"}},
-                     {"env", {"HOME=/data/prosperobrowser", "A=b c"}},
+                     {"env", {"HOME=/data/prosperoweb", "A=b c"}},
                      {"nfds", 0}};
     REQUIRE(broker_send_frame(sp.a, spawn));
     REQUIRE(broker_send_frame(sp.a, json{{"ev", "exited"}, {"pid", 12}, {"status", 256}}));
@@ -176,7 +176,7 @@ TEST_SUITE("broker_proto") {
     std::vector<std::string> argv;
     CHECK(broker_get_strings(got, "argv", &argv));
     CHECK(argv == std::vector<std::string>{"WebProcess", "7", "3"});
-    CHECK(broker_get_string(got, "elf") == "/data/prosperobrowser/prosperobrowser.elf");
+    CHECK(broker_get_string(got, "elf") == "/data/prosperoweb/prosperoweb.elf");
     CHECK(broker_get_int(got, "nfds", -1) == 0);
     CHECK(broker_get_int(got, "elf", -1) == -1);  // wrong type -> fallback
     CHECK(broker_get_bool(got, "ok", true));       // missing -> fallback
@@ -216,13 +216,13 @@ TEST_SUITE("broker_proto") {
 TEST_SUITE("broker_endpoints") {
   TEST_CASE("AF_UNIX paths are tried env first, then /tmp, then /data") {
     CHECK(broker_socket_paths(nullptr) ==
-          std::vector<std::string>{"/tmp/prosperobrowser-spawn.sock",
-                                   "/data/prosperobrowser/tmp/spawn.sock"});
+          std::vector<std::string>{"/tmp/prosperoweb-spawn.sock",
+                                   "/data/prosperoweb/tmp/spawn.sock"});
     CHECK(broker_socket_paths("") == broker_socket_paths(nullptr));
     CHECK(broker_socket_paths("/x/s.sock") ==
-          std::vector<std::string>{"/x/s.sock", "/tmp/prosperobrowser-spawn.sock",
-                                   "/data/prosperobrowser/tmp/spawn.sock"});
-    CHECK(broker_socket_paths("/tmp/prosperobrowser-spawn.sock").size() == 2);  // no duplicate
+          std::vector<std::string>{"/x/s.sock", "/tmp/prosperoweb-spawn.sock",
+                                   "/data/prosperoweb/tmp/spawn.sock"});
+    CHECK(broker_socket_paths("/tmp/prosperoweb-spawn.sock").size() == 2);  // no duplicate
   }
 
   TEST_CASE("the TCP port defaults to 17771 and ignores junk") {
@@ -238,7 +238,7 @@ TEST_SUITE("broker_endpoints") {
     const auto eps = broker_endpoints("/x/s.sock", "18000");
     REQUIRE(eps.size() == 4);
     CHECK(eps[0].describe() == "unix /x/s.sock");
-    CHECK(eps[2].describe() == "unix /data/prosperobrowser/tmp/spawn.sock");
+    CHECK(eps[2].describe() == "unix /data/prosperoweb/tmp/spawn.sock");
     CHECK(eps[3].tcp);
     CHECK(eps[3].describe() == "tcp 127.0.0.1:18000");
   }
@@ -483,7 +483,7 @@ TEST_SUITE("broker_tcp") {
     std::thread thread;
 
     TcpBroker() {
-      opt.socket_paths = {"/nonexistent-prosperobrowser-dir/spawn.sock"};
+      opt.socket_paths = {"/nonexistent-prosperoweb-dir/spawn.sock"};
       opt.tcp_port = 0;  // ephemeral
       opt.bound_tcp_port = &port;
       opt.idle_ms = 60000;
@@ -614,36 +614,36 @@ TEST_SUITE("broker_tcp") {
 
   TEST_CASE("nothing to listen on is a startup failure") {
     BrokerServerOptions opt;
-    opt.socket_paths = {"/nonexistent-prosperobrowser-dir/spawn.sock"};
+    opt.socket_paths = {"/nonexistent-prosperoweb-dir/spawn.sock"};
     opt.tcp_port = -1;
     CHECK(broker_serve(opt, nullptr) == 1);
   }
 
   TEST_CASE("the client reports every endpoint that failed") {
     BrokerEndpoint a;
-    a.path = "/nonexistent-prosperobrowser-dir/spawn.sock";
+    a.path = "/nonexistent-prosperoweb-dir/spawn.sock";
     BrokerEndpoint b;
     b.tcp = true;
     b.port = 1;  // nothing listens on tcp/1
     BrokerClient client({a, b}, nullptr);
     std::string failures;
     CHECK_FALSE(client.connect_once(&failures));
-    CHECK(failures.find("unix /nonexistent-prosperobrowser-dir/spawn.sock: ") == 0);
+    CHECK(failures.find("unix /nonexistent-prosperoweb-dir/spawn.sock: ") == 0);
     CHECK(failures.find("; tcp 127.0.0.1:1: ") != std::string::npos);
   }
 }
 
 TEST_SUITE("broker_websrv") {
   TEST_CASE("the websrv request matches sys_launch_daemon's parsing") {
-    CHECK(url_encode("/data/prosperobrowser/prosperobrowser.elf") ==
-          "/data/prosperobrowser/prosperobrowser.elf");
+    CHECK(url_encode("/data/prosperoweb/prosperoweb.elf") ==
+          "/data/prosperoweb/prosperoweb.elf");
     CHECK(url_encode("a b=c&d") == "a%20b%3Dc%26d");
     CHECK(websrv_escape_token("/a b\\c") == "/a\\ b\\\\c");
-    CHECK(websrv_broker_target("/data/prosperobrowser/prosperobrowser.elf", "/data/prosperobrowser",
+    CHECK(websrv_broker_target("/data/prosperoweb/prosperoweb.elf", "/data/prosperoweb",
                                "spawn-broker --role=spawn-broker",
-                               "PROSPEROBROWSER_ROLE=spawn-broker") ==
-          "/hbldr?path=/data/prosperobrowser/prosperobrowser.elf&cwd=/data/prosperobrowser&daemon=1"
-          "&args=spawn-broker%20--role%3Dspawn-broker&env=PROSPEROBROWSER_ROLE%3Dspawn-broker");
+                               "PROSPEROWEB_ROLE=spawn-broker") ==
+          "/hbldr?path=/data/prosperoweb/prosperoweb.elf&cwd=/data/prosperoweb&daemon=1"
+          "&args=spawn-broker%20--role%3Dspawn-broker&env=PROSPEROWEB_ROLE%3Dspawn-broker");
   }
 
   TEST_CASE("http_get sends an HTTP/1.0 GET and returns the status") {

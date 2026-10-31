@@ -27,7 +27,7 @@
 #include "video_server.h"
 
 namespace wire = WebCore::FFmpegMedia::VideoWire;
-using namespace prosperobrowser;
+using namespace prosperoweb;
 using display::Rect;
 
 namespace {

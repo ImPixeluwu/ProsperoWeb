@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "prosperobrowser/core/legacy_profile.h"
+#include "prosperoweb/core/legacy_profile.h"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -13,7 +13,7 @@
 
 extern char** environ;
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 namespace {
 
@@ -274,4 +274,4 @@ LegacyMigration migrate_legacy_profile(const std::string& from_dir, const std::s
   return result;
 }
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

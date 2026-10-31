@@ -13,7 +13,7 @@
 // src/ps5/spawn/cpuset_assign_ps5.cpp (PS5 target only). Keeping the policy
 // here lets the host tests cover it.
 //
-// Env PROSPEROBROWSER_CHILD_CPU selects the mechanism: "off"/"0" leaves the
+// Env PROSPEROWEB_CHILD_CPU selects the mechanism: "off"/"0" leaves the
 // child alone, "setid" joins the UI set only, "mask" widens the mask only,
 // anything else (the default) tries setid first and falls back to the mask.
 #pragma once
@@ -22,11 +22,11 @@
 
 #include "cpu_mask.h"
 
-namespace prosperobrowser::cpu {
+namespace prosperoweb::cpu {
 
 enum class ChildCpuMode { Auto, SetId, Mask, Off };
 
-// Parses PROSPEROBROWSER_CHILD_CPU (nullptr/empty -> Auto).
+// Parses PROSPEROWEB_CHILD_CPU (nullptr/empty -> Auto).
 ChildCpuMode parse_child_cpu_mode(const char* env);
 const char* child_cpu_mode_name(ChildCpuMode mode);
 
@@ -63,4 +63,4 @@ std::string format_child_cpu_log(long child_pid, long ui_pid, long ui_setid,
                                   int before_error, const CpuMask& after, int after_error,
                                   const std::string& reason);
 
-}  // namespace prosperobrowser::cpu
+}  // namespace prosperoweb::cpu

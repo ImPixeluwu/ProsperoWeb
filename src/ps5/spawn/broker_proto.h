@@ -17,7 +17,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace prosperobrowser::spawn {
+namespace prosperoweb::spawn {
 
 // Upper bound of one frame's JSON payload. A spawn request carries the UI's
 // whole environment, which is a few KiB.
@@ -26,11 +26,11 @@ inline constexpr size_t kBrokerMaxFrame = 1u << 20;
 // Upper bound of descriptors attached to one frame.
 inline constexpr int kBrokerMaxFds = 8;
 
-// AF_UNIX socket paths tried after $PROSPEROBROWSER_SPAWN_SOCK, in order.
-inline constexpr const char* kBrokerTmpSocket = "/tmp/prosperobrowser-spawn.sock";
-inline constexpr const char* kBrokerDataSocket = "/data/prosperobrowser/tmp/spawn.sock";
+// AF_UNIX socket paths tried after $PROSPEROWEB_SPAWN_SOCK, in order.
+inline constexpr const char* kBrokerTmpSocket = "/tmp/prosperoweb-spawn.sock";
+inline constexpr const char* kBrokerDataSocket = "/data/prosperoweb/tmp/spawn.sock";
 
-// Loopback TCP port of the broker; PROSPEROBROWSER_SPAWN_PORT overrides it.
+// Loopback TCP port of the broker; PROSPEROWEB_SPAWN_PORT overrides it.
 inline constexpr int kBrokerDefaultPort = 17771;
 
 // One place the broker listens on / the client connects to.
@@ -39,16 +39,16 @@ struct BrokerEndpoint {
   std::string path;  // AF_UNIX
   int port = 0;      // TCP on 127.0.0.1
 
-  // "unix /tmp/prosperobrowser-spawn.sock" or "tcp 127.0.0.1:17771".
+  // "unix /tmp/prosperoweb-spawn.sock" or "tcp 127.0.0.1:17771".
   std::string describe() const;
 };
 
 // The AF_UNIX paths in the order both sides try them: env_sock (the value
-// of PROSPEROBROWSER_SPAWN_SOCK, may be null or empty), kBrokerTmpSocket,
+// of PROSPEROWEB_SPAWN_SOCK, may be null or empty), kBrokerTmpSocket,
 // kBrokerDataSocket; duplicates dropped.
 std::vector<std::string> broker_socket_paths(const char* env_sock);
 
-// The TCP port from env_port (PROSPEROBROWSER_SPAWN_PORT, may be null);
+// The TCP port from env_port (PROSPEROWEB_SPAWN_PORT, may be null);
 // kBrokerDefaultPort if unset or not a port number.
 int broker_tcp_port(const char* env_port);
 
@@ -95,4 +95,4 @@ enum class BrokerSrcFds {
 BrokerSrcFds broker_get_src_fds(const nlohmann::json& msg, std::vector<int>* out,
                                 std::string* why);
 
-}  // namespace prosperobrowser::spawn
+}  // namespace prosperoweb::spawn

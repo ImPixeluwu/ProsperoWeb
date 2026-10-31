@@ -3,7 +3,7 @@
 
 #include <algorithm>
 
-namespace prosperobrowser::audio {
+namespace prosperoweb::audio {
 
 Mixer::Mixer(std::size_t capacity_frames)
     : capacity_frames_(std::max<std::size_t>(capacity_frames, 1)),
@@ -120,4 +120,4 @@ void Mixer::mix(float* out, std::size_t frames) {
   }
 }
 
-}  // namespace prosperobrowser::audio
+}  // namespace prosperoweb::audio

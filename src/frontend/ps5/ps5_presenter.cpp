@@ -6,7 +6,7 @@
 
 #include "ps5_log.h"
 
-namespace prosperobrowser::frontend {
+namespace prosperoweb::frontend {
 
 Ps5Presenter::Ps5Presenter(SDL_Window* window, bool threaded,
                            std::function<void()> request_frame)
@@ -106,4 +106,4 @@ void Ps5Presenter::run() {
   }
 }
 
-}  // namespace prosperobrowser::frontend
+}  // namespace prosperoweb::frontend

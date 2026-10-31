@@ -7,7 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 struct Bookmark {
   std::string url;
@@ -35,4 +35,4 @@ class Bookmarks {
   std::vector<Bookmark> items_;
 };
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

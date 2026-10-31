@@ -8,7 +8,7 @@
 #include "ps5_log.h"
 #include "wk_helpers.h"
 
-namespace prosperobrowser::frontend {
+namespace prosperoweb::frontend {
 
 namespace {
 
@@ -28,7 +28,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:transparent;
   border-radius:50%;border:3px solid #fff;background:rgba(61,139,255,.25);box-sizing:border-box}
 </style></head><body>
 <div id="band"><div id="title"></div><div id="url"></div>
-<div id="warn">chrome.html missing: reinstall /data/prosperobrowser/chrome</div></div>
+<div id="warn">chrome.html missing: reinstall /data/prosperoweb/chrome</div></div>
 <div id="pointer" hidden></div>
 <script>
 window.ps5chrome = {
@@ -132,4 +132,4 @@ void Ps5ChromeUi::click(int x, int y) {
   }
 }
 
-}  // namespace prosperobrowser::frontend
+}  // namespace prosperoweb::frontend

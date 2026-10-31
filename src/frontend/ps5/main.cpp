@@ -2,7 +2,7 @@
 //
 // Multi-call entry point. The browser ships as one static ELF; the role is
 // selected by argv[0] (set by ps5_spawn_self in the launcher), then by a
-// --role=<name> argument, then by the PROSPEROBROWSER_ROLE environment variable:
+// --role=<name> argument, then by the PROSPEROWEB_ROLE environment variable:
 //
 //   "WebProcess"     -> ps5_webkit_web_process_main    (WebKit static lib)
 //   "NetworkProcess" -> ps5_webkit_network_process_main (WebKit static lib)
@@ -18,8 +18,8 @@
 
 #include <unistd.h>
 
-#include "prosperobrowser/core/legacy_profile.h"
-#include "prosperobrowser/spawn/spawn.h"
+#include "prosperoweb/core/legacy_profile.h"
+#include "prosperoweb/spawn/spawn.h"
 #include "ps5webkit/entry.h"
 #include "ps5_app.h"
 #include "ps5_cpu_affinity.h"
@@ -40,7 +40,7 @@ const char* basename_of(const char* path) {
 
 constexpr const char* kBrokerRole = "spawn-broker";
 
-// Resolves the process role from argv[0], then --role=, then PROSPEROBROWSER_ROLE.
+// Resolves the process role from argv[0], then --role=, then PROSPEROWEB_ROLE.
 std::string resolve_role(int argc, char** argv) {
   if (argc > 0 && argv[0]) {
     std::string role = basename_of(argv[0]);
@@ -53,7 +53,7 @@ std::string resolve_role(int argc, char** argv) {
       return argv[i] + 7;
     }
   }
-  if (const char* env = std::getenv("PROSPEROBROWSER_ROLE")) {
+  if (const char* env = std::getenv("PROSPEROWEB_ROLE")) {
     return env;
   }
   return "UI";
@@ -62,8 +62,8 @@ std::string resolve_role(int argc, char** argv) {
 // The UI's own ELF is what the spawner re-executes for WebProcess and
 // NetworkProcess. When the loader passed an absolute *.elf path as argv[0],
 // export it, so the children run exactly the binary the UI was started from
-// (not a stale copy at the default install path). PROSPEROBROWSER_SELF_PATH set
-// by the user wins; otherwise the spawner uses /data/prosperobrowser/prosperobrowser.elf.
+// (not a stale copy at the default install path). PROSPEROWEB_SELF_PATH set
+// by the user wins; otherwise the spawner uses /data/prosperoweb/prosperoweb.elf.
 void export_self_path(int argc, char** argv) {
   if (argc < 1 || !argv[0] || argv[0][0] != '/') {
     return;
@@ -75,15 +75,15 @@ void export_self_path(int argc, char** argv) {
       access(path.c_str(), R_OK) != 0) {
     return;
   }
-  setenv("PROSPEROBROWSER_SELF_PATH", path.c_str(), /*overwrite=*/0);
+  setenv("PROSPEROWEB_SELF_PATH", path.c_str(), /*overwrite=*/0);
 }
 
 // The project was called ps5browser before: carry its profile over once
 // (UI role, before config.json is read). Copies, never moves, so the old
 // build keeps working from /data/ps5browser.
 void migrate_legacy_profile_dir() {
-  using namespace prosperobrowser::frontend;
-  const auto result = prosperobrowser::core::migrate_legacy_profile(kLegacyDataDir, kPs5DataDir);
+  using namespace prosperoweb::frontend;
+  const auto result = prosperoweb::core::migrate_legacy_profile(kLegacyDataDir, kPs5DataDir);
   if (!result.ran) {
     return;
   }
@@ -95,7 +95,7 @@ void migrate_legacy_profile_dir() {
 
 // Logs the PS5BROWSER_* variables adopted at startup, once per launch.
 void log_legacy_env(const std::vector<std::string>& adopted) {
-  using prosperobrowser::frontend::log_printf;
+  using prosperoweb::frontend::log_printf;
   if (adopted.empty()) {
     return;
   }
@@ -104,17 +104,17 @@ void log_legacy_env(const std::vector<std::string>& adopted) {
     names += (names.empty() ? "" : " ") + name;
   }
   log_printf("env: deprecated PS5BROWSER_* variables used (%s); rename them to "
-             "PROSPEROBROWSER_*, the old names stop working in the next release",
+             "PROSPEROWEB_*, the old names stop working in the next release",
              names.c_str());
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  using namespace prosperobrowser::frontend;
+  using namespace prosperoweb::frontend;
   // Before anything reads the environment (the role, then every module).
   // The children inherit the new names, so only the UI or broker logs this.
-  const std::vector<std::string> legacy_env = prosperobrowser::core::adopt_legacy_env();
+  const std::vector<std::string> legacy_env = prosperoweb::core::adopt_legacy_env();
   std::string role = resolve_role(argc, argv);
   const bool child = role == "WebProcess" || role == "NetworkProcess";
   const bool broker = role == kBrokerRole;

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "prosperobrowser/core/touchpad_model.h"
+#include "prosperoweb/core/touchpad_model.h"
 
 #include <algorithm>
 #include <cmath>
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 TouchpadModel::Finger* TouchpadModel::find(int id) {
   for (Finger& f : fingers_) {
@@ -146,4 +146,4 @@ TouchpadModel::Output TouchpadModel::take() {
   return out;
 }
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

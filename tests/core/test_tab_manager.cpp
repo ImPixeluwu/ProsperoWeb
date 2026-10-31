@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <doctest/doctest.h>
 
-#include "prosperobrowser/core/tab_manager.h"
+#include "prosperoweb/core/tab_manager.h"
 
-using prosperobrowser::core::TabManager;
+using prosperoweb::core::TabManager;
 
 TEST_SUITE("tab_manager") {
   TEST_CASE("open makes the new tab active and ids are unique") {

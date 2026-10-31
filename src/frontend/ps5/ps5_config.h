@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Runtime configuration read from /data/prosperobrowser/config.json.
+// Runtime configuration read from /data/prosperoweb/config.json.
 #pragma once
 
 #include <string>
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 class Storage;
 }
 
-namespace prosperobrowser::frontend {
+namespace prosperoweb::frontend {
 
 // The default user agent: desktop Safari. Sites serve a "PlayStation"
 // user agent TV or legacy variants, or nothing at all.
@@ -22,9 +22,9 @@ struct Ps5Config {
   std::string user_agent = kDefaultUserAgent;
   std::string language = "en";  // "en" or "ru"
   // Directory where chrome.html and its assets are installed.
-  std::string chrome_dir = "/data/prosperobrowser/chrome";
+  std::string chrome_dir = "/data/prosperoweb/chrome";
   // Text entry: "system" (the PS5 keyboard dialog, built-in OSK as the
-  // fallback) or "builtin" (the HTML OSK only). PROSPEROBROWSER_OSK overrides it.
+  // fallback) or "builtin" (the HTML OSK only). PROSPEROWEB_OSK overrides it.
   std::string osk = "system";
   int width = 1920;
   int height = 1080;
@@ -34,4 +34,4 @@ struct Ps5Config {
   static Ps5Config load(core::Storage& storage);
 };
 
-}  // namespace prosperobrowser::frontend
+}  // namespace prosperoweb::frontend

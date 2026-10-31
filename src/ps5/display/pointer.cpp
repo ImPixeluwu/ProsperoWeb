@@ -6,7 +6,7 @@
 
 #include "compose.h"
 
-namespace prosperobrowser::display {
+namespace prosperoweb::display {
 
 namespace {
 
@@ -104,4 +104,4 @@ void draw_pointer(std::uint32_t* dst, int dst_stride, const Rect& clip, int x, i
   }
 }
 
-}  // namespace prosperobrowser::display
+}  // namespace prosperoweb::display

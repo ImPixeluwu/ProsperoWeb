@@ -3,7 +3,7 @@
 #
 # Check the staged fonts.conf with the host's fontconfig:
 #
-#   scripts/ps5/fonts/check-fonts.sh [dist/prosperobrowser/fonts]
+#   scripts/ps5/fonts/check-fonts.sh [dist/prosperoweb/fonts]
 #
 # fonts.conf names the console paths, so a copy pointing <dir> at the staged
 # fonts and <cachedir> at a fresh, not yet existing directory is used. The
@@ -12,7 +12,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-FONTS="$(cd "${1:-${ROOT}/dist/prosperobrowser/fonts}" && pwd)"
+FONTS="$(cd "${1:-${ROOT}/dist/prosperoweb/fonts}" && pwd)"
 WORK="${ROOT}/build-dist/fontcheck"
 
 command -v fc-match >/dev/null || { echo "fc-match is required" >&2; exit 1; }

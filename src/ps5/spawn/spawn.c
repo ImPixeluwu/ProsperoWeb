@@ -389,7 +389,7 @@ int ps5_spawn_direct(const char* const* argv, const int* fds, int nfds) {
   const char* role = argv[0];
 
   // argv[0] is the child's role name, never a path: resolve the image from
-  // PROSPEROBROWSER_SELF_PATH (exported by main() from the UI's own argv[0]) or
+  // PROSPEROWEB_SELF_PATH (exported by main() from the UI's own argv[0]) or
   // the default install path.
   char path[1024];
   if (ps5_spawn_resolve_self_path(NULL, getenv_const, path, sizeof(path)) != 0) {

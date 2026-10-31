@@ -190,7 +190,7 @@ const FFmpegMedia::DecoderAvailability& MediaPlayerPrivateFFmpeg::decoderAvailab
         available.hevc = findSoftwareDecoder(AV_CODEC_ID_HEVC);
         // Software VP9 costs far more CPU than H.264 at the same size;
         // answering "" makes YouTube & co. serve H.264 instead.
-        const char* vp9 = getenv("PROSPEROBROWSER_MEDIA_VP9");
+        const char* vp9 = getenv("PROSPEROWEB_MEDIA_VP9");
         bool allowVP9 = vp9 && !strcmp(vp9, "1");
         available.vp8 = allowVP9 && findSoftwareDecoder(AV_CODEC_ID_VP8);
         available.vp9 = allowVP9 && findSoftwareDecoder(AV_CODEC_ID_VP9);
@@ -202,7 +202,7 @@ const FFmpegMedia::DecoderAvailability& MediaPlayerPrivateFFmpeg::decoderAvailab
         available.flac = findSoftwareDecoder(AV_CODEC_ID_FLAC);
         available.ac3 = findSoftwareDecoder(AV_CODEC_ID_AC3);
         available.eac3 = findSoftwareDecoder(AV_CODEC_ID_EAC3);
-        ffmpegMediaLog("codecs: VP8/VP9 %s (PROSPEROBROWSER_MEDIA_VP9), AV1 %s", available.vp9 ? "on" : "off", available.av1 ? "on" : "off");
+        ffmpegMediaLog("codecs: VP8/VP9 %s (PROSPEROWEB_MEDIA_VP9), AV1 %s", available.vp9 ? "on" : "off", available.av1 ? "on" : "off");
         return available;
     }();
     return decoders.get();
@@ -212,9 +212,9 @@ const FFmpegMedia::VideoLimits& MediaPlayerPrivateFFmpeg::videoLimits()
 {
     static NeverDestroyed<FFmpegMedia::VideoLimits> limits = [] {
         FFmpegMedia::VideoLimits value;
-        if (const char* text = getenv("PROSPEROBROWSER_MEDIA_MAX_VIDEO"); text && !FFmpegMedia::parseVideoLimits(text, value))
+        if (const char* text = getenv("PROSPEROWEB_MEDIA_MAX_VIDEO"); text && !FFmpegMedia::parseVideoLimits(text, value))
             value = { };
-        ffmpegMediaLog("codecs: video limit %.0fx%.0f (PROSPEROBROWSER_MEDIA_MAX_VIDEO)", value.maxLongSide, value.maxShortSide);
+        ffmpegMediaLog("codecs: video limit %.0fx%.0f (PROSPEROWEB_MEDIA_MAX_VIDEO)", value.maxLongSide, value.maxShortSide);
         return value;
     }();
     return limits.get();

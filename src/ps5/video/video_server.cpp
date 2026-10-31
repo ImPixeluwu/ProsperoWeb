@@ -20,7 +20,7 @@
 
 extern "C" void ps5_log_printf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
-namespace prosperobrowser::video {
+namespace prosperoweb::video {
 
 namespace wire = WebCore::FFmpegMedia::VideoWire;
 
@@ -555,4 +555,4 @@ void VideoServer::log_stats() {
   stats_ = Stats{};
 }
 
-}  // namespace prosperobrowser::video
+}  // namespace prosperoweb::video

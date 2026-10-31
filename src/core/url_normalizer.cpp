@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "prosperobrowser/core/url_normalizer.h"
+#include "prosperoweb/core/url_normalizer.h"
 
 #include "text_utils.h"
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 namespace {
 
@@ -166,4 +166,4 @@ std::string UrlNormalizer::display_host(std::string_view url) {
   return detail::to_lower_ascii(rest);
 }
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

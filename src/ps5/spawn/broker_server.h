@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace prosperobrowser::spawn {
+namespace prosperoweb::spawn {
 
 struct BrokerSpawnRequest {
   std::string elf;                // ELF to run (mapped once per path)
@@ -58,4 +58,4 @@ struct BrokerServerOptions {
 // a fatal socket error (including: nothing could be listened on). Returns a process exit code (0 on a clean exit).
 int broker_serve(const BrokerServerOptions& options, const std::atomic<bool>* stop);
 
-}  // namespace prosperobrowser::spawn
+}  // namespace prosperoweb::spawn

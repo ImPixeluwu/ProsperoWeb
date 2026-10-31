@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Package ProsperoBrowser as a native PS5 title PRSB00001: a home-screen tile
+# Package ProsperoWeb as a native PS5 title PRWB00001: a home-screen tile
 # with icon and backgrounds, a signed development FSELF eboot.bin, the
 # clean-room libc.prx runtime companion and sce_sys/param.json, plus the
-# ProsperoStore catalog artifact (build-dist/PRSB00001.zip, PRSB00001/ at the
+# ProsperoStore catalog artifact (build-dist/PRWB00001.zip, PRWB00001/ at the
 # top). See docs/native-title.md for the design, the launch chain and the
 # frontend code changes still needed.
 #
 #   scripts/ps5/native/make-title.sh [path/to/native-app.elf]
 #
 # The eboot.bin:
-#   - If an ELF is given (or dist/prosperobrowser/prosperobrowser.elf exists)
+#   - If an ELF is given (or dist/prosperoweb/prosperoweb.elf exists)
 #     AND it was linked as a NATIVE app (third_party ps5-pie.ld + app_crt,
 #     entry _start(process_parameters, teardown)), it is converted and signed
 #     into the title's eboot.bin.
@@ -29,8 +29,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SDK="${PS5_PAYLOAD_SDK:-/opt/ps5-payload-sdk}"
-TITLE_ID="PRSB00001"
-INPUT_ELF="${1:-${ROOT}/dist/prosperobrowser/prosperobrowser.elf}"
+TITLE_ID="PRWB00001"
+INPUT_ELF="${1:-${ROOT}/dist/prosperoweb/prosperoweb.elf}"
 
 NT="${ROOT}/third_party/ps5-native-tool"
 BC="${ROOT}/third_party/bc7enc_rdo"
@@ -39,7 +39,7 @@ HOST="${WORK}/host"
 OUTDIR="${ROOT}/build-dist/native"
 APP="${OUTDIR}/${TITLE_ID}"
 BG="${ROOT}/build-dist/assets/background-3840x2160.png"
-DIST="${ROOT}/dist/prosperobrowser"
+DIST="${ROOT}/dist/prosperoweb"
 
 # Loader/container constants, verified on firmware 6.02/12.70 by the vendored
 # boilerplate; kept separate from the public app version in param.json.
@@ -137,7 +137,7 @@ param = {
     "contentId": app["contentId"],
     "contentVersion": app["contentVersion"],
     # Positive so the sandbox /download0 scratch mount exists; the writable
-    # browser profile itself lives at /data/prosperobrowser (ShadowMountPlus
+    # browser profile itself lives at /data/prosperoweb (ShadowMountPlus
     # mounts /data writable via nullfs for a homebrew title).
     "downloadDataSize": 256,
     "localizedParameters": {
@@ -213,7 +213,7 @@ cp -- "${WORK}/pic0.dds" "${APP}/sce_sys/pic0.dds"
 cp -- "${WORK}/pic1.dds" "${APP}/sce_sys/pic1.dds"
 
 # Read-only runtime data under the title (served as /app0/data/...). The
-# writable profile stays at /data/prosperobrowser (ShadowMountPlus nullfs).
+# writable profile stays at /data/prosperoweb (ShadowMountPlus nullfs).
 # NATIVE_SKIP_DATA=1 leaves it out (smaller zip for a format-only check).
 if [[ "${NATIVE_SKIP_DATA:-0}" != 1 && -d "${DIST}" ]]; then
     mkdir -p "${APP}/data"
@@ -248,10 +248,10 @@ for name in ("pic0.dds", "pic1.dds"):
 print("presentation assets validated:", root)
 PY
 
-# --- 8. ProsperoStore catalog artifact: PRSB00001.zip, PRSB00001/ at top. ---
+# --- 8. ProsperoStore catalog artifact: PRWB00001.zip, PRWB00001/ at top. ---
 ZIP="${ROOT}/build-dist/${TITLE_ID}.zip"
 rm -f -- "${ZIP}"
-# Built with python's zipfile (no external zip dependency): PRSB00001/ at the
+# Built with python's zipfile (no external zip dependency): PRWB00001/ at the
 # top of the archive, with eboot.bin kept executable (0755) so a console-side
 # unzip preserves the bit the loader needs.
 python3 -I - "${OUTDIR}" "${TITLE_ID}" "${ZIP}" <<'PY'

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "prosperobrowser/core/fullscreen_controller.h"
+#include "prosperoweb/core/fullscreen_controller.h"
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 using Effect = FullscreenController::Effect;
 using State = FullscreenController::State;
@@ -38,4 +38,4 @@ Effect FullscreenController::user_exit() {
                                               : Effect::None;
 }
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

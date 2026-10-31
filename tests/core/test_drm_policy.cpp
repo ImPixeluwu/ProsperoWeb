@@ -3,10 +3,10 @@
 
 #include <string>
 
-#include "prosperobrowser/core/drm_policy.h"
-#include "prosperobrowser/core/page_scripts.h"
+#include "prosperoweb/core/drm_policy.h"
+#include "prosperoweb/core/page_scripts.h"
 
-using namespace prosperobrowser::core;
+using namespace prosperoweb::core;
 
 TEST_SUITE("drm_policy") {
   TEST_CASE("known DRM-only hosts including subdomains") {

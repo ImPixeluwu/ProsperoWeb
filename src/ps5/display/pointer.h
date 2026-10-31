@@ -12,7 +12,7 @@
 
 #include "damage_region.h"
 
-namespace prosperobrowser::display {
+namespace prosperoweb::display {
 
 // Premultiplied ARGB32 (0xAARRGGBB) square, centred on the hot spot.
 struct PointerSprite {
@@ -30,4 +30,4 @@ Rect pointer_rect(int x, int y);
 // surface), writing only inside clip.
 void draw_pointer(std::uint32_t* dst, int dst_stride, const Rect& clip, int x, int y);
 
-}  // namespace prosperobrowser::display
+}  // namespace prosperoweb::display

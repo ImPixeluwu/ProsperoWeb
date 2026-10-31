@@ -4,9 +4,9 @@
 #include <utility>
 #include <vector>
 
-#include "prosperobrowser/core/gamepad_mapper.h"
+#include "prosperoweb/core/gamepad_mapper.h"
 
-using namespace prosperobrowser::core;
+using namespace prosperoweb::core;
 
 namespace {
 

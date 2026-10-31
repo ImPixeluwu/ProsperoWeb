@@ -3,7 +3,7 @@
 
 #include <cstring>
 
-namespace prosperobrowser::cpu {
+namespace prosperoweb::cpu {
 
 ChildCpuMode parse_child_cpu_mode(const char* env) {
   if (!env || !*env) {
@@ -39,7 +39,7 @@ ChildCpuPlan plan_child_cpuset(ChildCpuMode mode, bool have_ui_setid, const CpuM
                                const CpuMask* ui, const CpuMask* root) {
   ChildCpuPlan plan;
   if (mode == ChildCpuMode::Off) {
-    plan.reason = "disabled (PROSPEROBROWSER_CHILD_CPU=off)";
+    plan.reason = "disabled (PROSPEROWEB_CHILD_CPU=off)";
     return plan;
   }
 
@@ -117,4 +117,4 @@ std::string format_child_cpu_log(long child_pid, long ui_pid, long ui_setid,
   return out;
 }
 
-}  // namespace prosperobrowser::cpu
+}  // namespace prosperoweb::cpu

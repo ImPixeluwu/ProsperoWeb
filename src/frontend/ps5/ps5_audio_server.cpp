@@ -9,7 +9,7 @@
 #include "FFmpegAudioWire.h"
 #include "ps5_log.h"
 
-namespace prosperobrowser::frontend {
+namespace prosperoweb::frontend {
 
 namespace {
 
@@ -17,7 +17,7 @@ namespace wire = WebCore::FFmpegMedia::AudioWire;
 
 // -1 = disabled.
 int configured_port() {
-  const char* value = std::getenv("PROSPEROBROWSER_AUDIO_PORT");
+  const char* value = std::getenv("PROSPEROWEB_AUDIO_PORT");
   if (!value || !*value) {
     return wire::defaultPort;
   }
@@ -27,7 +27,7 @@ int configured_port() {
   char* end = nullptr;
   const long port = std::strtol(value, &end, 10);
   if (*end || port < 0 || port > 65535) {
-    log_printf("audio server: PROSPEROBROWSER_AUDIO_PORT=%s is not a port; disabled", value);
+    log_printf("audio server: PROSPEROWEB_AUDIO_PORT=%s is not a port; disabled", value);
     return -1;
   }
   return static_cast<int>(port);
@@ -38,7 +38,7 @@ int configured_port() {
 std::unique_ptr<Ps5AudioServer> Ps5AudioServer::start() {
   const int port = configured_port();
   if (port < 0) {
-    log_line("audio server: disabled (PROSPEROBROWSER_AUDIO_PORT)");
+    log_line("audio server: disabled (PROSPEROWEB_AUDIO_PORT)");
     return nullptr;
   }
   if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
@@ -113,4 +113,4 @@ void Ps5AudioServer::play_test_tone() {
   server_->play_local(samples, "audio server: test tone played");
 }
 
-}  // namespace prosperobrowser::frontend
+}  // namespace prosperoweb::frontend

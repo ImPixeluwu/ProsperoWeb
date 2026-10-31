@@ -1,11 +1,11 @@
-# PS5 frontend (prosperobrowser executable). Activated by -DPROSPEROBROWSER_FRONTEND=ps5.
+# PS5 frontend (prosperoweb executable). Activated by -DPROSPEROWEB_FRONTEND=ps5.
 #
 # The WebKit static library is built separately by scripts/ps5/build-webkit.sh,
 # whose "package" stage writes ${PS5_WEBKIT_BUILD_DIR}/ps5webkit-link.cmake:
 # the C API include directories and the full link line (webkit-port/README.md,
-# "Link contract"). When that file exists, the prosperobrowser executable links
+# "Link contract"). When that file exists, the prosperoweb executable links
 # against it. Before it exists the frontend can still be compile-checked
-# (target prosperobrowser_frontend_ps5_objs) against a generated forwarding-header
+# (target prosperoweb_frontend_ps5_objs) against a generated forwarding-header
 # directory that symlinks WebKit/<name>.h to the public C API headers in
 # third_party/webkit.
 
@@ -21,7 +21,7 @@ set(PS5_WEBKIT_PREFIX "${CMAKE_SOURCE_DIR}/third_party/ps5-prefix" CACHE PATH
 
 # Overrides the exported link line when non-empty.
 set(PS5_WEBKIT_LINK_LIBS "" CACHE STRING
-    "Libraries to link into prosperobrowser instead of ps5webkit-link.cmake's list")
+    "Libraries to link into prosperoweb instead of ps5webkit-link.cmake's list")
 
 get_filename_component(_wk_build_dir "${PS5_WEBKIT_BUILD_DIR}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
 set(_wk_link_file "${_wk_build_dir}/ps5webkit-link.cmake")
@@ -33,7 +33,7 @@ if(EXISTS "${_wk_link_file}")
 else()
   set(PS5WEBKIT_INCLUDE_DIRS "")
   set(PS5WEBKIT_LINK_LIBRARIES "")
-  message(STATUS "ps5 frontend: ${_wk_link_file} not found, prosperobrowser cannot link "
+  message(STATUS "ps5 frontend: ${_wk_link_file} not found, prosperoweb cannot link "
                  "(run scripts/ps5/build-webkit.sh package)")
 endif()
 if(PS5_WEBKIT_LINK_LIBS)
@@ -86,48 +86,48 @@ set(_frontend_sources
 )
 
 # OBJECT library so the frontend can be compile-checked without linking WebKit.
-add_library(prosperobrowser_frontend_ps5_objs OBJECT ${_frontend_sources})
-target_compile_features(prosperobrowser_frontend_ps5_objs PRIVATE cxx_std_20)
-target_link_libraries(prosperobrowser_frontend_ps5_objs PRIVATE prosperobrowser_warnings)
-target_include_directories(prosperobrowser_frontend_ps5_objs PRIVATE
+add_library(prosperoweb_frontend_ps5_objs OBJECT ${_frontend_sources})
+target_compile_features(prosperoweb_frontend_ps5_objs PRIVATE cxx_std_20)
+target_link_libraries(prosperoweb_frontend_ps5_objs PRIVATE prosperoweb_warnings)
+target_include_directories(prosperoweb_frontend_ps5_objs PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}"
   "${CMAKE_SOURCE_DIR}/webkit-port/include")
 # WebKit, SDL2 and nlohmann headers are third-party: include as SYSTEM so their
 # warnings do not trip -Werror on our code.
 # The WebKit build's own header copy (PS5WEBKIT_INCLUDE_DIRS) wins over the
 # forwarding headers, which only serve compile checks before it exists.
-target_include_directories(prosperobrowser_frontend_ps5_objs SYSTEM PRIVATE
+target_include_directories(prosperoweb_frontend_ps5_objs SYSTEM PRIVATE
   ${PS5WEBKIT_INCLUDE_DIRS}
   "${_wk_fwd}"
   "${PS5_WEBKIT_PREFIX}/include/wpe-1.0"
   "${PS5_WEBKIT_PREFIX}/include/freetype2"  # ps5_splash_text.cpp; libfreetype.a is on WebKit's link line
   "${SDL2_INCLUDE_DIRS}"
-  "${PROSPEROBROWSER_THIRD_PARTY_DIR}")
-# prosperobrowser::core / ::shell provide the public headers the frontend consumes.
-target_link_libraries(prosperobrowser_frontend_ps5_objs PRIVATE prosperobrowser::core prosperobrowser::shell
-  prosperobrowser::spawn_util prosperobrowser::audio_server  # prosperobrowser/spawn/spawn.h (the broker role entry)
-  prosperobrowser::display prosperobrowser::video_server prosperobrowser::cpu)
+  "${PROSPEROWEB_THIRD_PARTY_DIR}")
+# prosperoweb::core / ::shell provide the public headers the frontend consumes.
+target_link_libraries(prosperoweb_frontend_ps5_objs PRIVATE prosperoweb::core prosperoweb::shell
+  prosperoweb::spawn_util prosperoweb::audio_server  # prosperoweb/spawn/spawn.h (the broker role entry)
+  prosperoweb::display prosperoweb::video_server prosperoweb::cpu)
 
 # The final executable. It cannot link until the WebKit archives exist, so it
-# is excluded from the default build: cmake --build <dir> --target prosperobrowser.
-add_executable(prosperobrowser EXCLUDE_FROM_ALL
-  $<TARGET_OBJECTS:prosperobrowser_frontend_ps5_objs>)
-target_link_libraries(prosperobrowser PRIVATE
-  prosperobrowser::shell
-  prosperobrowser::core
-  prosperobrowser::spawn
-  prosperobrowser::audio_server
-  prosperobrowser::display
-  prosperobrowser::video_server
-  prosperobrowser::cpu
+# is excluded from the default build: cmake --build <dir> --target prosperoweb.
+add_executable(prosperoweb EXCLUDE_FROM_ALL
+  $<TARGET_OBJECTS:prosperoweb_frontend_ps5_objs>)
+target_link_libraries(prosperoweb PRIVATE
+  prosperoweb::shell
+  prosperoweb::core
+  prosperoweb::spawn
+  prosperoweb::audio_server
+  prosperoweb::display
+  prosperoweb::video_server
+  prosperoweb::cpu
   ${PS5WEBKIT_LINK_LIBRARIES}
   ${SDL2_LIBRARIES}
   # ps5_ime.cpp, ps5_touchpad.cpp (also on SDL2's own link line)
   SceImeDialog SceUserService ScePad)
-target_link_directories(prosperobrowser PRIVATE ${SDL2_LIBRARY_DIRS})
+target_link_directories(prosperoweb PRIVATE ${SDL2_LIBRARY_DIRS})
 # libWebKitPS5.a holds every WebKit object; drop what the browser never reaches.
-target_link_options(prosperobrowser PRIVATE -Wl,--gc-sections)
+target_link_options(prosperoweb PRIVATE -Wl,--gc-sections)
 # Every thread passes through ps5_cpu_affinity.cpp (mask at start, registry
 # for the CPU monitor).
-target_link_options(prosperobrowser PRIVATE -Wl,--wrap=pthread_create -Wl,--wrap=pthread_exit)
-set_target_properties(prosperobrowser PROPERTIES OUTPUT_NAME "prosperobrowser" SUFFIX ".elf")
+target_link_options(prosperoweb PRIVATE -Wl,--wrap=pthread_create -Wl,--wrap=pthread_exit)
+set_target_properties(prosperoweb PROPERTIES OUTPUT_NAME "prosperoweb" SUFFIX ".elf")

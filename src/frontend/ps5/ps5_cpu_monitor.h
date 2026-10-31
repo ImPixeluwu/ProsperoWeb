@@ -8,13 +8,13 @@
 // The thread list comes from sysctl kern.proc when the kernel has it, else
 // from the threads created through pthread_create (ps5_cpu_affinity.h). The
 // masks themselves are widened by tune_process_cpus(), not here.
-// PROSPEROBROWSER_CPU_MONITOR=0 disables it.
+// PROSPEROWEB_CPU_MONITOR=0 disables it.
 #pragma once
 
-namespace prosperobrowser::frontend {
+namespace prosperoweb::frontend {
 
 // Logs the first report (and widens) synchronously, then reports from a
 // detached thread every 30 s for the life of the process.
 void start_cpu_monitor();
 
-}  // namespace prosperobrowser::frontend
+}  // namespace prosperoweb::frontend

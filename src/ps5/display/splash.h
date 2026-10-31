@@ -16,7 +16,7 @@
 
 #include "damage_region.h"
 
-namespace prosperobrowser::display {
+namespace prosperoweb::display {
 
 // 8-bit coverage, row-major, width * height bytes.
 struct GrayImage {
@@ -64,4 +64,4 @@ void paint_splash(const SplashTarget& target, const SplashLayout& layout, const 
 Rect paint_splash_progress(const SplashTarget& target, const SplashLayout& layout,
                            double progress, const SplashColors& colors = SplashColors{});
 
-}  // namespace prosperobrowser::display
+}  // namespace prosperoweb::display

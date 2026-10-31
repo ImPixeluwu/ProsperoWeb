@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "prosperobrowser/core/session.h"
+#include "prosperoweb/core/session.h"
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 template <typename T>
 bool Session::load(const char* key, T& target) {
@@ -48,4 +48,4 @@ bool Session::save_all(const TabManager& tabs, const History& history,
   return t && h && b;
 }
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

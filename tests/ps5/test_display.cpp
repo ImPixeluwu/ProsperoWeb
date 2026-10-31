@@ -17,7 +17,7 @@
 #include "pointer.h"
 #include "splash.h"
 
-using namespace prosperobrowser::display;
+using namespace prosperoweb::display;
 
 namespace {
 
@@ -352,7 +352,7 @@ TEST_SUITE("display_splash") {
 }
 
 TEST_SUITE("display_pointer") {
-  using namespace prosperobrowser::display;
+  using namespace prosperoweb::display;
 
   TEST_CASE("the sprite is a white ring with a white dot over a translucent fill") {
     const PointerSprite& s = pointer_sprite();

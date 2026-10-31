@@ -5,10 +5,10 @@
 #include <memory>
 #include <vector>
 
-#include "prosperobrowser/core/gamepad.h"
-#include "prosperobrowser/core/touchpad_model.h"
+#include "prosperoweb/core/gamepad.h"
+#include "prosperoweb/core/touchpad_model.h"
 
-namespace prosperobrowser::host {
+namespace prosperoweb::host {
 
 // Physical game controller (SDL2 GameController when built with SDL2,
 // otherwise a stub that never reports a device).
@@ -36,4 +36,4 @@ class Gamepad {
   std::vector<core::TouchContact> touch_;
 };
 
-}  // namespace prosperobrowser::host
+}  // namespace prosperoweb::host

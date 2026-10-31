@@ -17,9 +17,9 @@
 
 #include <SDL.h>
 
-#include "prosperobrowser/core/touchpad_model.h"
+#include "prosperoweb/core/touchpad_model.h"
 
-namespace prosperobrowser::frontend {
+namespace prosperoweb::frontend {
 
 class Ps5Touchpad {
  public:
@@ -45,4 +45,4 @@ class Ps5Touchpad {
   bool grow_logged_ = false;
 };
 
-}  // namespace prosperobrowser::frontend
+}  // namespace prosperoweb::frontend

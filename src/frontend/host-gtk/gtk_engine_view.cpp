@@ -3,9 +3,9 @@
 
 #include <nlohmann/json.hpp>
 
-#include "prosperobrowser/core/page_scripts.h"
+#include "prosperoweb/core/page_scripts.h"
 
-namespace prosperobrowser::host {
+namespace prosperoweb::host {
 
 namespace {
 
@@ -29,9 +29,9 @@ GtkEngineView::GtkEngineView(shell::EngineViewClient& client, WebKitNetworkSessi
   content_manager_ = webkit_user_content_manager_new();
   add_user_script(content_manager_, core::kEmeDetectorScript);
   add_user_script(content_manager_, core::kFocusReporterScript);
-  webkit_user_content_manager_register_script_message_handler(content_manager_, "prosperobrowser",
+  webkit_user_content_manager_register_script_message_handler(content_manager_, "prosperoweb",
                                                               nullptr);
-  g_signal_connect(content_manager_, "script-message-received::prosperobrowser",
+  g_signal_connect(content_manager_, "script-message-received::prosperoweb",
                    G_CALLBACK(on_script_message), this);
 
   WebKitSettings* settings = webkit_settings_new();
@@ -254,4 +254,4 @@ void GtkEngineView::on_script_message(WebKitUserContentManager* /*manager*/, JSC
   g_free(json_text);
 }
 
-}  // namespace prosperobrowser::host
+}  // namespace prosperoweb::host

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 struct Vec2 {
   float x = 0.0f;
@@ -51,4 +51,4 @@ class PointerModel {
   Vec2 pos_;
 };
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

@@ -4,7 +4,7 @@
 #include <string>
 #include <string_view>
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 // Turns address-bar input into a loadable URL.
 class UrlNormalizer {
@@ -30,4 +30,4 @@ class UrlNormalizer {
   static std::string percent_encode(std::string_view s);
 };
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

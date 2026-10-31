@@ -5,7 +5,7 @@
 #include <memory>
 #include <string>
 
-namespace prosperobrowser::shell {
+namespace prosperoweb::shell {
 
 // Callbacks from a web engine view to the shell. All calls are made on the
 // shell's thread (the frontend's main loop).
@@ -22,7 +22,7 @@ class EngineViewClient {
   // The page entered / left HTML5 element fullscreen (requestFullscreen()).
   virtual void fullscreen_entered() = 0;
   virtual void fullscreen_exited() = 0;
-  // A message posted by the injected page scripts to the "prosperobrowser"
+  // A message posted by the injected page scripts to the "prosperoweb"
   // handler, serialized as JSON (e.g. {"type":"eme","keySystem":..,"origin":..}).
   virtual void script_message(const std::string& json) = 0;
   // window.open() / target=_blank; the shell opens the URL in a new tab.
@@ -104,4 +104,4 @@ class EngineFactory {
   virtual std::unique_ptr<EngineView> create(EngineViewClient& client) = 0;
 };
 
-}  // namespace prosperobrowser::shell
+}  // namespace prosperoweb::shell

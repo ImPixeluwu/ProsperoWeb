@@ -7,9 +7,9 @@
 #include <gtk/gtk.h>
 #include <webkit/webkit.h>
 
-#include "prosperobrowser/shell/engine_view.h"
+#include "prosperoweb/shell/engine_view.h"
 
-namespace prosperobrowser::host {
+namespace prosperoweb::host {
 
 // EngineView on top of a WebKitGTK 6.0 WebKitWebView living in a GtkStack.
 //
@@ -71,4 +71,4 @@ class GtkEngineView final : public shell::EngineView {
   int pointer_y_ = 0;
 };
 
-}  // namespace prosperobrowser::host
+}  // namespace prosperoweb::host

@@ -1,4 +1,4 @@
-# Fonts bundled into dist/prosperobrowser/fonts by scripts/ps5/fonts/stage-fonts.sh.
+# Fonts bundled into dist/prosperoweb/fonts by scripts/ps5/fonts/stage-fonts.sh.
 #
 # kind     name (cache file in third_party/dl/fonts/)  sha256  url
 #

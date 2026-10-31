@@ -5,7 +5,7 @@
 
 #include <cstdio>
 
-namespace prosperobrowser::host {
+namespace prosperoweb::host {
 
 namespace {
 
@@ -54,7 +54,7 @@ Gamepad::Gamepad() : impl_(std::make_unique<Impl>()) {
   if (SDL_Init(SDL_INIT_GAMECONTROLLER) == 0) {
     impl_->initialized = true;
   } else {
-    std::fprintf(stderr, "prosperobrowser-host: SDL game controller init failed: %s\n",
+    std::fprintf(stderr, "prosperoweb-host: SDL game controller init failed: %s\n",
                  SDL_GetError());
   }
 }
@@ -81,7 +81,7 @@ void Gamepad::poll(const std::function<void(core::Button, bool)>& on_button) {
         if (!impl_->controller) {
           impl_->controller = SDL_GameControllerOpen(event.cdevice.which);
           if (impl_->controller) {
-            std::fprintf(stderr, "prosperobrowser-host: controller connected: %s\n",
+            std::fprintf(stderr, "prosperoweb-host: controller connected: %s\n",
                          SDL_GameControllerName(impl_->controller));
           }
         }
@@ -114,7 +114,7 @@ void Gamepad::poll(const std::function<void(core::Button, bool)>& on_button) {
   if (SDL_GameControllerGetNumTouchpads(c) > 0) {
     if (!impl_->touch_logged) {
       impl_->touch_logged = true;
-      std::fprintf(stderr, "prosperobrowser-host: touchpad: source sdl, resolution normalized\n");
+      std::fprintf(stderr, "prosperoweb-host: touchpad: source sdl, resolution normalized\n");
     }
     const int fingers = SDL_GameControllerGetNumTouchpadFingers(c, 0);
     for (int i = 0; i < fingers; ++i) {
@@ -144,4 +144,4 @@ void Gamepad::poll(const std::function<void(core::Button, bool)>& on_button) {
   }
 }
 
-}  // namespace prosperobrowser::host
+}  // namespace prosperoweb::host

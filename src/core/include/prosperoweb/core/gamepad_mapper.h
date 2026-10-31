@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "prosperobrowser/core/gamepad.h"
+#include "prosperoweb/core/gamepad.h"
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 // Maps button presses to actions using the default layout below. Actions
 // fire on press; releases map to Action::None (key repeat for held buttons
@@ -45,4 +45,4 @@ class GamepadMapper {
   static Action map_osk(Button button);
 };
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

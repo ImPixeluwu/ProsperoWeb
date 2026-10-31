@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "prosperobrowser/core/repeat_timer.h"
+#include "prosperoweb/core/repeat_timer.h"
 
 #include <algorithm>
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 RepeatTimer::RepeatTimer(std::uint32_t initial_delay_ms, std::uint32_t interval_ms)
     : initial_delay_ms_(initial_delay_ms), interval_ms_(std::max<std::uint32_t>(1, interval_ms)) {}
@@ -33,4 +33,4 @@ std::uint32_t RepeatTimer::update(std::uint32_t dt_ms) {
   return fired;
 }
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

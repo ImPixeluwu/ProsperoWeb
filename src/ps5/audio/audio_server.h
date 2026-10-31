@@ -21,7 +21,7 @@
 
 #include "audio_mixer.h"
 
-namespace prosperobrowser::audio {
+namespace prosperoweb::audio {
 
 struct ServerOptions {
   int port = 17772;                       // 0 = any free port (tests)
@@ -74,4 +74,4 @@ class AudioServer {
   std::vector<LocalStream> local_streams_;
 };
 
-}  // namespace prosperobrowser::audio
+}  // namespace prosperoweb::audio

@@ -5,7 +5,7 @@
 #include <string>
 #include <string_view>
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 // UTF-8 -> UTF-16 (code points above U+FFFF become surrogate pairs).
 // Malformed or truncated sequences become U+FFFD.
@@ -19,4 +19,4 @@ std::string utf16_to_utf8(std::u16string_view utf16);
 // surrogate pair.
 std::u16string utf16_truncate(std::u16string s, std::size_t max_units);
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

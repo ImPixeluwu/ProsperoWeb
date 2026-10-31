@@ -4,9 +4,9 @@
 #include <string>
 #include <string_view>
 
-#include "prosperobrowser/core/on_screen_keyboard.h"
+#include "prosperoweb/core/on_screen_keyboard.h"
 
-using Osk = prosperobrowser::core::OnScreenKeyboard;
+using Osk = prosperoweb::core::OnScreenKeyboard;
 
 namespace {
 

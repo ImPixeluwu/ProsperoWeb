@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <string>
 
-namespace prosperobrowser::display {
+namespace prosperoweb::display {
 
 // A timed, sized event (a paint, a compose, a present).
 struct TimingStat {
@@ -75,4 +75,4 @@ struct FrameStats {
   std::string format(double seconds) const;
 };
 
-}  // namespace prosperobrowser::display
+}  // namespace prosperoweb::display

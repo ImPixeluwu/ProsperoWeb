@@ -7,7 +7,7 @@
 #
 #   <fonts-dir>     receives the font files and fonts.conf
 #   <licenses-dir>  receives one license text per font family
-#   <install-dir>   where the package lives on the console (/data/prosperobrowser);
+#   <install-dir>   where the package lives on the console (/data/prosperoweb);
 #                   fonts.conf points <dir> and <cachedir> below it
 #
 # Downloads are cached in third_party/dl/fonts/ and checked against the

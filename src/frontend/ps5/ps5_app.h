@@ -14,12 +14,12 @@
 
 #include <SDL.h>
 
-#include "prosperobrowser/core/file_storage.h"
+#include "prosperoweb/core/file_storage.h"
 #include "damage_region.h"
 #include "frame_stats.h"
 #include "pointer.h"
 #include "splash.h"
-#include "prosperobrowser/shell/shell_controller.h"
+#include "prosperoweb/shell/shell_controller.h"
 #include "ps5_audio_server.h"
 #include "ps5_chrome_ui.h"
 #include "ps5_config.h"
@@ -29,7 +29,7 @@
 #include "ps5_touchpad.h"
 #include "ps5_video_overlay.h"
 
-namespace prosperobrowser::frontend {
+namespace prosperoweb::frontend {
 
 class Ps5App {
  public:
@@ -89,7 +89,7 @@ class Ps5App {
   std::unique_ptr<core::FileStorage> storage_;
   std::unique_ptr<Ps5EngineFactory> factory_;
   std::unique_ptr<Ps5ChromeUi> chrome_;
-  // The system keyboard dialog (nullptr with PROSPEROBROWSER_OSK=builtin); the
+  // The system keyboard dialog (nullptr with PROSPEROWEB_OSK=builtin); the
   // controller holds a pointer to it, so it is declared (and outlives) first.
   std::unique_ptr<Ps5ImeTextInput> ime_input_;
   std::unique_ptr<shell::ShellController> controller_;
@@ -164,4 +164,4 @@ class Ps5App {
   std::thread::id main_thread_;
 };
 
-}  // namespace prosperobrowser::frontend
+}  // namespace prosperoweb::frontend

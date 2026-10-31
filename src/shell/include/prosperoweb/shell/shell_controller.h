@@ -12,24 +12,24 @@
 
 #include <nlohmann/json.hpp>
 
-#include "prosperobrowser/core/bookmarks.h"
-#include "prosperobrowser/core/drm_policy.h"
-#include "prosperobrowser/core/fullscreen_controller.h"
-#include "prosperobrowser/core/gamepad.h"
-#include "prosperobrowser/core/gamepad_mapper.h"
-#include "prosperobrowser/core/history.h"
-#include "prosperobrowser/core/on_screen_keyboard.h"
-#include "prosperobrowser/core/pointer_model.h"
-#include "prosperobrowser/core/repeat_timer.h"
-#include "prosperobrowser/core/session.h"
-#include "prosperobrowser/core/storage.h"
-#include "prosperobrowser/core/tab_manager.h"
-#include "prosperobrowser/core/touchpad_model.h"
-#include "prosperobrowser/shell/chrome_ui.h"
-#include "prosperobrowser/shell/engine_view.h"
-#include "prosperobrowser/shell/text_input.h"
+#include "prosperoweb/core/bookmarks.h"
+#include "prosperoweb/core/drm_policy.h"
+#include "prosperoweb/core/fullscreen_controller.h"
+#include "prosperoweb/core/gamepad.h"
+#include "prosperoweb/core/gamepad_mapper.h"
+#include "prosperoweb/core/history.h"
+#include "prosperoweb/core/on_screen_keyboard.h"
+#include "prosperoweb/core/pointer_model.h"
+#include "prosperoweb/core/repeat_timer.h"
+#include "prosperoweb/core/session.h"
+#include "prosperoweb/core/storage.h"
+#include "prosperoweb/core/tab_manager.h"
+#include "prosperoweb/core/touchpad_model.h"
+#include "prosperoweb/shell/chrome_ui.h"
+#include "prosperoweb/shell/engine_view.h"
+#include "prosperoweb/shell/text_input.h"
 
-namespace prosperobrowser::shell {
+namespace prosperoweb::shell {
 
 // Engine-independent browser logic: tabs, navigation, gamepad handling,
 // on-screen keyboard, fullscreen, menu, DRM notices and session persistence.
@@ -366,4 +366,4 @@ class ShellController {
   float since_session_change_ = 0.0f;
 };
 
-}  // namespace prosperobrowser::shell
+}  // namespace prosperoweb::shell

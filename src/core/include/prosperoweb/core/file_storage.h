@@ -4,9 +4,9 @@
 #include <optional>
 #include <string>
 
-#include "prosperobrowser/core/storage.h"
+#include "prosperoweb/core/storage.h"
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 // Stores each key in "<dir>/<key>.json". Writes go to "<key>.json.tmp" first
 // and are renamed into place, so a crash never leaves a truncated file.
@@ -28,4 +28,4 @@ class FileStorage final : public Storage {
   std::string dir_;
 };
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

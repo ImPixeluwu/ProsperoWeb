@@ -3,7 +3,7 @@
 
 #include <cstdint>
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 // DualSense buttons as seen by the frontend.
 enum class Button : std::uint8_t {
@@ -89,4 +89,4 @@ enum class Action : std::uint8_t {
   OskCaretRight,
 };
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

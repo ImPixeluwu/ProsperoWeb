@@ -3,9 +3,9 @@
 
 #include <nlohmann/json.hpp>
 
-#include "prosperobrowser/core/storage.h"
+#include "prosperoweb/core/storage.h"
 
-namespace prosperobrowser::frontend {
+namespace prosperoweb::frontend {
 
 Ps5Config Ps5Config::load(core::Storage& storage) {
   Ps5Config cfg;
@@ -44,4 +44,4 @@ Ps5Config Ps5Config::load(core::Storage& storage) {
   return cfg;
 }
 
-}  // namespace prosperobrowser::frontend
+}  // namespace prosperoweb::frontend

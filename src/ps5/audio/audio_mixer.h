@@ -15,7 +15,7 @@
 
 #include "FFmpegRingBuffer.h"
 
-namespace prosperobrowser::audio {
+namespace prosperoweb::audio {
 
 class Mixer {
  public:
@@ -64,4 +64,4 @@ class Mixer {
   std::vector<float> scratch_;
 };
 
-}  // namespace prosperobrowser::audio
+}  // namespace prosperoweb::audio

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <doctest/doctest.h>
 
-#include "prosperobrowser/core/bookmarks.h"
+#include "prosperoweb/core/bookmarks.h"
 
-using prosperobrowser::core::Bookmarks;
+using prosperoweb::core::Bookmarks;
 
 TEST_SUITE("bookmarks") {
   TEST_CASE("add, dedupe, remove") {

@@ -23,7 +23,7 @@
 // In libkernel, not declared by the SDK's FreeBSD 11 headers.
 extern "C" int pthread_getname_np(pthread_t thread, char* name, size_t length);
 
-namespace prosperobrowser::frontend {
+namespace prosperoweb::frontend {
 
 namespace {
 
@@ -168,18 +168,18 @@ void tune_process_cpus() {
 
   cpu::CpuMask requested;
   bool have_requested = false;
-  if (const char* env = std::getenv("PROSPEROBROWSER_CPUMASK"); env && *env) {
+  if (const char* env = std::getenv("PROSPEROWEB_CPUMASK"); env && *env) {
     have_requested = cpu::parse_hex(env, requested);
     if (!have_requested) {
-      log_printf("cpu: PROSPEROBROWSER_CPUMASK=%s is not a hex mask, ignored", env);
+      log_printf("cpu: PROSPEROWEB_CPUMASK=%s is not a hex mask, ignored", env);
     }
   }
 
   std::string outcome;
   if (before_error) {
     outcome = "process mask unreadable";
-  } else if (env_off("PROSPEROBROWSER_CPU_WIDEN")) {
-    outcome = "PROSPEROBROWSER_CPU_WIDEN=0";
+  } else if (env_off("PROSPEROWEB_CPU_WIDEN")) {
+    outcome = "PROSPEROWEB_CPU_WIDEN=0";
   } else {
     const cpu::WidenPlan plan = cpu::plan_widen(before, root_error ? nullptr : &root,
                                                 have_requested ? &requested : nullptr);
@@ -212,7 +212,7 @@ void tune_process_cpus() {
 }
 
 void raise_main_thread_priority() {
-  if (env_off("PROSPEROBROWSER_THREAD_PRIO")) {
+  if (env_off("PROSPEROWEB_THREAD_PRIO")) {
     return;
   }
   struct rtprio before{};
@@ -273,7 +273,7 @@ ThreadCounters registered_thread_counters() {
   return {g_started.load(), g_widened.load(), g_widen_failed.load()};
 }
 
-}  // namespace prosperobrowser::frontend
+}  // namespace prosperoweb::frontend
 
 // Linked with -Wl,--wrap=pthread_create,--wrap=pthread_exit (CMakeLists.txt):
 // every pthread_create of the executable (WebKit, libavcodec, SDL) lands here.
@@ -284,13 +284,13 @@ int __real_pthread_create(pthread_t* thread, const pthread_attr_t* attr, void* (
 
 int __wrap_pthread_create(pthread_t* thread, const pthread_attr_t* attr, void* (*fn)(void*),
                           void* arg) {
-  using prosperobrowser::frontend::Start;
+  using prosperoweb::frontend::Start;
   auto* start = new (std::nothrow) Start{fn, arg};
   if (!start) {
     return __real_pthread_create(thread, attr, fn, arg);
   }
   const int rc =
-      __real_pthread_create(thread, attr, &prosperobrowser::frontend::thread_trampoline, start);
+      __real_pthread_create(thread, attr, &prosperoweb::frontend::thread_trampoline, start);
   if (rc != 0) {
     delete start;
   }
@@ -298,7 +298,7 @@ int __wrap_pthread_create(pthread_t* thread, const pthread_attr_t* attr, void* (
 }
 
 [[noreturn]] void __wrap_pthread_exit(void* value) {
-  prosperobrowser::frontend::unregister_self();
+  prosperoweb::frontend::unregister_self();
   __real_pthread_exit(value);
 }
 }

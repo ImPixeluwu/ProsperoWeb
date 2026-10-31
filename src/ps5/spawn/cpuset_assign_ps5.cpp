@@ -14,15 +14,15 @@
 
 #include "cpu_mask.h"
 #include "cpuset_assign.h"
-#include "prosperobrowser/spawn/spawn.h"
+#include "prosperoweb/spawn/spawn.h"
 
 namespace {
 
-using prosperobrowser::cpu::AttemptLog;
-using prosperobrowser::cpu::ChildCpuMode;
-using prosperobrowser::cpu::ChildCpuPlan;
-using prosperobrowser::cpu::CpuMask;
-using prosperobrowser::cpu::ProbeResult;
+using prosperoweb::cpu::AttemptLog;
+using prosperoweb::cpu::ChildCpuMode;
+using prosperoweb::cpu::ChildCpuPlan;
+using prosperoweb::cpu::CpuMask;
+using prosperoweb::cpu::ProbeResult;
 
 // The broker already holds kernel read/write (elfldr.c). Raising its own
 // credentials to uid 0 with full capabilities makes the kernel's
@@ -77,13 +77,13 @@ int raw_get(int level, int which, id_t id, std::size_t size, CpuMask& mask) {
 }  // namespace
 
 extern "C" void ps5_cpuset_assign_child(int child_pid, int ui_pid) {
-  using namespace prosperobrowser::cpu;
+  using namespace prosperoweb::cpu;
   if (child_pid <= 0) {
     return;
   }
-  const ChildCpuMode mode = parse_child_cpu_mode(std::getenv("PROSPEROBROWSER_CHILD_CPU"));
+  const ChildCpuMode mode = parse_child_cpu_mode(std::getenv("PROSPEROWEB_CHILD_CPU"));
   if (mode == ChildCpuMode::Off) {
-    ps5_log_printf("cpu: child pid %d left alone (PROSPEROBROWSER_CHILD_CPU=off)", child_pid);
+    ps5_log_printf("cpu: child pid %d left alone (PROSPEROWEB_CHILD_CPU=off)", child_pid);
     return;
   }
 

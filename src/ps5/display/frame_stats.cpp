@@ -3,7 +3,7 @@
 
 #include <cstdio>
 
-namespace prosperobrowser::display {
+namespace prosperoweb::display {
 
 namespace {
 
@@ -36,4 +36,4 @@ std::string FrameStats::format(double seconds) const {
   return buf;
 }
 
-}  // namespace prosperobrowser::display
+}  // namespace prosperoweb::display

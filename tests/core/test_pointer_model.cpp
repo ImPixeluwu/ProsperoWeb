@@ -3,10 +3,10 @@
 
 #include <cmath>
 
-#include "prosperobrowser/core/pointer_model.h"
+#include "prosperoweb/core/pointer_model.h"
 
-using prosperobrowser::core::PointerModel;
-using prosperobrowser::core::Vec2;
+using prosperoweb::core::PointerModel;
+using prosperoweb::core::Vec2;
 
 TEST_SUITE("pointer_model") {
   TEST_CASE("starts centred") {

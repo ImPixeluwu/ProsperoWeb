@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "prosperobrowser/core/storage.h"
+#include "prosperoweb/core/storage.h"
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 Storage::~Storage() = default;
 
@@ -19,4 +19,4 @@ bool Storage::is_valid_key(std::string_view key) {
   return true;
 }
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core

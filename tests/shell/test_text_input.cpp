@@ -5,10 +5,10 @@
 #include <string>
 
 #include "fakes.h"
-#include "prosperobrowser/core/in_memory_storage.h"
-#include "prosperobrowser/shell/shell_controller.h"
+#include "prosperoweb/core/in_memory_storage.h"
+#include "prosperoweb/shell/shell_controller.h"
 
-using namespace prosperobrowser;
+using namespace prosperoweb;
 using core::Button;
 using shell::ShellController;
 using shell::TextInputKind;

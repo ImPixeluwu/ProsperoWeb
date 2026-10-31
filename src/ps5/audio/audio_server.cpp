@@ -18,7 +18,7 @@
 
 extern "C" void ps5_log_printf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
-namespace prosperobrowser::audio {
+namespace prosperoweb::audio {
 
 namespace wire = WebCore::FFmpegMedia::AudioWire;
 
@@ -313,4 +313,4 @@ void AudioServer::check_local_streams() {
   }
 }
 
-}  // namespace prosperobrowser::audio
+}  // namespace prosperoweb::audio

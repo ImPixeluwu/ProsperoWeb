@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
  *
- * ProsperoBrowser native-title loader stub.
+ * ProsperoWeb native-title loader stub.
  *
- * This is a placeholder eboot.bin so the PRSB00001 tile installs, registers
+ * This is a placeholder eboot.bin so the PRWB00001 tile installs, registers
  * through ShadowMountPlus and launches from the home screen today, while the
  * browser itself is not yet relinked as a native application (see
  * docs/native-title.md, "What the frontend/spawner must change"). It is a real
@@ -33,14 +33,14 @@ int main(int argc, char **argv, char **envp) {
     (void)envp;
 
     static const char line[] =
-        "[prosperobrowser-native] PRSB00001 loader stub: the browser is not "
+        "[prosperoweb-native] PRWB00001 loader stub: the browser is not "
         "yet relinked as a native title; this tile is a placeholder.\n";
     sceKernelDebugOutText(0, line);
 
     static struct notification_request req;
     memset(&req, 0, sizeof(req));
     strncpy(req.message,
-            "ProsperoBrowser: native title placeholder. Launch the browser "
+            "ProsperoWeb: native title placeholder. Launch the browser "
             "through the websrv tile for now (see docs/native-title.md).",
             sizeof(req.message) - 1);
     sceKernelSendNotificationRequest(0, &req, sizeof(req), 0);

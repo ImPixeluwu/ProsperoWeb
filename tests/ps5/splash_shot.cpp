@@ -13,7 +13,7 @@
 #include "ps5_splash_text.h"
 #include "splash.h"
 
-using namespace prosperobrowser;
+using namespace prosperoweb;
 
 int main(int argc, char** argv) {
   if (argc < 3) {
@@ -25,7 +25,7 @@ int main(int argc, char** argv) {
   const int h = argc > 5 ? std::atoi(argv[5]) : 1080;
   display::GrayImage title, subtitle;
   std::string error;
-  if (!frontend::render_splash_text(argv[1], "ProsperoBrowser", h * 96 / 1080, title, error) ||
+  if (!frontend::render_splash_text(argv[1], "ProsperoWeb", h * 96 / 1080, title, error) ||
       !frontend::render_splash_text(argv[1], "Loading…", h * 30 / 1080, subtitle, error)) {
     std::fprintf(stderr, "text: %s (drawing the bar only)\n", error.c_str());
     title = {};

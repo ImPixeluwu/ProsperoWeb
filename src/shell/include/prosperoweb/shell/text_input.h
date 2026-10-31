@@ -6,7 +6,7 @@
 #include <functional>
 #include <string>
 
-namespace prosperobrowser::shell {
+namespace prosperoweb::shell {
 
 // What a text request is for; providers pick a keyboard layout and an enter
 // label from it (the PS5 system dialog: URL / mail / number types, "Go" or
@@ -56,4 +56,4 @@ class TextInputProvider {
   virtual bool active() const = 0;
 };
 
-}  // namespace prosperobrowser::shell
+}  // namespace prosperoweb::shell

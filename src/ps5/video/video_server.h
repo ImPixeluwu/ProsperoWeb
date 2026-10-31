@@ -27,7 +27,7 @@
 #include "damage_region.h"
 #include "scale.h"
 
-namespace prosperobrowser::video {
+namespace prosperoweb::video {
 
 struct ServerOptions {
   int port = 17773;  // 0 = any free port (tests)
@@ -148,4 +148,4 @@ class VideoServer {
   std::int64_t stats_start_ms_ = 0;
 };
 
-}  // namespace prosperobrowser::video
+}  // namespace prosperoweb::video

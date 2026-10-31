@@ -27,7 +27,7 @@
 extern "C" void ps5_media_video_decoder_stats(unsigned* decoders, unsigned* threads)
     __attribute__((weak));
 
-namespace prosperobrowser::frontend {
+namespace prosperoweb::frontend {
 
 namespace {
 
@@ -214,7 +214,7 @@ class Monitor {
 }  // namespace
 
 void start_cpu_monitor() {
-  if (env_off("PROSPEROBROWSER_CPU_MONITOR")) {
+  if (env_off("PROSPEROWEB_CPU_MONITOR")) {
     return;
   }
   auto* monitor = new Monitor();  // lives as long as the process
@@ -227,4 +227,4 @@ void start_cpu_monitor() {
   }).detach();
 }
 
-}  // namespace prosperobrowser::frontend
+}  // namespace prosperoweb::frontend

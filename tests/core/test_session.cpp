@@ -7,11 +7,11 @@
 #include <cstdio>
 #include <string>
 
-#include "prosperobrowser/core/file_storage.h"
-#include "prosperobrowser/core/in_memory_storage.h"
-#include "prosperobrowser/core/session.h"
+#include "prosperoweb/core/file_storage.h"
+#include "prosperoweb/core/in_memory_storage.h"
+#include "prosperoweb/core/session.h"
 
-using namespace prosperobrowser::core;
+using namespace prosperoweb::core;
 
 namespace {
 
@@ -68,7 +68,7 @@ TEST_SUITE("session") {
   }
 
   TEST_CASE("file storage roundtrip in a temp dir") {
-    char tmpl[] = "/tmp/prosperobrowser-test-XXXXXX";
+    char tmpl[] = "/tmp/prosperoweb-test-XXXXXX";
     REQUIRE(::mkdtemp(tmpl) != nullptr);
     const std::string dir = std::string(tmpl) + "/nested/state";
     {

@@ -8,7 +8,7 @@
 #include <immintrin.h>
 #endif
 
-namespace prosperobrowser::display {
+namespace prosperoweb::display {
 
 void copy_swap_row_scalar(const std::uint32_t* src, std::uint32_t* dst, int n) {
   for (int i = 0; i < n; i++) {
@@ -262,4 +262,4 @@ void compose_rect(const Layers& layers, const std::vector<Rect>& chrome_rects, c
   }
 }
 
-}  // namespace prosperobrowser::display
+}  // namespace prosperoweb::display

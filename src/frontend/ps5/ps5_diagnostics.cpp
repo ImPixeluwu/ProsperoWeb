@@ -15,7 +15,7 @@
 
 #include "ps5_log.h"
 
-namespace prosperobrowser::frontend {
+namespace prosperoweb::frontend {
 
 namespace {
 
@@ -142,4 +142,4 @@ std::string encode_png_rgbx(const std::uint8_t* pixels, int width, int height,
 
 const char* form_probe_script() { return kFormProbeScript; }
 
-}  // namespace prosperobrowser::frontend
+}  // namespace prosperoweb::frontend

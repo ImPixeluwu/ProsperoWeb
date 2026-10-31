@@ -8,7 +8,7 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 
-namespace prosperobrowser::frontend {
+namespace prosperoweb::frontend {
 
 namespace {
 
@@ -137,4 +137,4 @@ bool render_splash_text(const std::string& font_path, const std::string& text, i
   return true;
 }
 
-}  // namespace prosperobrowser::frontend
+}  // namespace prosperoweb::frontend

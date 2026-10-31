@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// prosperobrowser-host: the browser on a desktop, on top of WebKitGTK 6.0.
+// prosperoweb-host: the browser on a desktop, on top of WebKitGTK 6.0.
 #include <gtk/gtk.h>
 
 #include <cstdio>
@@ -8,7 +8,7 @@
 #include <string>
 
 #include "host_app.h"
-#include "prosperobrowser/core/legacy_profile.h"
+#include "prosperoweb/core/legacy_profile.h"
 
 namespace {
 
@@ -16,7 +16,7 @@ void usage(const char* argv0) {
   std::printf(
       "Usage: %s [options]\n"
       "  --size WxH            window size (default 1920x1080)\n"
-      "  --profile DIR         profile directory (default $XDG_DATA_HOME/prosperobrowser)\n"
+      "  --profile DIR         profile directory (default $XDG_DATA_HOME/prosperoweb)\n"
       "  --url URL             open URL in the active tab after start\n"
       "  --screenshot PATH     save a PNG of the window and exit\n"
       "  --after-ms N          delay before the screenshot (default 3000)\n"
@@ -40,11 +40,11 @@ bool parse_size(const char* s, int& w, int& h) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  for (const auto& name : prosperobrowser::core::adopt_legacy_env()) {
-    std::fprintf(stderr, "prosperobrowser-host: %s is deprecated, use %s\n", name.c_str(),
-                 prosperobrowser::core::renamed_env_name(name).c_str());
+  for (const auto& name : prosperoweb::core::adopt_legacy_env()) {
+    std::fprintf(stderr, "prosperoweb-host: %s is deprecated, use %s\n", name.c_str(),
+                 prosperoweb::core::renamed_env_name(name).c_str());
   }
-  prosperobrowser::host::Options opt;
+  prosperoweb::host::Options opt;
   if (const char* lang = std::getenv("LANG"); lang && std::strncmp(lang, "ru", 2) == 0) {
     opt.language = "ru";
   }
@@ -110,6 +110,6 @@ int main(int argc, char** argv) {
   g_setenv("WEBKIT_GST_ENABLE_HLS_SUPPORT", "1", FALSE);
 
   gtk_init();
-  prosperobrowser::host::HostApp app(opt);
+  prosperoweb::host::HostApp app(opt);
   return app.run();
 }

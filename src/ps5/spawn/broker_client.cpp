@@ -18,7 +18,7 @@
 
 #include "broker_proto.h"
 
-namespace prosperobrowser::spawn {
+namespace prosperoweb::spawn {
 
 using nlohmann::json;
 
@@ -326,4 +326,4 @@ int http_get(const std::string& host_port, const std::string& target, int timeou
   return code;
 }
 
-}  // namespace prosperobrowser::spawn
+}  // namespace prosperoweb::spawn

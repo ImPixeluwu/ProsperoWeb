@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace prosperobrowser::display {
+namespace prosperoweb::display {
 
 struct Rect {
   int x = 0;
@@ -74,4 +74,4 @@ class Region {
   std::vector<Rect> rects_;
 };
 
-}  // namespace prosperobrowser::display
+}  // namespace prosperoweb::display

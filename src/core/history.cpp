@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "prosperobrowser/core/history.h"
+#include "prosperoweb/core/history.h"
 
 #include <algorithm>
 
 #include "text_utils.h"
 
-namespace prosperobrowser::core {
+namespace prosperoweb::core {
 
 void History::add(const std::string& url, const std::string& title, std::int64_t now) {
   auto it = std::find_if(entries_.begin(), entries_.end(),
@@ -116,4 +116,4 @@ bool History::from_json(const nlohmann::json& j) {
   return true;
 }
 
-}  // namespace prosperobrowser::core
+}  // namespace prosperoweb::core
