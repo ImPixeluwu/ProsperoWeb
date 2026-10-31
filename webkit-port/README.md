@@ -17,12 +17,13 @@ Overlay that builds the upstream WebKit **PlayStation port** (`-DPORT=PlayStatio
 | `stubs/` | generated EGL/GLESv2 stubs (`libEGL.a`, `libGLESv2.a`): every call fails, see below |
 | `patches/` | WebKit patches, applied in order by `scripts/ps5/fetch-webkit.sh` |
 | `smoke/wk_smoke.cpp` | link test of the WebKit C API against the static libraries |
+| `media/` | source of truth of the ffmpeg media engine (patch 0900), see `media/README.md` |
 
 ## Patches
 
 | Patch | Why |
 |---|---|
-| `0001-cmake-playstation-homebrew-options` | `OptionsPlayStation.cmake`: `PS5_HOMEBREW` option; no `-sce-stdlib=v2`, no forced `-g`, no libc/libkernel lookup, no `--wrap=mmap`/`sce_sys` copy, `ENABLE_RESOURCE_USAGE` off, `ENABLE_GAMEPAD` allowed without the WPE backend, static `libWebKit` and no auxiliary executables |
+| `0001-cmake-playstation-homebrew-options` | `OptionsPlayStation.cmake`: `PS5_HOMEBREW` option; no `-sce-stdlib=v2`, no forced `-g`, no libc/libkernel lookup, no `--wrap=mmap`/`sce_sys` copy, `ENABLE_RESOURCE_USAGE` off, `ENABLE_GAMEPAD` allowed without the WPE backend, static `libWebKit` and no auxiliary executables; the `USE_FFMPEG` option of patch 0900 |
 | `0002-wtf-posix-osallocator` | `OSAllocatorPOSIX.cpp` instead of the memory-extra based PlayStation allocator |
 | `0003-jsc-generic-shell` | generic `jsc.cpp` shell (no Sony libtestwrappers), MemoryExtra only if found |
 | `0004-webcore-curl-ca-bundle` | TLS roots from a PEM file (`$PS5BROWSER_CA_BUNDLE`, default `/data/ps5browser/cacert.pem`) instead of Sony's CertificateStore |
@@ -32,6 +33,7 @@ Overlay that builds the upstream WebKit **PlayStation port** (`-DPORT=PlayStatio
 | `0008-skia-freebsd-malloc-usable-size` | `malloc_usable_size()` from `<malloc_np.h>` on FreeBSD |
 | `0009-webkit-static-injected-bundle` | injected bundle = weak `WKBundleInitialize` linked into the executable (no Sony `library-bundle.h`) |
 | `0010-webcore-timing-function-destructors` | out-of-line `*TimingFunction` destructors: clang 18 / PS5 target leaves the vtable-referenced destructors undefined |
+| `0900-ffmpeg-media-player` | `MediaPlayerPrivateFFmpeg` (`USE_FFMPEG`): software `<video>`/`<audio>` (progressive + HLS) on the SDK's ffmpeg; generated from `media/ffmpeg/`, edit there and run `media/sync-to-tree.sh` |
 
 Editing patches: change files in `third_party/webkit/`, then run `scripts/ps5/export-webkit-patches.sh`, which rewrites `patches/*.patch` (keeping each patch's header text) from the tree. Every changed path must belong to one topic listed in that script.
 
@@ -43,7 +45,7 @@ scripts/ps5/fetch-webkit.sh        # third_party/webkit at the pinned commit + p
 scripts/ps5/build-webkit.sh all    # or: configure | wtf | jsc | webcore | webkit | package | smoke
 ```
 
-`JOBS` (default 4) sets the ninja parallelism; the build directory is `build-wk-ps5/`. Release builds use `-O2 -DNDEBUG -g0`.
+`JOBS` (default 4) sets the ninja parallelism; the build directory is `build-wk-ps5/`. Release builds use `-O2 -DNDEBUG -g0`. `USE_FFMPEG` (default `ON`) builds the ffmpeg media engine.
 
 ## EGL / GLES stubs
 
@@ -59,6 +61,7 @@ The build produces, under `build-wk-ps5/`:
 | `lib/libSkia.a` | in-tree Skia (CPU raster only) |
 | `gl-stubs/libEGL.a`, `gl-stubs/libGLESv2.a` | failing EGL/GLES stubs |
 | `WebKit/Headers/WebKit/` | public C API headers (`#include <WebKit/WKContext.h>`, `<WebKit/WKView.h>`, `<WebKit/WKPagePrivatePlayStation.h>`, ...) |
+| `ps5webkit-link.cmake` | written by `build-webkit.sh package`: `PS5WEBKIT_INCLUDE_DIRS` and `PS5WEBKIT_LINK_LIBRARIES` (the link line below, absolute paths), consumed by `src/frontend/ps5/CMakeLists.txt` |
 
 Compile flags for code using the C API: `-std=c++23` (or C), `-Ibuild-wk-ps5/WebKit/Headers -Iwebkit-port/include`, and `-Ithird_party/ps5-prefix/include/wpe-1.0` if you include `<wpe/wpe.h>`. The C API headers need no WebKit defines (`__SCE__` from the SDK compiler selects the PlayStation variants).
 
@@ -73,11 +76,14 @@ prospero-clang++ -Wl,--gc-sections -o browser.elf <shell objects> \
     third_party/ps5-prefix/lib/libfreetype.a \
     third_party/ps5-prefix/lib/libbrotlidec.a third_party/ps5-prefix/lib/libbrotlicommon.a \
     third_party/ps5-prefix/lib/libicui18n.a third_party/ps5-prefix/lib/libicuuc.a third_party/ps5-prefix/lib/libicudata.a \
+    -lavformat -lbz2 -lavcodec -llzma -lx264 -lswscale -lswresample -lavutil \
+    -lSDL2 -lSceSystemService -lSceUserService -lScePad -lSceAudioOut -lsamplerate \
+    -lSceVideoOut -lSceKeyboard -lSceImeDialog \
     -lcurl -lpsl -lssl -lcrypto -lzstd -lxml2 -liconv -lsqlite3 -lfontconfig -lexpat \
     -lpng16 -ljpeg -lwebpdemux -lwebp -lsharpyuv -lz -lm -lpthread
 ```
 
-(`-l` libraries come from the SDK's `target/user/homebrew/lib`, which the SDK driver already searches.) The result needs only the SDK's default `libkernel_web.sprx`, `libSceLibcInternal.sprx` and `libSceNet.sprx`: no extra `.sprx`, no `--wrap` options, no `libScePosixForWebKit`. Do not link the SDK's `libEGL.so`/`libGLESv2.so` (pkg-config for `wpe-1.0` adds `-lEGL`; do not use it). Strip the result (`prospero-strip`) before deploying: the dependency archives carry debug info.
+The ffmpeg and SDL2 group is only needed with `USE_FFMPEG` (ffmpeg's static dependencies per `pkg-config --static`, SDL2 for the engine's audio sink); `build-webkit.sh` (`link_libs`) is the single definition of this list for both the smoke test and `ps5webkit-link.cmake`. (`-l` libraries come from the SDK's `target/user/homebrew/lib`, which the SDK driver already searches.) Without ffmpeg/SDL2 the result needs only the SDK's default `libkernel_web.sprx`, `libSceLibcInternal.sprx` and `libSceNet.sprx`; SDL2 adds `libSceSystemService`, `libSceUserService`, `libScePad`, `libSceAudioOut`, `libSceVideoOut`, `libSceKeyboard` and `libSceImeDialog.sprx` (all system modules). No `--wrap` options, no `libScePosixForWebKit`. Do not link the SDK's `libEGL.so`/`libGLESv2.so` (pkg-config for `wpe-1.0` adds `-lEGL`; do not use it). Strip the result (`prospero-strip`) before deploying: the dependency archives carry debug info.
 
 Symbols the shell must define (C linkage):
 
@@ -94,5 +100,7 @@ Runtime files:
 - **Fonts**: fontconfig is compiled with `/user/homebrew/etc/fonts/fonts.conf`; ship fonts plus a `fonts.conf` whose `<dir>` points at them, and set `FONTCONFIG_FILE` (and a writable `<cachedir>`) for the WebProcess. The console has no system fonts for fontconfig.
 - **Language**: `$SYSTEM_LANGUAGE` (e.g. `en-US`) sets the preferred language list.
 - Drawing is the non-accelerated path: keep accelerated compositing off (the PlayStation default in `WebPreferencesPlayStation.cpp`) and paint with `WKPagePaint(page, argb32Pixels, size, rect)` from `WKViewClient.setViewNeedsDisplay`.
+
+`ps5browser.elf` (the real shell, `-Wl,--gc-sections`, with ffmpeg): 162 MiB as linked, about 87 MB `.text`, 19 MB `.rodata`, 22 MB `.bss`; see `docs/ps5-runtime.md` for the stripped sizes.
 
 Measured with the smoke test (`smoke/wk_smoke.cpp`, links `WKContextCreateWithConfiguration`, `WKViewCreate`, `WKPagePaint` and both entry points): `ELF 64-bit LSB pie executable, x86-64`, 142 MB with `--gc-sections` (136 MB with `-Wl,--strip-debug`; about 68 MB `.text`, 17 MB `.rodata`), `NEEDED` = `libkernel_web.sprx`, `libSceLibcInternal.sprx`, `libSceNet.sprx`.

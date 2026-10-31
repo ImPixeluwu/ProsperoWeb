@@ -1,24 +1,44 @@
 # PS5 frontend (ps5browser executable). Activated by -DPS5BROWSER_FRONTEND=ps5.
 #
-# The WebKit static library is built separately; before it exists the frontend
-# can still be compile-checked (target ps5browser_frontend_ps5_objs) against a
-# generated forwarding-header directory that symlinks WebKit/<name>.h to the
-# real public C API headers in third_party/webkit.
+# The WebKit static library is built separately by scripts/ps5/build-webkit.sh,
+# whose "package" stage writes ${PS5_WEBKIT_BUILD_DIR}/ps5webkit-link.cmake:
+# the C API include directories and the full link line (webkit-port/README.md,
+# "Link contract"). When that file exists, the ps5browser executable links
+# against it. Before it exists the frontend can still be compile-checked
+# (target ps5browser_frontend_ps5_objs) against a generated forwarding-header
+# directory that symlinks WebKit/<name>.h to the public C API headers in
+# third_party/webkit.
 
 if(NOT PS5)
   message(FATAL_ERROR "The ps5 frontend requires the PS5 toolchain "
                       "(-DCMAKE_TOOLCHAIN_FILE=.../prospero.cmake)")
 endif()
 
-set(PS5_WEBKIT_BUILD_DIR "build-wk-ps5" CACHE STRING
-    "WebKit build directory (for generated forwarding headers)")
-set(PS5_WEBKIT_PREFIX "${CMAKE_SOURCE_DIR}/third_party/ps5-prefix" CACHE STRING
+set(PS5_WEBKIT_BUILD_DIR "${CMAKE_SOURCE_DIR}/build-wk-ps5" CACHE PATH
+    "WebKit build directory (scripts/ps5/build-webkit.sh)")
+set(PS5_WEBKIT_PREFIX "${CMAKE_SOURCE_DIR}/third_party/ps5-prefix" CACHE PATH
     "Install prefix of the cross-built WebKit dependencies")
 
-# Fill this in once webkit-port/README.md lists the archives to link. Leaving
-# it empty lets the compile-only object target build without the libraries.
+# Overrides the exported link line when non-empty.
 set(PS5_WEBKIT_LINK_LIBS "" CACHE STRING
-    "WebKit static archives to link into the final ps5browser executable")
+    "Libraries to link into ps5browser instead of ps5webkit-link.cmake's list")
+
+get_filename_component(_wk_build_dir "${PS5_WEBKIT_BUILD_DIR}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+set(_wk_link_file "${_wk_build_dir}/ps5webkit-link.cmake")
+if(EXISTS "${_wk_link_file}")
+  include("${_wk_link_file}")
+  # Re-run CMake when build-webkit.sh rewrites the link file.
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_wk_link_file}")
+  message(STATUS "ps5 frontend: WebKit link line from ${_wk_link_file}")
+else()
+  set(PS5WEBKIT_INCLUDE_DIRS "")
+  set(PS5WEBKIT_LINK_LIBRARIES "")
+  message(STATUS "ps5 frontend: ${_wk_link_file} not found, ps5browser cannot link "
+                 "(run scripts/ps5/build-webkit.sh package)")
+endif()
+if(PS5_WEBKIT_LINK_LIBS)
+  set(PS5WEBKIT_LINK_LIBRARIES ${PS5_WEBKIT_LINK_LIBS})
+endif()
 
 # --- Generate the WebKit C API forwarding headers --------------------------
 set(_wk_src "${CMAKE_SOURCE_DIR}/third_party/webkit/Source/WebKit")
@@ -40,8 +60,6 @@ if(EXISTS "${_wk_src}")
   endforeach()
 endif()
 
-# The real build may expose its own forwarding headers once it has run.
-set(_wk_build_fwd "${PS5_WEBKIT_BUILD_DIR}/WebKit/DerivedSources/ForwardingHeaders")
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SDL2 REQUIRED sdl2)
@@ -53,7 +71,9 @@ set(_frontend_sources
   ps5_config.cpp
   ps5_engine_view.cpp
   ps5_log.cpp
+  ps5_runtime_env.cpp
   wk_web_view.cpp
+  wpe_loader.cpp
 )
 
 # OBJECT library so the frontend can be compile-checked without linking WebKit.
@@ -65,24 +85,28 @@ target_include_directories(ps5browser_frontend_ps5_objs PRIVATE
   "${CMAKE_SOURCE_DIR}/webkit-port/include")
 # WebKit, SDL2 and nlohmann headers are third-party: include as SYSTEM so their
 # warnings do not trip -Werror on our code.
+# The WebKit build's own header copy (PS5WEBKIT_INCLUDE_DIRS) wins over the
+# forwarding headers, which only serve compile checks before it exists.
 target_include_directories(ps5browser_frontend_ps5_objs SYSTEM PRIVATE
+  ${PS5WEBKIT_INCLUDE_DIRS}
   "${_wk_fwd}"
-  "${_wk_build_fwd}"
+  "${PS5_WEBKIT_PREFIX}/include/wpe-1.0"
   "${SDL2_INCLUDE_DIRS}"
   "${PS5BROWSER_THIRD_PARTY_DIR}")
 # ps5browser::core / ::shell provide the public headers the frontend consumes.
 target_link_libraries(ps5browser_frontend_ps5_objs PRIVATE ps5browser::core ps5browser::shell)
 
 # The final executable. It cannot link until the WebKit archives exist, so it
-# is excluded from the default build; fill PS5_WEBKIT_LINK_LIBS and build it
-# explicitly once they are available.
+# is excluded from the default build: cmake --build <dir> --target ps5browser.
 add_executable(ps5browser EXCLUDE_FROM_ALL
   $<TARGET_OBJECTS:ps5browser_frontend_ps5_objs>)
 target_link_libraries(ps5browser PRIVATE
   ps5browser::shell
   ps5browser::core
   ps5browser::spawn
-  ${PS5_WEBKIT_LINK_LIBS}
+  ${PS5WEBKIT_LINK_LIBRARIES}
   ${SDL2_LIBRARIES})
 target_link_directories(ps5browser PRIVATE ${SDL2_LIBRARY_DIRS})
+# libWebKitPS5.a holds every WebKit object; drop what the browser never reaches.
+target_link_options(ps5browser PRIVATE -Wl,--gc-sections)
 set_target_properties(ps5browser PROPERTIES OUTPUT_NAME "ps5browser" SUFFIX ".elf")

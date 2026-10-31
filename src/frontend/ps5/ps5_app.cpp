@@ -10,6 +10,7 @@
 #include "ps5browser/core/gamepad.h"
 #include "ps5browser/core/page_scripts.h"
 #include "ps5_log.h"
+#include "ps5_runtime_env.h"
 
 namespace ps5browser::frontend {
 
@@ -113,6 +114,10 @@ int Ps5App::run() {
 
   backbuffer_.assign(static_cast<size_t>(width_) * height_, 0xFF000000u);
   chrome_buffer_.assign(static_cast<size_t>(width_) * height_, 0u);
+
+  // fontconfig, TLS roots and language for WebKit; must precede WebKit
+  // initialisation and the first auxiliary process spawn.
+  setup_runtime_env(kBaseDir, config_.language);
 
   // WebKit main run loop (also initializes WebKit2).
   WKRunLoopInitializeMain();

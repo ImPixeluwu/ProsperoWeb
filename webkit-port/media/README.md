@@ -114,13 +114,13 @@ What the patches change:
 
 ### Link line
 
-`libWebCore.a` is static, so the final `ps5browser.elf` link (`PS5_WEBKIT_LINK_LIBS` in `src/frontend/ps5/CMakeLists.txt`) needs these after the WebKit archives, in this order. They come from `scripts/ps5/pkg-config --static --libs libavformat libavcodec libswscale libswresample libavutil`:
+`libWebKitPS5.a` is static, so the final `ps5browser.elf` link needs ffmpeg's own static dependencies after the WebKit archives. `scripts/ps5/build-webkit.sh` adds them to the link contract (`link_libs`, exported as `build-wk-ps5/ps5webkit-link.cmake` and consumed by `src/frontend/ps5/CMakeLists.txt`) whenever `cmakeconfig.h` has `USE_FFMPEG`. They come from `scripts/ps5/pkg-config --static --libs libavformat libavcodec libswscale libswresample libavutil`:
 
 ```
 -lavformat -lbz2 -lavcodec -liconv -llzma -lx264 -lpthread -lz -lswscale -lswresample -lavutil -lm -lssl -lcrypto -pthread
 ```
 
-That is libavformat, libavcodec, libswscale, libswresample and libavutil, plus bzip2, iconv, liblzma, x264 (GPL), zlib and OpenSSL. libass is not linked. The frontend already links SDL2 and its dependencies (`-lSDL2 -liconv -lSceSystemService -lSceUserService -lScePad -lSceAudioOut -lsamplerate -lSceVideoOut -lSceKeyboard -lSceImeDialog`), and so do OpenSSL and zlib through curl, so those archives can be shared.
+That is libavformat, libavcodec, libswscale, libswresample and libavutil, plus bzip2, iconv, liblzma, x264 (GPL), zlib and OpenSSL. libass is not linked. SDL2 and its dependencies (`-lSDL2 -lSceSystemService -lSceUserService -lScePad -lSceAudioOut -lsamplerate -lSceVideoOut -lSceKeyboard -lSceImeDialog`) are part of the same group, for the audio sink. OpenSSL, zlib and iconv are the same SDK archives curl and libxml2 use; the link has no duplicate definitions.
 
 ## Tests
 
