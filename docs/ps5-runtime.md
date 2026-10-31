@@ -21,7 +21,8 @@ installed under `/data/ps5browser/`:
                         shipped as config.json.sample
   LICENSES/             GPL-3.0 (the ELF), MPL-2.0 notice (cacert.pem), DejaVu
   README-install.txt
-  tabs.json             persisted session (written by core::Session)
+  tabs.json             persisted session (core::Session; saved 5 s after a
+                        tab/URL change and on Quit)
   history.json          persisted history
   bookmarks.json        persisted bookmarks
   cache/                network cache (WKWebsiteDataStore)
@@ -86,7 +87,9 @@ SDL2, `libSceSystemService`, `libSceUserService`, `libScePad`,
 
 The ELF path used when re-spawning the auxiliary processes is resolved by
 `ps5_spawn_resolve_self_path()`: `PS5BROWSER_SELF_PATH` env →
-`/data/ps5browser/ps5browser.elf` → an absolute `argv[0]`.
+`/data/ps5browser/ps5browser.elf`. The UI's `main()` exports
+`PS5BROWSER_SELF_PATH` from its own `argv[0]` when that is an absolute
+readable `*.elf` path (an explicit value wins).
 
 ## Process model
 
