@@ -36,7 +36,7 @@ The main thread never blocks on a worker, except to join threads on teardown, an
 
 The demuxer keeps one `FFmpegPacketQueue` each for the selected video and audio stream. A seek increments the player's serial. The decoders learn the seek target for that serial, the demuxer seeks (`avformat_seek_file` to the keyframe at or before the target) and flushes both queues to the new serial, and every packet and frame carries its serial. Each decoder flushes its codec when it sees a new serial. Anything older is dropped: queued packets, decoded frames, ring-buffer audio. Decoders discard output before the target, so seeks are accurate. The seek promise resolves once a video frame of the new serial is shown (or video ended) and audio of the new serial is buffered (or audio ended). The player then calls `timeChanged()`.
 
-Demuxer read-ahead stops at 48 MiB in total, or when every enabled stream has at least 15 s and 25 packets queued (`FFmpegPlaybackPolicy.h`). Separately, each network stream suspends its request above 16 MiB of unread data and resumes it with a `Range` request below 4 MiB.
+Demuxer read-ahead stops at 48 MiB in total, or when every enabled stream has at least 15 s and 25 packets queued (`FFmpegPlaybackPolicy.h`). Separately, each network stream suspends its request above 16 MiB of unread data and resumes it with a `Range` request below 4 MiB, also when the size is unknown. A server without `Range` support is suspended above 64 MiB and resumed by restarting the download and skipping to the position (`networkShouldSuspend` in `FFmpegPlaybackPolicy.h`).
 
 ### Clock
 
@@ -79,7 +79,7 @@ Not supported: MSE (`supportsType` rejects `MediaSource`; the decoders, queues, 
 ## Risks
 
 - **Audio from the WebProcess.** WebKit decodes in the WebProcess, a separate payload process spawned by the shell. It is unverified on hardware whether sceAudioOut, behind SDL's PS5 driver, can be opened from that process, and whether it can share the audio ports with the UI process. `AudioSink::create()` falls back to `NullAudioSink` when SDL fails, and so does a watchdog: an output that stops pulling samples for 2 s while audio is buffered. `PS5BROWSER_MEDIA_AUDIO=null` forces the null sink. In every case video still plays in sync, without sound. If the WebProcess cannot output audio at all, the fix is to forward PCM to the UI process over IPC.
-- **HTTP path.** Media goes through WebCore's loader, which handles cookies, the referrer, CORS (`didPassCORSAccessCheck` for canvas tainting), CSP, `blob:` and the shared NetworkProcess. Byte ranges map to `Range` requests. Servers that ignore `Range` still work but restart the download for every seek, and their reads are never suspended. Exceptions:
+- **HTTP path.** Media goes through WebCore's loader, which handles cookies, the referrer, CORS (`didPassCORSAccessCheck` for canvas tainting), CSP, `blob:` and the shared NetworkProcess. Byte ranges map to `Range` requests. Servers that ignore `Range` still work but restart the download for every seek and for every resume after the 64 MiB read-ahead cap, which re-downloads everything before the position. Exceptions:
   - HLS AES-128 segments are opened as `crypto+https://…`. They go through ffmpeg's own http/tls (OpenSSL from the SDK), which sends the engine's user agent and **no cookies**. The key URI itself goes through WebCore.
   - Relative URLs in a playlist resolve against the playlist's original URL, not its redirected URL.
   - libavformat's HTTP keep-alive is disabled for HLS (`http_persistent=0`).
@@ -89,7 +89,7 @@ Not supported: MSE (`supportsType` rejects `MediaSource`; the decoders, queues, 
   - 1080p60 H.264 at high bit rates is borderline, and HEVC/VP9 1080p60 likely is not. Expect frame dropping and the `skip_loop_filter` fallback.
   - On top of decoding, per frame: swscale to BGRA, the copy into the page's backing store, and the shared-memory frame transfer to the UI process.
   - Anything above 1080p is downscaled after decoding, so it pays the full decode cost. HLS variant selection avoids it.
-- **Memory.** Per player: about 48 MiB of queued packets, 16 MiB of network read-ahead per open stream, up to 6 + 3 BGRA frames (8 MiB each at 1080p) and a 1 s audio ring.
+- **Memory.** Per player: about 48 MiB of queued packets, 16 MiB of network read-ahead per open stream (64 MiB for a server without `Range` support), up to 6 + 3 BGRA frames (8 MiB each at 1080p) and a 1 s audio ring.
 - **Timestamps.** A live HLS discontinuity with a large forward timestamp jump inserts at most 2 s of silence. The audio and video timelines can then disagree until the next seek.
 - **Licensing.** The SDK's ffmpeg is linked with x264, so the combination is GPL. That matches ps5-browser's GPL-3.0-or-later, but the binary must be distributed under GPL terms.
 

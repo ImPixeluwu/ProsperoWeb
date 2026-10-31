@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 namespace WebCore {
 namespace FFmpegMedia {
@@ -38,6 +39,31 @@ inline bool demuxerShouldWait(size_t totalBytes, const QueueLevel& video, const 
     if (!video.enabled && !audio.enabled)
         return false;
     return streamHasEnough(video) && streamHasEnough(audio);
+}
+
+// Network read-ahead per stream: a request is suspended above the high water
+// mark of unread data and resumed below the low one. A server that supports
+// Range resumes with a Range request. One that does not resumes by
+// restarting the download and skipping to the position, which is expensive,
+// so it gets a higher (but still finite) cap: buffering it without limit
+// could take the whole body of a long progressive video into memory.
+inline constexpr uint64_t networkHighWaterBytes = 16u << 20;
+inline constexpr uint64_t networkLowWaterBytes = 4u << 20;
+inline constexpr uint64_t networkNoRangeHighWaterBytes = 64u << 20;
+
+// unreadBytes: received data at or after the read position. size: total
+// resource size, or < 0 when unknown (no Content-Length, chunked).
+// receivedEnd: offset one past the last received byte.
+inline bool networkShouldSuspend(uint64_t unreadBytes, uint64_t receivedEnd, int64_t size, bool rangesSupported)
+{
+    if (size > 0 && receivedEnd >= static_cast<uint64_t>(size))
+        return false; // everything is here; the request is about to finish
+    return unreadBytes > (rangesSupported ? networkHighWaterBytes : networkNoRangeHighWaterBytes);
+}
+
+inline bool networkShouldResume(uint64_t unreadBytes)
+{
+    return unreadBytes < networkLowWaterBytes;
 }
 
 // Thresholds on contiguous data ahead of the current position.

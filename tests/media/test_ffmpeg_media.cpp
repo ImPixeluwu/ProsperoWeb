@@ -235,6 +235,23 @@ TEST_SUITE("media_ring") {
 }
 
 TEST_SUITE("media_policy") {
+  TEST_CASE("network read-ahead is capped with and without Range or a size") {
+    const uint64_t mib = 1u << 20;
+    // Range support, known size: the 16 MiB high water mark.
+    CHECK_FALSE(networkShouldSuspend(16 * mib, 100 * mib, 1000 * mib, true));
+    CHECK(networkShouldSuspend(16 * mib + 1, 100 * mib, 1000 * mib, true));
+    // Unknown size (chunked) is capped the same way.
+    CHECK(networkShouldSuspend(17 * mib, 100 * mib, -1, true));
+    // No Range support: a higher cap, but still a cap.
+    CHECK_FALSE(networkShouldSuspend(17 * mib, 100 * mib, -1, false));
+    CHECK(networkShouldSuspend(64 * mib + 1, 100 * mib, -1, false));
+    CHECK(networkShouldSuspend(64 * mib + 1, 100 * mib, 1000 * mib, false));
+    // The whole resource is here: never suspend.
+    CHECK_FALSE(networkShouldSuspend(100 * mib, 1000 * mib, 1000 * mib, true));
+    CHECK(networkShouldResume(4 * mib - 1));
+    CHECK_FALSE(networkShouldResume(4 * mib));
+  }
+
   TEST_CASE("demuxer read-ahead") {
     QueueLevel full { true, 400, 20 };
     QueueLevel low { true, 10, 1 };

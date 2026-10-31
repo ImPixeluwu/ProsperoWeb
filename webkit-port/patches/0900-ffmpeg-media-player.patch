@@ -1690,10 +1690,10 @@ index 000000000..4db9a2058
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegPlaybackPolicy.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegPlaybackPolicy.h
 new file mode 100644
-index 000000000..2b86ed71b
+index 000000000..85dbbc384
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegPlaybackPolicy.h
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,138 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Buffering thresholds and the HTML readyState/networkState decisions of the
@@ -1703,6 +1703,7 @@ index 000000000..2b86ed71b
 +#pragma once
 +
 +#include <cstddef>
++#include <cstdint>
 +
 +namespace WebCore {
 +namespace FFmpegMedia {
@@ -1734,6 +1735,31 @@ index 000000000..2b86ed71b
 +    if (!video.enabled && !audio.enabled)
 +        return false;
 +    return streamHasEnough(video) && streamHasEnough(audio);
++}
++
++// Network read-ahead per stream: a request is suspended above the high water
++// mark of unread data and resumed below the low one. A server that supports
++// Range resumes with a Range request. One that does not resumes by
++// restarting the download and skipping to the position, which is expensive,
++// so it gets a higher (but still finite) cap: buffering it without limit
++// could take the whole body of a long progressive video into memory.
++inline constexpr uint64_t networkHighWaterBytes = 16u << 20;
++inline constexpr uint64_t networkLowWaterBytes = 4u << 20;
++inline constexpr uint64_t networkNoRangeHighWaterBytes = 64u << 20;
++
++// unreadBytes: received data at or after the read position. size: total
++// resource size, or < 0 when unknown (no Content-Length, chunked).
++// receivedEnd: offset one past the last received byte.
++inline bool networkShouldSuspend(uint64_t unreadBytes, uint64_t receivedEnd, int64_t size, bool rangesSupported)
++{
++    if (size > 0 && receivedEnd >= static_cast<uint64_t>(size))
++        return false; // everything is here; the request is about to finish
++    return unreadBytes > (rangesSupported ? networkHighWaterBytes : networkNoRangeHighWaterBytes);
++}
++
++inline bool networkShouldResume(uint64_t unreadBytes)
++{
++    return unreadBytes < networkLowWaterBytes;
 +}
 +
 +// Thresholds on contiguous data ahead of the current position.
@@ -1808,10 +1834,10 @@ index 000000000..2b86ed71b
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegResourceIO.cpp b/Source/WebCore/platform/graphics/ffmpeg/FFmpegResourceIO.cpp
 new file mode 100644
-index 000000000..41879e970
+index 000000000..ee93fad82
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegResourceIO.cpp
-@@ -0,0 +1,487 @@
+@@ -0,0 +1,488 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -1819,6 +1845,7 @@ index 000000000..41879e970
 +
 +#if ENABLE(VIDEO) && USE(FFMPEG)
 +
++#include "FFmpegPlaybackPolicy.h"
 +#include "HTTPHeaderNames.h"
 +#include "HTTPStatusCodes.h"
 +#include "PlatformMediaResourceLoader.h"
@@ -1840,11 +1867,8 @@ index 000000000..41879e970
 +
 +namespace {
 +
-+// Network read-ahead per stream: the request is cancelled above the high
-+// water mark and resumed with a Range request below the low one. Servers
-+// without range support are never suspended (they cannot be resumed).
-+constexpr uint64_t highWaterBytes = 16u << 20;
-+constexpr uint64_t lowWaterBytes = 4u << 20;
++// Network read-ahead per stream: see networkShouldSuspend/Resume in
++// FFmpegPlaybackPolicy.h (16 MiB / 4 MiB, 64 MiB without Range support).
 +// Already-read data kept for the short backward seeks demuxers do.
 +constexpr uint64_t historyBytes = 512u << 10;
 +// A forward seek this close to the received data waits for it instead of
@@ -2037,7 +2061,7 @@ index 000000000..41879e970
 +        if (m_readPosition >= start && m_readPosition < end) {
 +            size_t copied = copyOutLocked(buffer, static_cast<size_t>(size));
 +            trimHistoryLocked();
-+            if (m_state == RequestState::Suspended && bufferEndLocked() - m_readPosition < lowWaterBytes)
++            if (m_state == RequestState::Suspended && FFmpegMedia::networkShouldResume(bufferEndLocked() - m_readPosition))
 +                startRequestLocked(bufferEndLocked(), true);
 +            return static_cast<int>(copied);
 +        }
@@ -2266,8 +2290,11 @@ index 000000000..41879e970
 +        m_chunks.append(WTF::move(chunk));
 +    }
 +
++    // Also with an unknown size or without Range support: an unbounded
++    // buffer would hold a whole long progressive download in memory. A
++    // resume without Range support restarts the request and skips ahead.
 +    uint64_t end = bufferEndLocked();
-+    if (m_rangesSupported && m_size > 0 && end > m_readPosition && end - m_readPosition > highWaterBytes && end < static_cast<uint64_t>(m_size))
++    if (end > m_readPosition && FFmpegMedia::networkShouldSuspend(end - m_readPosition, end, m_size, m_rangesSupported))
 +        suspendLocked();
 +    m_condition.notifyAll();
 +}

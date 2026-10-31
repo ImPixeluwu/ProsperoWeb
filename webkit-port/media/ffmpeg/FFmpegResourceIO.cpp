@@ -5,6 +5,7 @@
 
 #if ENABLE(VIDEO) && USE(FFMPEG)
 
+#include "FFmpegPlaybackPolicy.h"
 #include "HTTPHeaderNames.h"
 #include "HTTPStatusCodes.h"
 #include "PlatformMediaResourceLoader.h"
@@ -26,11 +27,8 @@ namespace WebCore {
 
 namespace {
 
-// Network read-ahead per stream: the request is cancelled above the high
-// water mark and resumed with a Range request below the low one. Servers
-// without range support are never suspended (they cannot be resumed).
-constexpr uint64_t highWaterBytes = 16u << 20;
-constexpr uint64_t lowWaterBytes = 4u << 20;
+// Network read-ahead per stream: see networkShouldSuspend/Resume in
+// FFmpegPlaybackPolicy.h (16 MiB / 4 MiB, 64 MiB without Range support).
 // Already-read data kept for the short backward seeks demuxers do.
 constexpr uint64_t historyBytes = 512u << 10;
 // A forward seek this close to the received data waits for it instead of
@@ -223,7 +221,7 @@ int FFmpegResourceStream::read(uint8_t* buffer, int size)
         if (m_readPosition >= start && m_readPosition < end) {
             size_t copied = copyOutLocked(buffer, static_cast<size_t>(size));
             trimHistoryLocked();
-            if (m_state == RequestState::Suspended && bufferEndLocked() - m_readPosition < lowWaterBytes)
+            if (m_state == RequestState::Suspended && FFmpegMedia::networkShouldResume(bufferEndLocked() - m_readPosition))
                 startRequestLocked(bufferEndLocked(), true);
             return static_cast<int>(copied);
         }
@@ -452,8 +450,11 @@ void FFmpegResourceStream::didReceiveData(unsigned requestId, std::span<const ui
         m_chunks.append(WTF::move(chunk));
     }
 
+    // Also with an unknown size or without Range support: an unbounded
+    // buffer would hold a whole long progressive download in memory. A
+    // resume without Range support restarts the request and skips ahead.
     uint64_t end = bufferEndLocked();
-    if (m_rangesSupported && m_size > 0 && end > m_readPosition && end - m_readPosition > highWaterBytes && end < static_cast<uint64_t>(m_size))
+    if (end > m_readPosition && FFmpegMedia::networkShouldSuspend(end - m_readPosition, end, m_size, m_rangesSupported))
         suspendLocked();
     m_condition.notifyAll();
 }
