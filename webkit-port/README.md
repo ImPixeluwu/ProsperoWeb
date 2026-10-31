@@ -27,7 +27,7 @@ Overlay that builds the upstream WebKit **PlayStation port** (`-DPORT=PlayStatio
 | `0002-wtf-posix-osallocator` | `OSAllocatorPOSIX.cpp` instead of the memory-extra based PlayStation allocator |
 | `0003-jsc-generic-shell` | generic `jsc.cpp` shell (no Sony libtestwrappers), MemoryExtra only if found |
 | `0004-webcore-curl-ca-bundle` | TLS roots from a PEM file (`$PS5BROWSER_CA_BUNDLE`, default `/data/ps5browser/cacert.pem`) instead of Sony's CertificateStore |
-| `0005-webkit-static-multicall-processes` | launcher calls `ps5_spawn_self()`/`ps5_terminate_process()`; entry points become `ps5_webkit_*_process_main()` inside libWebKit; no WebProcess/NetworkProcess executables; `WKRunLoop` file name case |
+| `0005-webkit-static-multicall-processes` | launcher calls `ps5_spawn_self()`/`ps5_terminate_process()` (a failed spawn is logged and reported as failed-to-launch); entry points become `ps5_webkit_*_process_main()` inside libWebKit; no WebProcess/NetworkProcess executables; `WKRunLoop` file name case |
 | `0006-wtf-payload-sdk-compat` | no Sony libc extensions (`getenv_np`, `SO_NBIO`, `<sys/sysinfo.h>`, `<malloc.h>`); no `[[clang::suppress]]` on functions with clang 18 |
 | `0007-webcore-playstation-build-fixes` | upstream PlayStation+Skia build breaks (`PlatformDisplaySkia` per-thread GL context, `HardwareAccelerationEnabled` setting), `AF_INET` on FreeBSD |
 | `0008-skia-freebsd-malloc-usable-size` | `malloc_usable_size()` from `<malloc_np.h>` on FreeBSD |

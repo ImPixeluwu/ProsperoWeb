@@ -9,7 +9,8 @@ not apply. Instead the shell is one static multi-call executable:
  - ProcessLauncherPlayStation calls ps5_spawn_self({"WebProcess" |
    "NetworkProcess", id, "3"}, {clientFd}, 1) and ps5_terminate_process()
    (declared in webkit-port/include/ps5webkit/spawn.h, implemented by
-   the shell),
+   the shell); a failed spawn is logged and reported with an invalid
+   connection identifier, so WebKit runs its failed-to-launch path,
  - the playstation EntryPoint files define ps5_webkit_web_process_main()
    and ps5_webkit_network_process_main() (ps5webkit/entry.h) without any
    dlopen() and are compiled into libWebKit,
@@ -150,7 +151,7 @@ index 0a6968d20..8caba173f 100644
      UIProcess/API/C/playstation/WKViewClient.h
  )
 diff --git a/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp b/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp
-index f510f5eeb..d7df0ac17 100644
+index f510f5eeb..177072caa 100644
 --- a/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp
 +++ b/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp
 @@ -36,13 +36,16 @@
@@ -209,7 +210,24 @@ index f510f5eeb..d7df0ac17 100644
  #else
      PlayStation::LaunchParam param { socketPair.client.value(), m_launchOptions.userId };
      int32_t appLocalPid = PlayStation::launchProcess(
-@@ -109,6 +133,8 @@ void ProcessLauncher::terminateProcess(const String&)
+@@ -90,7 +114,15 @@ void ProcessLauncher::launchProcess()
+ #endif
+ 
+     if (appLocalPid < 0) {
+-#ifndef NDEBUG
++#if defined(PS5_HOMEBREW) && !USE(WPE_BACKEND_PLAYSTATION)
++        // Report the failure like the GLib launcher does: an invalid
++        // connection identifier makes the process proxy run its
++        // terminated/failed-to-launch path instead of waiting forever.
++        SAFE_FPRINTF(stderr, "ps5webkit: failed to launch auxiliary process type %d (ps5_spawn_self returned %d)\n", static_cast<int>(m_launchOptions.processType), appLocalPid);
++        RunLoop::mainSingleton().dispatch([protectedThis = Ref { *this }] mutable {
++            protectedThis->didFinishLaunchingProcess(0, { });
++        });
++#elif !defined(NDEBUG)
+         SAFE_FPRINTF(stderr, "Failed to launch process. err=0x%08x path=%s\n", appLocalPid, m_launchOptions.processPath.utf8());
+ #endif
+         return;
+@@ -109,6 +141,8 @@ void ProcessLauncher::terminateProcess(const String&)
  
  #if USE(WPE_BACKEND_PLAYSTATION)
      ProcessProviderLibWPE::singleton().kill(m_processID);
