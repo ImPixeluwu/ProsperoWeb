@@ -175,8 +175,15 @@ void script_message(WKScriptMessageRef message, WKCompletionListenerRef reply,
                      const void* ci) {
   auto& cb = self_of(ci)->callbacks();
   if (cb.script_message && message) {
-    nlohmann::json body = wk_value_to_json(WKScriptMessageGetBody(message));
-    cb.script_message(body.dump());
+    // A string body is passed through as is (it is expected to hold JSON
+    // already); any other value is serialised once. Re-encoding a string
+    // would hand the receiver a JSON string instead of the object inside it.
+    WKTypeRef body = WKScriptMessageGetBody(message);
+    if (body && WKGetTypeID(body) == WKStringGetTypeID()) {
+      cb.script_message(to_std_string(static_cast<WKStringRef>(body)));
+    } else {
+      cb.script_message(wk_value_to_json(body).dump());
+    }
   }
   if (reply) {
     WKCompletionListenerComplete(reply, nullptr);

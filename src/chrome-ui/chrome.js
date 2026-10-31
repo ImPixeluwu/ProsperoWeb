@@ -10,11 +10,13 @@
 
   // ---- Events to the host ------------------------------------------------
 
+  // Events are posted as plain objects; the frontends hand the shell a
+  // parsed JSON object (a JSON string is accepted too, see on_chrome_event).
   function send(event) {
     try {
       var handlers = window.webkit && window.webkit.messageHandlers;
       if (handlers && handlers.chrome) {
-        handlers.chrome.postMessage(JSON.stringify(event));
+        handlers.chrome.postMessage(event);
         return;
       }
       if (window.ps5chromeHost && typeof window.ps5chromeHost.send === 'function') {

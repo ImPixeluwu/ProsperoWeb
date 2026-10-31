@@ -92,6 +92,8 @@ class ShellController {
   //   {type:'notice_dismiss', proceed}
   //   {type:'osk_key', row, col} {type:'osk_commit'} {type:'osk_cancel'}
   //   {type:'address_focus'} {type:'address_blur'}
+  // event is a JSON object; a JSON string holding such an object is decoded
+  // first. Anything else is ignored.
   void on_chrome_event(const nlohmann::json& event);
 
   // Opens url in a new tab (shows the tab-limit notice when full).

@@ -209,6 +209,25 @@ TEST_SUITE("shell.tabs") {
     CHECK(f.shell->view_for(second) == nullptr);
   }
 
+  TEST_CASE("a chrome event delivered as a JSON string is decoded") {
+    Fixture f;
+    f.make();
+    CHECK(f.shell->open_url_in_new_tab("b.example"));
+    const auto first = f.shell->tabs().tabs()[0].id;
+    // What a frontend hands over when the chrome posts JSON.stringify(event).
+    f.shell->on_chrome_event(json(json{{"type", "tab_select"}, {"id", first}}.dump()));
+    CHECK(f.shell->tabs().active_id() == first);
+    CHECK(f.view(0).visible);
+
+    f.shell->on_chrome_event(json("{\"type\":\"tab_new\"}"));
+    CHECK(f.shell->tabs().size() == 3);
+
+    // Strings that are not an encoded object are ignored.
+    f.shell->on_chrome_event(json("not json"));
+    f.shell->on_chrome_event(json("\"tab_new\""));
+    CHECK(f.shell->tabs().size() == 3);
+  }
+
   TEST_CASE("closing the last tab opens the home page") {
     Fixture f;
     f.make();

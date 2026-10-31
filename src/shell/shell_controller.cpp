@@ -916,6 +916,16 @@ void ShellController::exit_fullscreen() {
 // Chrome events and state
 
 void ShellController::on_chrome_event(const json& event) {
+  if (event.is_string()) {
+    // A frontend may deliver the posted value still encoded (the chrome used
+    // to post JSON.stringify(event)); decode it once.
+    const json decoded =
+        json::parse(event.get<std::string>(), nullptr, /*allow_exceptions=*/false);
+    if (decoded.is_object()) {
+      on_chrome_event(decoded);
+    }
+    return;
+  }
   if (!event.is_object()) {
     return;
   }
