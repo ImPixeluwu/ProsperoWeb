@@ -15,6 +15,8 @@
 | `FFmpegAudioDecoder.{h,cpp}` | audio decoder thread: libavcodec, libswresample to float32 stereo 48 kHz, ring buffer, audio clock |
 | `AudioSink.{h,cpp}` | output: `RemoteAudioSink` (forwards to the UI process), `SDL_OpenAudioDevice` (SDL's PS5 driver is sceAudioOut) or `NullAudioSink` |
 | `FFmpegAudioWire.h`, `FFmpegRemoteAudioClient.h` | audio forwarding protocol, client clock and socket client (no WebCore/WTF; also used by the UI's server in `src/ps5/audio` and by `tests/ps5`) |
+| `FFmpegVideoOverlay.{h,cpp}` | video overlay of both players: the element's video box in view coordinates, the hole-punch decision, frames to the client |
+| `FFmpegVideoOverlayWire.h`, `FFmpegVideoOverlayClient.h` | video overlay protocol, shared-memory layout and seqlock, sender thread with transport negotiation (no WebCore/WTF; also used by the UI's server in `src/ps5/video` and by `tests/ps5`) |
 | `FFmpegUtilities.h` | ffmpeg RAII types, `FFmpegStreamInfo`, `findSoftwareDecoder()` |
 | `FFmpegSupportTable.h`, `FFmpegTimeRanges.h`, `FFmpegAVClock.h`, `FFmpegRingBuffer.h`, `FFmpegPlaybackPolicy.h` | engine-independent logic (no WebCore/WTF/ffmpeg), unit-tested on the host by `tests/media/` |
 | `mse/MediaPlayerPrivateFFmpegMSE.{h,cpp}` | MSE engine (`MediaEngineIdentifier::FFmpegMSE`): decoder pipelines per selected track, seeks, readyState gating, painting |
@@ -78,6 +80,8 @@ At rates other than 1 there is no time-stretching. The audio decoder discards sa
 ### Video output
 
 Frames are opaque BGRA from swscale, in `av_malloc` blocks whose rows are padded to 64 bytes plus a 256-byte tail (`videoFrameStride`/`videoFrameBytes` in `FFmpegPlaybackPolicy.h`): libswscale's x86 output loops store 8 pixels per iteration, and a tightly packed buffer of a width that is not a multiple of 8 was overrun after its last row, into the allocator's metadata. The colour matrix comes from the stream: BT.601, BT.709 or BT.2020, with full or limited range. Output is capped at 1920x1080, and the sample aspect ratio is applied. `paint()` and `nativeImageForCurrentTime()` wrap the current frame without copying, through `SkImages::RasterFromPixmap`. The `SkImage` holds a reference to the frame, and the decoder only reuses pool frames nobody else references. Rendering is software only: no `platformLayer()`, no accelerated compositing.
+
+On PlayStation the frames normally bypass page painting (the video overlay, `FFmpegVideoOverlay.h`): `paint()` clears the video box to transparent while the UI process shows the frames under the page, and each presented frame is copied into a shared-memory slot (or sent inline) by a per-player sender thread instead of repainting the element. `paintCurrentFrameInContext()` (canvas, snapshots) always draws the frame. `PS5BROWSER_VIDEO_OVERLAY=0` restores per-frame page painting; see `docs/ps5-runtime.md` ("Video overlay").
 
 ## Support
 
@@ -146,7 +150,7 @@ The parameter rules apply to `canPlayType()` as well. YouTube probes them (`widt
 - **CPU.** This is software decoding on the PS5's Zen 2: 8 cores at 3.5 GHz, shared with the UI process, JavaScript and Skia painting.
   - 1080p30 H.264 is realistic with four decoder threads.
   - 1080p60 H.264 at high bit rates is borderline, and HEVC/VP9 1080p60 likely is not. Expect frame dropping and the `skip_loop_filter` fallback.
-  - On top of decoding, per frame: swscale to BGRA, the copy into the page's backing store, and the shared-memory frame transfer to the UI process.
+  - On top of decoding, per frame: swscale to BGRA and, with the video overlay, one copy into shared memory (the UI process scales it); without the overlay, Skia's scaled draw into the page's backing store and the WebKit IPC transfer to the UI process.
   - Anything above 1080p is downscaled after decoding, so it pays the full decode cost. HLS variant selection avoids it.
 - **Memory.** Per player: at most 24 MiB of queued packets, 8 MiB of network read-ahead per open stream (32 MiB for a server without `Range` support), a pool of up to 5 BGRA frames (8 MiB each at 1080p; the queue holds 3 of them) and a 1 s audio ring. Video decoding uses slice threads only (`PS5BROWSER_MEDIA_FRAME_THREADS=1` turns frame threading back on, which keeps one extra picture per thread).
 - **Timestamps.** A live HLS discontinuity with a large forward timestamp jump inserts at most 2 s of silence. The audio and video timelines can then disagree until the next seek.
@@ -190,7 +194,7 @@ The MSE engine logs `mse:` lines: `addSourceBuffer <type> -> #n`; `#n init segme
 
 ## Tests
 
-`tests/media/` (doctest, host build) covers the engine-independent headers: the MIME/codec table, time-range merging, clock maths and frame decisions, the ring buffer, the read-ahead/`readyState`/`networkState` policies, and for MSE the `isTypeSupported` answers to YouTube-style probes, the byte queue's read/seek semantics, MP4/WebM segment splitting across arbitrary append boundaries, timestamp conversion, duration filling, queue feeding and the readyState/stall rules. `compile-check.sh` checks the sources against the real WebCore flags before a full build; on an integrated tree it compiles `ffmpeg/` and `ffmpeg/mse/` directly with `ENABLE_MEDIA_SOURCE` forced on. The "Load MSE (fMP4)" button of `src/chrome-ui/video.html` plays DASH test content through two SourceBuffers and logs each step on the page. `tests/ps5/test_audio_server.cpp` covers the audio forwarding: wire framing, the client clock, the UI mixer, and a loopback run of `RemoteAudioClient` against the server (`ctest --test-dir build-host -R audio`).
+`tests/media/` (doctest, host build) covers the engine-independent headers: the MIME/codec table, time-range merging, clock maths and frame decisions, the ring buffer, the read-ahead/`readyState`/`networkState` policies, and for MSE the `isTypeSupported` answers to YouTube-style probes, the byte queue's read/seek semantics, MP4/WebM segment splitting across arbitrary append boundaries, timestamp conversion, duration filling, queue feeding and the readyState/stall rules. `compile-check.sh` checks the sources against the real WebCore flags before a full build; on an integrated tree it compiles `ffmpeg/` and `ffmpeg/mse/` directly with `ENABLE_MEDIA_SOURCE` forced on. The "Load MSE (fMP4)" button of `src/chrome-ui/video.html` plays DASH test content through two SourceBuffers and logs each step on the page. `tests/ps5/test_audio_server.cpp` covers the audio forwarding: wire framing, the client clock, the UI mixer, and a loopback run of `RemoteAudioClient` against the server (`ctest --test-dir build-host -R audio`). `tests/ps5/test_video_overlay.cpp` covers the video overlay: wire framing, the slot seqlock, the UI's scaler and composition, and loopback runs of `VideoOverlayClient` against the server over each transport (`ctest --test-dir build-host -R video`).
 
 ```sh
 cmake -S . -B build-host && cmake --build build-host -j2 --target ps5browser_media_tests

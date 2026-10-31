@@ -318,6 +318,13 @@ endless relaunches hammer websrv.
 | `PS5BROWSER_AUDIO_TEST` | unset | `1`: the UI plays a 1 s 440 Hz test tone at startup |
 | `PS5BROWSER_MEDIA_FRAME_THREADS` | unset | `1`: frame-threaded video decoding (default: slice threads only) |
 | `PS5BROWSER_PRESENT_THREAD` | unset | `0`: present on the main thread (blocks the run loop in the flip wait; for A/B comparisons, see [Performance](#performance)) |
+| `PS5BROWSER_VIDEO_PORT` | `17773` | loopback TCP port of the UI's video overlay server (UI and WebProcess); `off` disables the server and the overlay |
+| `PS5BROWSER_VIDEO_OVERLAY` | on (PlayStation) | `0`: media players paint video into the page instead of the overlay |
+| `PS5BROWSER_VIDEO_TRANSPORT` | auto | `shm`, `file` or `tcp`: force the overlay's pixel transport (auto tries them in that order) |
+| `PS5BROWSER_VIDEO_SHM_DIR` | `/data/ps5browser/tmp` | directory of the overlay's `file` transport segments (unlinked once mapped) |
+| `PS5BROWSER_VIDEO_SCALE` | `bilinear` | `nearest`: cheaper overlay scaling in the UI |
+| `PS5BROWSER_CPU_MONITOR` | on | `0`: no `cpu:` lines |
+| `PS5BROWSER_CPU_WIDEN` | on | `0`: never try to widen a restricted CPU affinity |
 
 Any variable can also be set from `config.json` as `"env": {"NAME": "value"}`
 (applied in every process over the defaults above).
@@ -456,10 +463,13 @@ perf 5.0s: ui 61.2 fps | ndisp page 24.0/s 230kpx chrome 1.0/s 3kpx | paint page
   on the presenter thread), rects per present, average area.
 - `waits` — frames whose damage had to wait because the previous flip was
   still in flight (it is composed right after the flip).
+- `video` — composes that showed a new video overlay frame per second and
+  their visible video area: the video frame rate reaching the screen.
 
 Reading it: `ndisp page` ≈ video fps and `present` ≈ the same → the UI keeps
 up. `ndisp page` well below the video fps with low `paint`/`compose` times →
-the WebProcess is the bottleneck (see the overlay plan below).
+the WebProcess is the bottleneck (see the video overlay below). With the
+overlay, `ndisp page` stays low during playback and `video` ≈ the video fps.
 
 ### SDL present path facts
 
@@ -480,47 +490,101 @@ the WebProcess is the bottleneck (see the overlay plan below).
   per present. Before the presenter thread this wait ran on the main
   thread, i.e. inside WebKit's run loop.
 
-### Next step: a video overlay path (not implemented)
+### Video overlay (hole punch)
 
-If the UI side keeps up but `ndisp page` stays below the video frame rate,
-the remaining cost is in the WebProcess: per frame, Skia draws the decoded
-image scaled into the element (CPU, bilinear), the DrawingArea copies it into
-the ShareableBitmap, the UI copies it into its backing store and again into
-our cache. An overlay removes all four:
+The per-frame path above (Skia scaling the frame into the backing store,
+WebKit IPC, two more copies in the UI) capped YouTube 720p at about five
+page updates per second on the console (`ndisp page 4.8/s 1889kpx`). In
+overlay mode a frame never goes through WebKit painting:
 
-1. WebProcess (`MediaPlayerPrivateFFmpeg`, owned by the media work): when the
-   element is drawn with a translation/scale-only CTM, `paint()` clears its
-   rect (`CompositeOperator::Clear`: the hole) instead of drawing the frame,
-   and reports the device rect (`context.getCTM().mapRect(rect)` clipped to
-   the clip bounds; in the non-AC path that is view coordinates) plus the
-   frame id. Rotated or 3D-transformed videos, and canvas `drawImage` of the
-   video, keep the current painting path.
-2. Frames go through shared memory: a ring of 3 buffers per player, written
-   by `sws_scale` directly in the surface's ABGR8888 at the destination
-   size (no Skia scaling, no swap), announced over a loopback socket like
-   the audio forwarding (`PS5BROWSER_AUDIO_PORT` model: one connection per
-   element, a tiny header `{player, frame, rect, buffer index}`).
-   Needs a shared-memory primitive across the spawned processes
-   (`shm_open` or an fd passed via the broker's `pt_dup` path) — to verify
-   on the console first.
-3. UI: a video-overlay server keeps the latest frame per player and its rect.
-   The page cache keeps alpha where the hole is (clear the rect before
-   `WKPagePaint`, as for the chrome), and compose becomes video → page
-   (source-over, so captions and controls drawn over the video stay on top)
-   → chrome, only for damaged rects; a new frame damages its rect without
-   any WebKit paint. Hole-punch semantics match WebKit's
-   `MediaPlayerPrivateHolePunch` (AC-only, hence not reusable directly).
-4. Sync: the WebProcess still decides which frame is due (its A/V clock);
-   the UI shows the latest announced one at the next vblank. Hide the
-   overlay when the page reports no rect for a frame (scrolled out, element
-   removed, tab switched).
+```
+WebProcess main thread (player tick)        overlay sender thread            UI overlay server thread         UI main thread
+-------------------------------------       -----------------------------    ------------------------------   ----------------------------
+geometry: video box in view coords   --->   "geometry" (on change)   --->    rect, page, visible
+A/V clock picks the frame, submit()  --->   copy into shm slot k
+  (no repaint; the element painted a        (seqlock), "present k"   --->    copy slot k out, scale to the
+   transparent hole once)                                                    rect (bilinear), swap in,
+                                                                             damage the rect          --->   request_frame(): compose
+                                                                                                             video -> page -> chrome,
+                                                                                                             present the rect
+```
 
-Effort: about 4-6 working days — WebProcess side 2 days (paint hook, rect
-reporting, shm ring, sws to ABGR), UI side 1.5 days (server, compose order,
-damage), shared-memory plumbing and console verification 1-2 days. It needs
-a WebKit rebuild for step 1. Expected effect: the WebProcess per-frame cost
-drops to the YUV→RGB conversion (already done today), so presenter drops
-should go to ~0 for 1080p30 and the UI cost becomes one scaled blit per frame.
+- **WebProcess** (`webkit-port/media/ffmpeg/FFmpegVideoOverlay.*`, both
+  players): the tick reads the element's video box
+  (`RenderVideo::videoBox()` mapped through `localToAbsoluteQuad` and
+  `contentsToMainFrameView`: layout, scrolling, frames, fullscreen) and the
+  page identifier. The hole is punched (`paint()` does `clearRect`) only
+  while the overlay is connected, the box is rectilinear, page and element
+  are visible and a frame exists; otherwise the frame is painted as before.
+  Canvas `drawImage()` (`paintCurrentFrameInContext`) always gets pixels.
+  The A/V decision stays in the WebProcess: only the frame it presents is
+  sent, a newer one replaces one still queued.
+- **Transport** (`FFmpegVideoOverlayWire.h`, `FFmpegVideoOverlayClient.h`):
+  a loopback TCP control connection per player to `PS5BROWSER_VIDEO_PORT`
+  (17773). On the first frame the client offers, in order, a named POSIX
+  shm object (`/ps5browser-video-<pid>-<player>-<n>`, three BGRA slots), a
+  file under `PS5BROWSER_VIDEO_SHM_DIR` (`/data/ps5browser/tmp`) mapped
+  `MAP_SHARED|MAP_NOSYNC`, then pixels inline over TCP; the first one the
+  UI maps wins, and the name is unlinked as soon as both sides mapped it.
+  Each slot has a sequence counter (seqlock); the UI drops a copy that a
+  rewrite tore (`torn` in the stats).
+- **UI** (`src/ps5/video`, `src/frontend/ps5/ps5_video_overlay.*`): the
+  server keeps per player the newest frame scaled to its rect
+  (`src/ps5/display/scale.*`, bilinear; `PS5BROWSER_VIDEO_SCALE=nearest`)
+  and the damage. The frame loop takes the active view's identity
+  (`WKPageGetProcessIdentifier` + `WKPageGetWebPageIdentifierPlayStation`,
+  patch 0011), maps rects by `content_top()` and clips them to the content
+  area, and composes video under the page (`compose_rect`): pixels the page
+  left transparent show the video, captions and controls blend over it,
+  the chrome over everything. Before `WKPagePaint` the dirty rects of the
+  page cache are cleared, since WebKit draws source-over and a hole would
+  otherwise keep old pixels. Only players of the active page are drawn
+  (hidden tabs report `hidden`).
+
+Expected log lines:
+
+```
+[UI] video overlay: listening on tcp 127.0.0.1:17773 (bilinear scaling)
+[WebProcess] media: video overlay: player 1: on (pid N, port 17773, transport auto: shm, file, tcp)
+[WebProcess] media: video overlay: player 1: connected to 127.0.0.1:17773 (server key 1)
+[UI] video overlay: player key 1 connected (pid N player 1)
+[WebProcess] media: video overlay: player 1: rect 320,152 1280x720 page 5
+[UI] video overlay: player key 1: shm /ps5browser-video-N-1-1 mapped
+[WebProcess] media: video overlay: player 1: transport shm (/ps5browser-video-N-1-1, 3 x 3686400 bytes)
+[WebProcess] media: video overlay: player 1: hole punch on
+[WebProcess] media: video overlay: player 1: shm sent 29.9/s replaced 0 copy 0.60 ms | hole on rect 320,152 1280x720
+[UI] video overlay 5.0s: frames in 29.9/s rendered 29.9/s torn 0 | scale 1280x720 -> 1280x720 1.10/2.40 ms | tcp 0.0 MB/s | players 1
+[UI] perf 5.0s: ... | video 29.8/s 922kpx
+```
+
+Fallbacks: `shm ... refused: <errno> (the client falls back)` then
+`transport file`, or `transport tcp (pixels inline ...)`; no server at all:
+`no overlay server, painting video into the page`. `PS5BROWSER_VIDEO_OVERLAY=0`
+turns the overlay off in the WebProcess, `PS5BROWSER_VIDEO_PORT=off` in both
+processes, `PS5BROWSER_VIDEO_TRANSPORT=shm|file|tcp` forces a transport.
+
+Limits: the hole moves with the page repaint, the video follows at the
+next geometry tick (8 ms while playing, 33 ms paused), so fast scrolling
+can show a black edge for a frame; rotated or skewed video boxes are
+painted into the page as before; CSS opacity and filters on the video do
+not apply to the overlay (the hole is transparent whatever the opacity);
+page snapshots show the hole.
+
+### CPU allocation (WebProcess and UI)
+
+`src/frontend/ps5/ps5_cpu_monitor.cpp` logs at start and every 30 s:
+
+```
+[WebProcess] cpu: 16 cpus online, root set 0-12 (13), process may run on 0-12 (13)
+[WebProcess] cpu: affinity 0-12 (13 of 13) | threads 31: 0-12 x31 | video decoders 1, 6 codec threads | user 41.2s sys 3.0s over 30s = 1.47 cpus busy | top FFmpegVideoDecoder 12.1s@cpu4, ...
+```
+
+If the process may run on fewer CPUs than the root set it tries once to
+widen its affinity (`cpuset_setaffinity`, CPU_LEVEL_WHICH; the SDK has no
+`sceKernelSetCpumask`): `cpu: widened ...` or `cpu: widening ... failed`.
+`PS5BROWSER_CPU_WIDEN=0` skips that, `PS5BROWSER_CPU_MONITOR=0` disables
+the monitor. A per-thread list needs the kernel's `kinfo_proc` to match the
+SDK's; otherwise the line says `threads 0: unavailable (kinfo_proc size ...)`.
 
 ## Text input
 
