@@ -632,6 +632,10 @@ void WkWebView::deliver_bridged(const std::string& batch) {
 void WkWebView::set_user_agent(const std::string& user_agent) {
   auto s = make_wk_string(user_agent);
   WKPageSetCustomUserAgent(page_, s.get());
+  if (user_agent != logged_user_agent_) {
+    logged_user_agent_ = user_agent;
+    log_printf("ua: %s applied to view %s", user_agent.c_str(), name_.c_str());
+  }
 }
 
 void WkWebView::request_exit_fullscreen() { WKViewRequestExitFullScreen(view_); }

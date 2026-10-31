@@ -160,6 +160,7 @@ class WkWebView {
   bool in_fullscreen_ = false;
   // Diagnostics: the view's name in log.txt and one-shot "first" events.
   std::string name_;
+  std::string logged_user_agent_;  // last value logged by set_user_agent()
   bool needs_display_logged_ = false;
   bool paint_logged_ = false;
 

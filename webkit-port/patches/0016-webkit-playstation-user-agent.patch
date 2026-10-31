@@ -1,0 +1,76 @@
+Subject: WebKit: honour the custom user agent on the PS5 build
+
+WebPage::platformUserAgent() on PlayStation returned
+standardUserAgentForURL() for every non-null URL while site-specific
+quirks are on (the default), and WebPage::userAgent() prefers a
+non-empty platform value over m_userAgent. The embedder's
+WKPageSetCustomUserAgent() therefore never reached navigator.userAgent
+or the User-Agent header; pages saw "PlayStation/0.00". The PlayStation
+"per-URL" user agent is just the static one, so the PS5 build returns
+no platform value.
+
+The built-in default (no custom user agent) is a desktop Safari string
+instead of "PlayStation; PlayStation/0.00", which sites serve TV or
+legacy variants.
+diff --git a/Source/WebCore/platform/playstation/UserAgentPlayStation.cpp b/Source/WebCore/platform/playstation/UserAgentPlayStation.cpp
+index 74f133472..aa88a560a 100644
+--- a/Source/WebCore/platform/playstation/UserAgentPlayStation.cpp
++++ b/Source/WebCore/platform/playstation/UserAgentPlayStation.cpp
+@@ -38,6 +38,7 @@
+ 
+ namespace WebCore {
+ 
++#if !defined(PS5_HOMEBREW)
+ static String getSystemSoftwareName()
+ {
+ #if HAS_GETENV_NP
+@@ -57,6 +58,7 @@ static String getSystemSoftwareVersion()
+ #endif
+     return "0.00"_s;
+ }
++#endif
+ 
+ static constexpr ASCIILiteral versionForUAString()
+ {
+@@ -66,10 +68,18 @@ static constexpr ASCIILiteral versionForUAString()
+ 
+ static String standardUserAgentStatic()
+ {
++#if defined(PS5_HOMEBREW)
++    // Sites serve "PlayStation" a TV/legacy variant or nothing at all: the
++    // homebrew browser identifies as desktop Safari unless the embedder sets
++    // a custom user agent.
++    static NeverDestroyed<String> desktopSafari("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"_s);
++    return desktopSafari;
++#else
+     // Version/X is mandatory *before* Safari/X to be a valid Safari UA. See
+     // https://bugs.webkit.org/show_bug.cgi?id=133403 for details.
+     static NeverDestroyed<String> uaStatic(makeString("Mozilla/5.0 (PlayStation; "_s, getSystemSoftwareName(), '/', getSystemSoftwareVersion(), ") AppleWebKit/"_s, versionForUAString(), " (KHTML, like Gecko) "_s, "Version/17.0 Safari/"_s, versionForUAString()));
+     return uaStatic;
++#endif
+ }
+ 
+ String standardUserAgent(const String& applicationName, const String& applicationVersion)
+diff --git a/Source/WebKit/WebProcess/WebPage/playstation/WebPagePlayStation.cpp b/Source/WebKit/WebProcess/WebPage/playstation/WebPagePlayStation.cpp
+index 33a978652..4542a6db0 100644
+--- a/Source/WebKit/WebProcess/WebPage/playstation/WebPagePlayStation.cpp
++++ b/Source/WebKit/WebProcess/WebPage/playstation/WebPagePlayStation.cpp
+@@ -55,10 +55,18 @@ bool WebPage::platformCanHandleRequest(const ResourceRequest&)
+ 
+ String WebPage::platformUserAgent(const URL& url) const
+ {
++#if defined(PS5_HOMEBREW)
++    // standardUserAgentForURL() is no per-site quirk on PlayStation, just the
++    // port's static user agent: returning it here replaced the embedder's
++    // WKPageSetCustomUserAgent() value for every load with a URL.
++    UNUSED_PARAM(url);
++    return emptyString();
++#else
+     if (url.isNull() || !m_page->settings().needsSiteSpecificQuirks())
+         return emptyString();
+ 
+     return WebCore::standardUserAgentForURL(url);
++#endif
+ }
+ 
+ bool WebPage::hoverSupportedByPrimaryPointingDevice() const
