@@ -139,7 +139,15 @@ std::vector<std::string> broker_env(const std::string& self_path) {
   return env;
 }
 
-// Asks websrv to start "<self_path>" as a daemon payload in the broker role.
+// The ELF the loaders start as the broker: PROSPEROWEB_BROKER_PATH (the
+// native title's small prosperoweb-broker.elf), else the multi-call ELF
+// itself in its spawn-broker role. Either way the broker spawns the
+// children from self_path.
+std::string broker_elf(const std::string& self_path) {
+  return env_or("PROSPEROWEB_BROKER_PATH", self_path.c_str());
+}
+
+// Asks websrv to start the broker ELF as a daemon payload in the broker role.
 bool start_broker_via_websrv(const std::string& self_path) {
   const std::string websrv = env_or("PROSPEROWEB_WEBSRV", kDefaultWebsrv);
   // argv[0] (also the process name) is the role; --role= and
@@ -149,8 +157,8 @@ bool start_broker_via_websrv(const std::string& self_path) {
   for (const auto& entry : broker_env(self_path)) {
     env += (env.empty() ? "" : " ") + websrv_escape_token(entry);
   }
-  const std::string target =
-      websrv_broker_target(self_path, dir_of(self_path), args, env);
+  const std::string elf = broker_elf(self_path);
+  const std::string target = websrv_broker_target(elf, dir_of(elf), args, env);
   const auto t0 = Clock::now();
   std::string error;
   const int code = http_get(websrv, target, kWebsrvTimeoutMs, &error);
@@ -170,7 +178,7 @@ bool start_broker_via_websrv(const std::string& self_path) {
 bool start_broker_via_elfldr(const std::string& self_path) {
   const std::string elfldr = env_or("PROSPEROWEB_ELFLDR", kDefaultElfldr);
   const std::string line =
-      elfldr_payload_line(self_path, elfldr_broker_args(broker_env(self_path)));
+      elfldr_payload_line(broker_elf(self_path), elfldr_broker_args(broker_env(self_path)));
   const auto t0 = Clock::now();
   std::string reply;
   std::string error;
@@ -204,8 +212,10 @@ bool start_broker(const std::string& self_path) {
                    : std::vector<std::string>{"websrv", "elfldr"};
   }
   for (size_t i = 0; i < order.size(); i++) {
-    ps5_log_printf("spawn: starting the broker %s via %s (loader %s, attempt %zu/%zu)",
-                   self_path.c_str(), order[i].c_str(), loader.c_str(), i + 1, order.size());
+    ps5_log_printf("spawn: starting the broker %s (children from %s) via %s (loader %s, "
+                   "attempt %zu/%zu)",
+                   broker_elf(self_path).c_str(), self_path.c_str(), order[i].c_str(),
+                   loader.c_str(), i + 1, order.size());
     const bool ok = order[i] == "elfldr" ? start_broker_via_elfldr(self_path)
                                          : start_broker_via_websrv(self_path);
     if (ok) {

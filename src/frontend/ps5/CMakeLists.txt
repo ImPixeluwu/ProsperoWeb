@@ -133,6 +133,16 @@ target_link_options(prosperoweb PRIVATE -Wl,--gc-sections)
 target_link_options(prosperoweb PRIVATE -Wl,--wrap=pthread_create -Wl,--wrap=pthread_exit)
 set_target_properties(prosperoweb PROPERTIES OUTPUT_NAME "prosperoweb" SUFFIX ".elf")
 
+# The spawn broker alone (broker_main.cpp): what the native title asks
+# elfldr or websrv to start, instead of the whole multi-call ELF.
+add_executable(prosperoweb_broker EXCLUDE_FROM_ALL broker_main.cpp ps5_log.cpp)
+target_compile_features(prosperoweb_broker PRIVATE cxx_std_20)
+target_include_directories(prosperoweb_broker PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(prosperoweb_broker PRIVATE prosperoweb_warnings prosperoweb::spawn
+  prosperoweb::cpu)
+target_link_options(prosperoweb_broker PRIVATE -Wl,--gc-sections)
+set_target_properties(prosperoweb_broker PROPERTIES OUTPUT_NAME "prosperoweb-broker" SUFFIX ".elf")
+
 # --- The native title's eboot.bin (docs/native-title.md) --------------------
 #
 # The same frontend, linked a second time as a PS5 native application: the

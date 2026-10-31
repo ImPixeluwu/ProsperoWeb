@@ -183,8 +183,20 @@ void setup_native_title_env() {
   setenv("PROSPEROWEB_CHROME_DIR", (layout.child_root + "/data/chrome").c_str(), 0);
   const char* self = std::getenv("PROSPEROWEB_SELF_PATH");
   const std::string self_here = spawn::rebase_path(self, layout.child_root, layout.ui_root);
-  log_printf("title: payload ELF for the broker and children %s (%s here)", self,
-             access(self_here.c_str(), R_OK) == 0 ? "present" : "MISSING");
+  struct stat st {};
+  log_printf("title: payload ELF for the children %s (%s here)", self,
+             stat(self_here.c_str(), &st) == 0 ? "present" : "MISSING");
+  // The small broker-only ELF, which the loaders start instead of the
+  // 176 MB multi-call one (broker_main.cpp).
+  const std::string broker_here = layout.ui_root + "/prosperoweb-broker.elf";
+  if (stat(broker_here.c_str(), &st) == 0) {
+    setenv("PROSPEROWEB_BROKER_PATH", (layout.child_root + "/prosperoweb-broker.elf").c_str(), 0);
+    log_printf("title: broker ELF %s (%lld bytes)", std::getenv("PROSPEROWEB_BROKER_PATH"),
+               static_cast<long long>(st.st_size));
+  } else {
+    log_printf("title: no %s; the loaders start the multi-call ELF as the broker",
+               broker_here.c_str());
+  }
 
   native_file_selftest(layout.ui_root.c_str(), layout.child_root.c_str());
   prosperoweb::frontend::setup_runtime_env(prosperoweb::frontend::kPs5DataDir,
