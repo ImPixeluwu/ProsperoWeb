@@ -72,6 +72,7 @@ set(_frontend_sources
   ps5_config.cpp
   ps5_diagnostics.cpp
   ps5_engine_view.cpp
+  ps5_cpu_monitor.cpp
   ps5_ime.cpp
   ps5_presenter.cpp
   ps5_log.cpp

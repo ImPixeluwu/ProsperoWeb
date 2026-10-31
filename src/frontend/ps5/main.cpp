@@ -20,6 +20,7 @@
 #include "ps5browser/spawn/spawn.h"
 #include "ps5webkit/entry.h"
 #include "ps5_app.h"
+#include "ps5_cpu_monitor.h"
 #include "ps5_log.h"
 #include "ps5_runtime_env.h"
 
@@ -116,6 +117,8 @@ int main(int argc, char** argv) {
     return rc;
   }
   if (role == "WebProcess") {
+    // Before WebKit starts its threads: they inherit a widened affinity.
+    start_cpu_monitor();
     const int rc = ps5_webkit_web_process_main(argc, argv);
     log_printf("main: returned %d", rc);
     return rc;
@@ -126,6 +129,7 @@ int main(int argc, char** argv) {
     return rc;
   }
 
+  start_cpu_monitor();
   Ps5App app;
   return app.run();
 }

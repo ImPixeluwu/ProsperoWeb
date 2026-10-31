@@ -86,6 +86,10 @@ int swsColorspace(const AVFrame* frame)
     }
 }
 
+// Process-wide totals for ps5_media_video_decoder_stats().
+std::atomic<unsigned> liveDecoders { 0 };
+std::atomic<unsigned> liveDecoderThreads { 0 };
+
 } // namespace
 
 RefPtr<FFmpegVideoDecoder> FFmpegVideoDecoder::create(const FFmpegStreamInfo& stream, FFmpegPacketQueue& queue)
@@ -120,11 +124,15 @@ FFmpegVideoDecoder::FFmpegVideoDecoder(const FFmpegStreamInfo& stream, FFmpegPac
     , m_frame(av_frame_alloc())
 {
     updateOutputSize(m_codec->width, m_codec->height);
+    ++liveDecoders;
+    liveDecoderThreads += static_cast<unsigned>(std::max(1, m_codec->thread_count));
 }
 
 FFmpegVideoDecoder::~FFmpegVideoDecoder()
 {
     ASSERT(!m_thread);
+    --liveDecoders;
+    liveDecoderThreads -= static_cast<unsigned>(std::max(1, m_codec->thread_count));
     if (m_sws)
         sws_freeContext(m_sws);
 }
@@ -438,5 +446,14 @@ void FFmpegVideoDecoder::setSuspended(bool suspended)
 }
 
 } // namespace WebCore
+
+// For the shell's CPU monitor (src/frontend/ps5/ps5_cpu_monitor.cpp, which
+// declares it weak): live video decoders and their libavcodec threads.
+extern "C" void ps5_media_video_decoder_stats(unsigned* decoders, unsigned* threads);
+extern "C" void ps5_media_video_decoder_stats(unsigned* decoders, unsigned* threads)
+{
+    *decoders = WebCore::liveDecoders.load();
+    *threads = WebCore::liveDecoderThreads.load();
+}
 
 #endif // ENABLE(VIDEO) && USE(FFMPEG)
