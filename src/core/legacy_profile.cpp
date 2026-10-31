@@ -99,10 +99,40 @@ std::string copy_file(const std::string& from, const std::string& to, mode_t mod
   return error;
 }
 
-// Rewrites from_dir to to_dir in a copied config.json, where it starts a
-// path or a file:// URL ("chrome_dir": "/data/ps5browser/chrome" from
-// config.json.sample, a file:///data/ps5browser/... home_url).
-std::string rewrite_config_paths(const std::string& path, const std::string& from_dir,
+// Rewrites from_dir to to_dir in config.json text, where it starts a path
+// or a file:// URL ("chrome_dir": "/data/prosperobrowser/chrome" from
+// config.json.sample, a file:///data/ps5browser/... home_url). True if
+// anything changed.
+bool rewrite_root(std::string& text, const std::string& from_dir, const std::string& to_dir) {
+  std::string out;
+  bool changed = false;
+  for (std::size_t pos = 0; pos < text.size();) {
+    const std::size_t hit = text.find(from_dir, pos);
+    if (hit == std::string::npos) {
+      out.append(text, pos, std::string::npos);
+      break;
+    }
+    const std::size_t end = hit + from_dir.size();
+    out.append(text, pos, hit - pos);
+    const bool starts_path = (hit > 0 && text[hit - 1] == '"') ||
+                             (hit >= 7 && text.compare(hit - 7, 7, "file://") == 0);
+    const bool ends_path = end < text.size() && (text[end] == '/' || text[end] == '"');
+    if (starts_path && ends_path) {
+      out += to_dir;
+      changed = true;
+    } else {
+      out.append(text, hit, from_dir.size());
+    }
+    pos = end;
+  }
+  if (changed) {
+    text = std::move(out);
+  }
+  return changed;
+}
+
+// Points every old install root in a copied config.json at to_dir.
+std::string rewrite_config_paths(const std::string& path, const std::vector<std::string>& from_dirs,
                                  const std::string& to_dir) {
   const int in = ::open(path.c_str(), O_RDONLY);
   if (in < 0) {
@@ -118,26 +148,9 @@ std::string rewrite_config_paths(const std::string& path, const std::string& fro
   if (n < 0) {
     return errno_text("read " + path);
   }
-  std::string out;
   bool changed = false;
-  for (std::size_t pos = 0; pos < text.size();) {
-    const std::size_t hit = text.find(from_dir, pos);
-    const std::size_t end = hit == std::string::npos ? hit : hit + from_dir.size();
-    if (hit == std::string::npos) {
-      out.append(text, pos, std::string::npos);
-      break;
-    }
-    out.append(text, pos, hit - pos);
-    const bool starts_path = (hit > 0 && text[hit - 1] == '"') ||
-                             (hit >= 7 && text.compare(hit - 7, 7, "file://") == 0);
-    const bool ends_path = end < text.size() && (text[end] == '/' || text[end] == '"');
-    if (starts_path && ends_path) {
-      out += to_dir;
-      changed = true;
-    } else {
-      out.append(text, hit, from_dir.size());
-    }
-    pos = end;
+  for (const auto& from_dir : from_dirs) {
+    changed = rewrite_root(text, from_dir, to_dir) || changed;
   }
   if (!changed) {
     return "";
@@ -147,7 +160,7 @@ std::string rewrite_config_paths(const std::string& path, const std::string& fro
   if (fd < 0) {
     return errno_text("create " + tmp);
   }
-  const bool written = ::write(fd, out.data(), out.size()) == static_cast<ssize_t>(out.size());
+  const bool written = ::write(fd, text.data(), text.size()) == static_cast<ssize_t>(text.size());
   ::close(fd);
   if (!written || ::rename(tmp.c_str(), path.c_str()) != 0) {
     ::unlink(tmp.c_str());
@@ -193,12 +206,45 @@ std::string copy_tree(const std::string& from, const std::string& to) {
 
 }  // namespace
 
+std::vector<std::string> legacy_env_prefixes() { return {"PROSPEROBROWSER_", "PS5BROWSER_"}; }
+
+namespace {
+
+// Index of name's prefix in legacy_env_prefixes(), or -1. A bare prefix
+// does not count.
+int legacy_rank(const std::string& name) {
+  const auto prefixes = legacy_env_prefixes();
+  for (std::size_t i = 0; i < prefixes.size(); ++i) {
+    const std::string& prefix = prefixes[i];
+    if (name.size() > prefix.size() && name.compare(0, prefix.size(), prefix) == 0) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+}  // namespace
+
 std::string renamed_env_name(const std::string& name) {
-  const std::size_t prefix = std::strlen(kLegacyEnvPrefix);
-  if (name.size() <= prefix || name.compare(0, prefix, kLegacyEnvPrefix) != 0) {
+  const int rank = legacy_rank(name);
+  if (rank < 0) {
     return "";
   }
-  return kEnvPrefix + name.substr(prefix);
+  return kEnvPrefix + name.substr(legacy_env_prefixes()[static_cast<std::size_t>(rank)].size());
+}
+
+std::vector<std::string> env_names_preferred_over(const std::string& name) {
+  const int rank = legacy_rank(name);
+  if (rank < 0) {
+    return {};
+  }
+  const auto prefixes = legacy_env_prefixes();
+  const std::string suffix = name.substr(prefixes[static_cast<std::size_t>(rank)].size());
+  std::vector<std::string> names{kEnvPrefix + suffix};
+  for (int i = 0; i < rank; ++i) {
+    names.push_back(prefixes[static_cast<std::size_t>(i)] + suffix);
+  }
+  return names;
 }
 
 std::vector<std::string> adopt_legacy_env() {
@@ -210,10 +256,14 @@ std::vector<std::string> adopt_legacy_env() {
       continue;
     }
     std::string name(*entry, static_cast<std::size_t>(eq - *entry));
-    if (!renamed_env_name(name).empty()) {
+    if (legacy_rank(name) >= 0) {
       legacy.emplace_back(std::move(name), eq + 1);
     }
   }
+  // Newest prefix first, so it is the one adopted when several are set.
+  std::stable_sort(legacy.begin(), legacy.end(), [](const auto& a, const auto& b) {
+    return legacy_rank(a.first) < legacy_rank(b.first);
+  });
   std::vector<std::string> adopted;
   for (const auto& [name, value] : legacy) {
     const std::string renamed = renamed_env_name(name);
@@ -231,10 +281,23 @@ std::vector<std::string> legacy_profile_items() {
           "storage",   "localstorage", "indexeddb",      "cache"};
 }
 
-LegacyMigration migrate_legacy_profile(const std::string& from_dir, const std::string& to_dir) {
+LegacyMigration migrate_legacy_profile(const std::vector<std::string>& from_dirs,
+                                       const std::string& to_dir) {
   LegacyMigration result;
   const std::string marker = to_dir + "/" + kLegacyMigrationMarker;
-  if (!is_dir(from_dir) || exists(marker)) {
+  if (exists(marker)) {
+    return result;
+  }
+  const auto items = legacy_profile_items();
+  for (const auto& dir : from_dirs) {
+    if (is_dir(dir) && std::any_of(items.begin(), items.end(), [&](const std::string& item) {
+          return exists(dir + "/" + item);
+        })) {
+      result.from_dir = dir;
+      break;
+    }
+  }
+  if (result.from_dir.empty()) {
     return result;
   }
   result.ran = true;
@@ -242,15 +305,15 @@ LegacyMigration migrate_legacy_profile(const std::string& from_dir, const std::s
     result.failed.push_back(errno_text("mkdir " + to_dir));
     return result;
   }
-  for (const auto& item : legacy_profile_items()) {
-    const std::string from = from_dir + "/" + item;
+  for (const auto& item : items) {
+    const std::string from = result.from_dir + "/" + item;
     const std::string to = to_dir + "/" + item;
     if (!exists(from) || exists(to)) {
       continue;
     }
     std::string error = copy_tree(from, to);
     if (error.empty() && item == "config.json") {
-      error = rewrite_config_paths(to, from_dir, to_dir);
+      error = rewrite_config_paths(to, from_dirs, to_dir);
     }
     if (!error.empty()) {
       result.failed.push_back(item + ": " + error);
@@ -264,8 +327,8 @@ LegacyMigration migrate_legacy_profile(const std::string& from_dir, const std::s
     if (fd < 0) {
       result.failed.push_back(errno_text("create " + marker));
     } else {
-      static constexpr char kText[] = "copied from the ps5browser profile\n";
-      if (::write(fd, kText, sizeof kText - 1) < 0) {
+      const std::string text = "copied from " + result.from_dir + "\n";
+      if (::write(fd, text.data(), text.size()) < 0) {
         result.failed.push_back(errno_text("write " + marker));
       }
       ::close(fd);

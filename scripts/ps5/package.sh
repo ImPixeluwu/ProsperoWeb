@@ -181,7 +181,7 @@ PY
 
 cat > "${OUT}/README-install.txt" <<EOF
 ProsperoWeb - installation
-==============================
+==========================
 
 Requirements: a jailbroken PS5 running ps5-payload-dev/websrv (port 8080),
 which launches the browser; ftpsrv (port 2121) to copy the files;
@@ -201,15 +201,18 @@ optionally klogsrv (port 3232) to read the debug output.
    (override with PROSPEROWEB_SELF_PATH), and reads its fonts, CA bundle
    and chrome from there.
 
-   Upgrading from ps5browser (installed in /data/ps5browser): remove the
-   old tile /data/homebrew/ps5browser/ so websrv lists only the new one,
-   and leave /data/ps5browser/ in place for the first start. The browser
-   then copies (does not move) tabs.json, history.json, bookmarks.json,
+   Upgrading from ProsperoBrowser (/data/prosperobrowser) or ps5browser
+   (/data/ps5browser): remove the old tile (/data/homebrew/prosperobrowser/
+   or /data/homebrew/ps5browser/) so websrv lists only the new one, and
+   leave the old directory in place for the first start. The browser then
+   copies (does not move) tabs.json, history.json, bookmarks.json,
    config.json, storage/, localstorage/, indexeddb/ and cache/ once into
-   ${INSTALL_DIR}/ and logs "migrate: copied <n> items from
-   /data/ps5browser"; /data/ps5browser paths in the copied config.json
-   are pointed at ${INSTALL_DIR}. PS5BROWSER_* variables (also in config.json "env")
-   still work for this release; rename them to PROSPEROWEB_*.
+   ${INSTALL_DIR}/ from the newest old directory that has a profile
+   (/data/prosperobrowser first) and logs "migrate: copied <n> items from
+   <dir>"; old install paths in the copied config.json are pointed at
+   ${INSTALL_DIR}. PROSPEROBROWSER_* and PS5BROWSER_* variables (also in
+   config.json "env") still work for this release; rename them to
+   PROSPEROWEB_*.
 
 2. Optional: copy config.json.sample to config.json and edit it.
 

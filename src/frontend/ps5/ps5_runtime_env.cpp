@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ps5_runtime_env.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -48,9 +49,19 @@ void apply_config_env(const std::string& base_dir) {
     return;
   }
   for (const auto& [key, value] : env->items()) {
-    // A config.json carried over from ps5browser may still use the old names.
+    // A config.json carried over from ProsperoBrowser or ps5browser may
+    // still use the old names; the new name (or a newer old one) wins.
     std::string name = key;
     if (const std::string renamed = core::renamed_env_name(key); !renamed.empty()) {
+      const auto preferred = core::env_names_preferred_over(key);
+      const auto winner = std::find_if(preferred.begin(), preferred.end(), [&](const auto& other) {
+        return env->contains(other);
+      });
+      if (winner != preferred.end()) {
+        log_printf("env %s: deprecated name in config.json, ignored (%s is set)", key.c_str(),
+                   winner->c_str());
+        continue;
+      }
       log_printf("env %s: deprecated name in config.json, use %s", key.c_str(), renamed.c_str());
       name = renamed;
     }

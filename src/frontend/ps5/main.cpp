@@ -13,6 +13,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -78,22 +79,24 @@ void export_self_path(int argc, char** argv) {
   setenv("PROSPEROWEB_SELF_PATH", path.c_str(), /*overwrite=*/0);
 }
 
-// The project was called ps5browser before: carry its profile over once
-// (UI role, before config.json is read). Copies, never moves, so the old
-// build keeps working from /data/ps5browser.
+// The project was called ProsperoBrowser and ps5browser before: carry the
+// newest old profile over once (UI role, before config.json is read).
+// Copies, never moves, so an old build keeps working from its directory.
 void migrate_legacy_profile_dir() {
   using namespace prosperoweb::frontend;
-  const auto result = prosperoweb::core::migrate_legacy_profile(kLegacyDataDir, kPs5DataDir);
+  const auto result = prosperoweb::core::migrate_legacy_profile(
+      {std::begin(kLegacyDataDirs), std::end(kLegacyDataDirs)}, kPs5DataDir);
   if (!result.ran) {
     return;
   }
-  log_printf("migrate: copied %d items from %s", result.copied, kLegacyDataDir);
+  log_printf("migrate: copied %d items from %s", result.copied, result.from_dir.c_str());
   for (const auto& failure : result.failed) {
     log_printf("migrate: failed: %s", failure.c_str());
   }
 }
 
-// Logs the PS5BROWSER_* variables adopted at startup, once per launch.
+// Logs the PROSPEROBROWSER_* and PS5BROWSER_* variables adopted at startup,
+// once per launch.
 void log_legacy_env(const std::vector<std::string>& adopted) {
   using prosperoweb::frontend::log_printf;
   if (adopted.empty()) {
@@ -103,8 +106,8 @@ void log_legacy_env(const std::vector<std::string>& adopted) {
   for (const auto& name : adopted) {
     names += (names.empty() ? "" : " ") + name;
   }
-  log_printf("env: deprecated PS5BROWSER_* variables used (%s); rename them to "
-             "PROSPEROWEB_*, the old names stop working in the next release",
+  log_printf("env: deprecated variable names used (%s); rename them to PROSPEROWEB_*, "
+             "the old names stop working in the next release",
              names.c_str());
 }
 
