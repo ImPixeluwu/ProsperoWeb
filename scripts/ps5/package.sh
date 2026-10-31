@@ -15,7 +15,9 @@
 #   dist/homebrew/prosperobrowser/        -> copy to /data/homebrew/prosperobrowser/ (websrv
 #                                         tile, the only supported way to launch the browser)
 #     homebrew.js                         launches /data/prosperobrowser/prosperobrowser.elf
-#     sce_sys/icon0.png                   512x512 tile icon
+#     sce_sys/icon0.png                   512x512 tile icon      (assets/sce_sys/)
+#     sce_sys/pic0.png, pic1.png          1920x1080 backgrounds  (assets/sce_sys/)
+#     sce_sys/param.json                  title identity from assets/app.json
 #
 #   scripts/ps5/package.sh [path/to/prosperobrowser.elf]
 #
@@ -40,7 +42,7 @@ log() { printf '[package] %s\n' "$*"; }
 die() { printf '[package] error: %s\n' "$*" >&2; exit 1; }
 
 [[ -f "${ELF}" ]] || die "${ELF} not found; build the prosperobrowser target first"
-for t in curl sha256sum tar convert; do
+for t in curl sha256sum tar python3; do
     command -v "${t}" >/dev/null || die "${t} is required"
 done
 
@@ -138,11 +140,40 @@ async function main() {
 }
 EOF
 
-convert -size 512x512 gradient:'#1b3a8a'-'#0a1430' \
-    -fill white -font "${OUT}/fonts/DejaVuSans-Bold.ttf" -pointsize 300 -gravity center -annotate +0-30 'W' \
-    -fill '#c8d4ff' -font "${OUT}/fonts/DejaVuSans.ttf" -pointsize 64 -gravity south -annotate +0+40 'ProsperoBrowser' \
-    -strip "PNG24:${TILE}/sce_sys/icon0.png" 2>/dev/null \
-    || convert -size 512x512 gradient:'#1b3a8a'-'#0a1430' -strip "PNG24:${TILE}/sce_sys/icon0.png"
+# Home screen artwork, rendered from assets/*.svg by scripts/assets/render.sh
+# and committed. websrv shows only icon0.png; pic0/pic1 and param.json are
+# the title's identity for a native app folder (docs/store-submission.md).
+# websrv ignores them, and without an eboot.bin no mounter registers the
+# folder as a title.
+cp -- "${ROOT}"/assets/sce_sys/icon0.png "${ROOT}"/assets/sce_sys/pic0.png \
+    "${ROOT}"/assets/sce_sys/pic1.png "${TILE}/sce_sys/"
+python3 -I - "${ROOT}/assets/app.json" "${TILE}/sce_sys/param.json" <<'PY'
+import json, re, sys
+app = json.load(open(sys.argv[1], encoding="utf-8"))
+title_id = app["titleId"]
+if not re.fullmatch(r"[A-Z]{4}\d{5}", title_id):
+    sys.exit(f"bad titleId {title_id!r}")
+if not re.fullmatch(r"[A-Z]{2}\d{4}-" + title_id + r"_00-[A-Z0-9]{16}", app["contentId"]):
+    sys.exit(f"bad contentId {app['contentId']!r}")
+if not re.fullmatch(r"\d{2}\.\d{3}\.\d{3}", app["contentVersion"]):
+    sys.exit(f"bad contentVersion {app['contentVersion']!r}")
+param = {
+    "applicationCategoryType": 0,
+    "applicationDrmType": "free",
+    "conceptId": title_id[4:],
+    "contentId": app["contentId"],
+    "contentVersion": app["contentVersion"],
+    "localizedParameters": {
+        "defaultLanguage": app["language"],
+        app["language"]: {"titleName": app["name"]},
+    },
+    "masterVersion": app["masterVersion"],
+    "titleId": title_id,
+}
+with open(sys.argv[2], "w", encoding="utf-8", newline="\n") as out:
+    json.dump(param, out, indent=2, ensure_ascii=False)
+    out.write("\n")
+PY
 
 cat > "${OUT}/README-install.txt" <<EOF
 ProsperoBrowser - installation
