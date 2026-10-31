@@ -9,6 +9,7 @@
 // (Ps5ChromeUi) are built on this.
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -162,6 +163,9 @@ class WkWebView {
   std::string logged_user_agent_;  // last value logged by set_user_agent()
   bool needs_display_logged_ = false;
   bool paint_logged_ = false;
+  // When the view (a new tab) was created, for the tab-open-to-first-paint
+  // latency logged at the first setViewNeedsDisplay.
+  std::chrono::steady_clock::time_point created_at_ = std::chrono::steady_clock::now();
 
   // Expires with the view: pending evaluate() completions check it.
   std::shared_ptr<char> alive_ = std::make_shared<char>(0);

@@ -4,11 +4,15 @@
 #include <WebKit/WKContext.h>
 #include <WebKit/WKContextConfigurationRef.h>
 #include <WebKit/WKContextConfigurationPlayStation.h>
+#include <WebKit/WKContextPrivate.h>
 #include <WebKit/WKEvent.h>
 #include <WebKit/WKString.h>
 #include <WebKit/WKWebsiteDataStoreConfigurationRef.h>
 #include <WebKit/WKWebsiteDataStoreRef.h>
 #include <wpe/wpe.h>  // WPE_KEY_* keysyms
+
+#include <cstdlib>
+#include <cstring>
 
 #include <nlohmann/json.hpp>
 
@@ -202,6 +206,19 @@ Ps5EngineFactory::Ps5EngineFactory(const std::string& base_dir,
   }
   context_ = WKContextCreateWithConfiguration(ctx_config);
   WKRelease(ctx_config);
+
+  // Prewarm a WebProcess so opening the first tab does not pay the full spawn
+  // + WebKit startup latency. Gated by PROSPEROBROWSER_PREWARM (default on;
+  // "0"/"off" disables). The prewarmed process's pid shows in the broker's
+  // spawn log ("spawn: role=WebProcess ... ok"); the C API reports no pid here.
+  if (const char* prewarm = std::getenv("PROSPEROBROWSER_PREWARM");
+      prewarm && (!std::strcmp(prewarm, "0") || !std::strcmp(prewarm, "off"))) {
+    log_line("prewarm: disabled (PROSPEROBROWSER_PREWARM=off)");
+  } else {
+    WKContextSetPrewarmsProcessesAutomatically(context_, true);
+    WKContextWarmInitialProcess(context_);
+    log_line("prewarm: WebProcess requested (automatic warming on; pid in the broker spawn log)");
+  }
 
   WKWebsiteDataStoreConfigurationRef ds_config = WKWebsiteDataStoreConfigurationCreate();
   {

@@ -320,8 +320,12 @@ void WkWebView::s_needs_display(WKViewRef, WKRect rect, const void* ci) {
   }
   if (!self->needs_display_logged_) {
     self->needs_display_logged_ = true;
-    log_printf("view %s: first setViewNeedsDisplay %d,%d %dx%d", self->name_.c_str(),
-               d.x, d.y, d.width, d.height);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - self->created_at_)
+                             .count();
+    log_printf("view %s: first setViewNeedsDisplay %d,%d %dx%d (%lld ms after tab open)",
+               self->name_.c_str(), d.x, d.y, d.width, d.height,
+               static_cast<long long>(elapsed));
   }
   self->needs_display_stats_.add(static_cast<std::uint64_t>(d.width) * d.height);
   // Several invalidations can arrive between two frames; keep them all.
