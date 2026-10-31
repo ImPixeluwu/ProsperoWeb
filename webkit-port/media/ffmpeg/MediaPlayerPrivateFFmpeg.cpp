@@ -8,6 +8,7 @@
 #include "AudioSink.h"
 #include "FFmpegAudioDecoder.h"
 #include "FFmpegDemuxer.h"
+#include "FFmpegLog.h"
 #include "FFmpegSupportTable.h"
 #include "FFmpegVideoDecoder.h"
 #include "GraphicsContext.h"
@@ -18,7 +19,11 @@
 #include <skia/core/SkColorSpace.h>
 #include <skia/core/SkImage.h>
 #include <skia/core/SkPixmap.h>
+#include <mutex>
+#include <wtf/HashSet.h>
+#include <wtf/Lock.h>
 #include <wtf/NeverDestroyed.h>
+#include <wtf/text/MakeString.h>
 #include <wtf/TZoneMallocInlines.h>
 
 namespace WebCore {
@@ -36,6 +41,77 @@ constexpr Seconds idleTick = 100_ms;
 // (buffering) unless the stream has ended.
 constexpr double stallThreshold = 0.1;
 constexpr double audioWatchdogSeconds = 2.0;
+// Console log: pipeline statistics while playing or seeking.
+constexpr double statsIntervalSeconds = 5.0;
+
+const char* readyStateName(MediaPlayer::ReadyState state)
+{
+    switch (state) {
+    case MediaPlayer::ReadyState::HaveNothing: return "HaveNothing";
+    case MediaPlayer::ReadyState::HaveMetadata: return "HaveMetadata";
+    case MediaPlayer::ReadyState::HaveCurrentData: return "HaveCurrentData";
+    case MediaPlayer::ReadyState::HaveFutureData: return "HaveFutureData";
+    case MediaPlayer::ReadyState::HaveEnoughData: return "HaveEnoughData";
+    }
+    return "?";
+}
+
+const char* networkStateName(MediaPlayer::NetworkState state)
+{
+    switch (state) {
+    case MediaPlayer::NetworkState::Empty: return "Empty";
+    case MediaPlayer::NetworkState::Idle: return "Idle";
+    case MediaPlayer::NetworkState::Loading: return "Loading";
+    case MediaPlayer::NetworkState::Loaded: return "Loaded";
+    case MediaPlayer::NetworkState::FormatError: return "FormatError";
+    case MediaPlayer::NetworkState::NetworkError: return "NetworkError";
+    case MediaPlayer::NetworkState::DecodeError: return "DecodeError";
+    }
+    return "?";
+}
+
+const char* supportName(MediaPlayer::SupportsType type)
+{
+    switch (type) {
+    case MediaPlayer::SupportsType::IsNotSupported: return "\"\"";
+    case MediaPlayer::SupportsType::IsSupported: return "probably";
+    case MediaPlayer::SupportsType::MayBeSupported: return "maybe";
+    }
+    return "?";
+}
+
+// Logs each distinct canPlayType/source-selection query once (sites ask the
+// same questions over and over).
+void logSupportsType(const MediaEngineSupportParameters& parameters, MediaPlayer::SupportsType result)
+{
+    if (!ffmpegMediaLogEnabled())
+        return;
+    static Lock lock;
+    static NeverDestroyed<HashSet<String>> seen;
+    String key = makeString(parameters.type.raw(), parameters.platformType == PlatformMediaDecodingType::FileOrHLS ? ""_s : " (MSE/stream)"_s);
+    {
+        Locker locker { lock };
+        if (seen->size() >= 64 || !seen->add(key).isNewEntry)
+            return;
+    }
+    ffmpegMediaLog("supportsType %s -> %s", key.utf8().legacyCStringPointer(), supportName(result));
+}
+
+// av_malloc() relies on the SDK libc's posix_memalign() for libavcodec's
+// 64-byte SIMD alignment; check it once per process.
+void checkAllocatorAlignment()
+{
+    static std::once_flag once;
+    std::call_once(once, [] {
+        bool aligned = true;
+        for (size_t size : { 24u, 1000u, 65536u, 1u << 20 }) {
+            void* block = av_malloc(size);
+            aligned = aligned && block && !(reinterpret_cast<uintptr_t>(block) & 63);
+            av_free(block);
+        }
+        ffmpegMediaLog("av_malloc 64-byte alignment: %s", aligned ? "ok" : "BROKEN");
+    });
+}
 
 double monotonicNow()
 {
@@ -131,8 +207,10 @@ void MediaPlayerPrivateFFmpeg::getSupportedTypes(HashSet<String>& types)
 MediaPlayer::SupportsType MediaPlayerPrivateFFmpeg::supportsType(const MediaEngineSupportParameters& parameters)
 {
     // MSE and MediaStream are not implemented by this engine.
-    if (parameters.platformType != PlatformMediaDecodingType::FileOrHLS)
+    if (parameters.platformType != PlatformMediaDecodingType::FileOrHLS) {
+        logSupportsType(parameters, MediaPlayer::SupportsType::IsNotSupported);
         return MediaPlayer::SupportsType::IsNotSupported;
+    }
 
     auto container = parameters.type.containerType();
     if (container.isEmpty())
@@ -142,15 +220,19 @@ MediaPlayer::SupportsType MediaPlayerPrivateFFmpeg::supportsType(const MediaEngi
     for (auto& codec : parameters.type.codecs())
         codecs.push_back(codec.utf8().toStdString());
     auto containerString = container.utf8().toStdString();
+    auto result = MediaPlayer::SupportsType::IsNotSupported;
     switch (FFmpegMedia::evaluate(containerString, codecs, decoderAvailability())) {
     case FFmpegMedia::Support::IsSupported:
-        return MediaPlayer::SupportsType::IsSupported;
+        result = MediaPlayer::SupportsType::IsSupported;
+        break;
     case FFmpegMedia::Support::MaybeSupported:
-        return MediaPlayer::SupportsType::MayBeSupported;
+        result = MediaPlayer::SupportsType::MayBeSupported;
+        break;
     case FFmpegMedia::Support::NotSupported:
         break;
     }
-    return MediaPlayer::SupportsType::IsNotSupported;
+    logSupportsType(parameters, result);
+    return result;
 }
 
 // MARK: - Lifetime
@@ -197,6 +279,15 @@ void MediaPlayerPrivateFFmpeg::load(const String& urlString)
     stopPipeline();
     m_loadStarted = false;
     m_url = URL { urlString };
+    checkAllocatorAlignment();
+    {
+        auto path = m_url.path();
+        size_t dot = path.reverseFind('.');
+        String extension = dot != notFound && path.length() - dot <= 6 ? path.substring(dot).toString() : String();
+        ffmpegMediaLog("load %s://%s (*%s), preload %s", m_url.protocol().utf8().legacyCStringPointer(), m_url.host().utf8().legacyCStringPointer(),
+            extension.isEmpty() ? "" : extension.utf8().legacyCStringPointer(),
+            m_preload == MediaPlayer::Preload::None ? "none" : m_preload == MediaPlayer::Preload::MetaData ? "metadata" : "auto");
+    }
     m_metadataLoaded = false;
     m_failed = false;
     m_ended = false;
@@ -252,6 +343,7 @@ void MediaPlayerPrivateFFmpeg::startLoading()
 
 void MediaPlayerPrivateFFmpeg::cancelLoad()
 {
+    ffmpegMediaLog("cancelLoad");
     stopPipeline();
     m_loadStarted = false;
     m_loadDeferred = false;
@@ -283,6 +375,7 @@ void MediaPlayerPrivateFFmpeg::onMetadataLoaded()
     if (auto* stream = demuxer->audioStream())
         m_audioDecoder = FFmpegAudioDecoder::create(*stream, demuxer->audioQueue(), AudioSink::sampleRate, AudioSink::channels);
     if (!m_videoDecoder && !m_audioDecoder) {
+        ffmpegMediaLog("no decoder could be opened");
         m_failed = true;
         setNetworkState(MediaPlayer::NetworkState::FormatError);
         return;
@@ -327,7 +420,7 @@ void MediaPlayerPrivateFFmpeg::createAudioSink(bool forceNull)
     };
     m_audioSink = forceNull ? AudioSink::createNull(WTF::move(render)) : AudioSink::create(WTF::move(render));
     m_lastAudioClock.reset();
-    LOG(Media, "MediaPlayerPrivateFFmpeg: audio sink %s", m_audioSink->name());
+    ffmpegMediaLog("audio sink: using %s, latency %.0f ms", m_audioSink->name(), m_audioSink->latency() * 1000);
 }
 
 // MARK: - Playback control
@@ -463,6 +556,10 @@ Ref<MediaTimePromise> MediaPlayerPrivateFFmpeg::seekToTarget(const SeekTarget& t
     if (std::isfinite(m_duration))
         time = std::min(time, m_duration);
 
+    ffmpegMediaLog("seek #%u to %.3f (from %.3f)", m_serial + 1, time, currentTime().toDouble());
+    m_seekStartedAt = monotonicNow();
+    m_seekFailureHandled = false;
+    m_loggedFirstFrameSerial = 0;
     ++m_serial;
     m_seekTime = time;
     m_seeking = true;
@@ -492,6 +589,9 @@ void MediaPlayerPrivateFFmpeg::finishSeekIfReady(double now)
     if (!videoReady || !audioReady)
         return;
 
+    if (m_seekFailureHandled && m_currentFrame && m_currentFrame->serial == m_serial)
+        m_seekTime = m_currentFrame->pts;
+    ffmpegMediaLog("seek #%u finished at %.3f in %.0f ms", m_serial, m_seekTime, (now - m_seekStartedAt) * 1000);
     m_seeking = false;
     m_clock.reset(m_seekTime, now);
     updatePlaybackRunning();
@@ -539,8 +639,18 @@ void MediaPlayerPrivateFFmpeg::tick()
     if (RefPtr decoder = m_audioDecoder)
         decoder->setClockHint(position);
 
+    if (m_seeking && status.seekFailedSerial == m_serial && !m_seekFailureHandled) {
+        // The demuxer could not seek and reads on from the old position:
+        // stop trimming to the target, show whatever comes next.
+        m_seekFailureHandled = true;
+        if (RefPtr decoder = m_videoDecoder)
+            decoder->setSeekTarget(-1, m_serial);
+        if (RefPtr decoder = m_audioDecoder)
+            decoder->setSeekTarget(-1, m_serial);
+    }
     presentVideo(m_seeking ? m_seekTime : position);
     finishSeekIfReady(now);
+    logStats(now, position, status.bytesReceived, status.readerWaiting, status.endOfStream);
 
     double bufferedAhead = status.buffered.bufferedAhead(m_seeking ? m_seekTime : position);
     // Extrapolated clock (no audio master): hold still while starved.
@@ -602,6 +712,10 @@ void MediaPlayerPrivateFFmpeg::presentVideo(double position)
         m_naturalSize = size;
         if (player)
             player->sizeChanged();
+    }
+    if (needFirstFrame && m_loggedFirstFrameSerial != m_serial + 1) {
+        m_loggedFirstFrameSerial = m_serial + 1;
+        ffmpegMediaLog("first video frame%s: pts %.3f, %dx%d", m_serial ? " after seek" : "", m_currentFrame->pts, m_currentFrame->width(), m_currentFrame->height());
     }
     if (player) {
         if (needFirstFrame)
@@ -710,9 +824,43 @@ void MediaPlayerPrivateFFmpeg::checkAudioWatchdog(double now)
     }
     if (now - m_lastAudioClockChange < audioWatchdogSeconds)
         return;
-    WTFLogAlways("[ffmpeg-media] audio output %s stopped pulling samples, switching to the silent sink", m_audioSink->name());
+    ffmpegMediaLog("audio sink %s stopped pulling samples for %.0f s, switching to the null sink", m_audioSink->name(), audioWatchdogSeconds);
     createAudioSink(true);
     updatePlaybackRunning();
+}
+
+void MediaPlayerPrivateFFmpeg::logStats(double now, double position, uint64_t bytesReceived, bool readerWaiting, bool endOfStream)
+{
+    if (!ffmpegMediaLogEnabled())
+        return;
+    bool active = (m_clock.running() && !m_ended) || m_seeking;
+    if (!active) {
+        m_lastStatsAt = 0;
+        return;
+    }
+    if (!m_lastStatsAt) {
+        m_lastStatsAt = now;
+        return;
+    }
+    if (now - m_lastStatsAt < statsIntervalSeconds)
+        return;
+    m_lastStatsAt = now;
+    RefPtr demuxer = m_demuxer;
+    RefPtr video = m_videoDecoder;
+    RefPtr audio = m_audioDecoder;
+    auto videoLevel = demuxer ? demuxer->videoQueue().level() : FFmpegMedia::QueueLevel { };
+    auto audioLevel = demuxer ? demuxer->audioQueue().level() : FFmpegMedia::QueueLevel { };
+    std::optional<double> audioClock;
+    if (audio && m_audioSink)
+        audioClock = audio->clockTime(m_audioSink->latency());
+    ffmpegMediaLog("stats: t=%.2f%s video %u decoded %u dropped (+%u presenter) %zu queued, pts %.2f | packets v %zu/%.1fs a %zu/%.1fs %zu KiB | audio %s clock %.2f buffered %.2fs | net %llu KiB%s%s",
+        position, m_seeking ? makeString(" SEEKING #"_s, m_serial, " for "_s, static_cast<int>((now - m_seekStartedAt) * 1000), "ms"_s).utf8().legacyCStringPointer() : "",
+        video ? video->decodedFrames() : 0, video ? video->droppedFrames() : 0, m_presenterDropped, video ? video->queuedFrames() : 0,
+        m_currentFrame ? m_currentFrame->pts : -1.0,
+        videoLevel.packets, videoLevel.seconds, audioLevel.packets, audioLevel.seconds,
+        demuxer ? (demuxer->videoQueue().bytes() + demuxer->audioQueue().bytes()) >> 10 : 0,
+        m_audioSink ? m_audioSink->name() : "none", audioClock ? *audioClock : -1.0, audio ? audio->bufferedSeconds() : 0.0,
+        static_cast<unsigned long long>(bytesReceived >> 10), readerWaiting ? " reader idle" : "", endOfStream ? " EOS" : "");
 }
 
 // MARK: - States
@@ -721,6 +869,7 @@ void MediaPlayerPrivateFFmpeg::setNetworkState(MediaPlayer::NetworkState state)
 {
     if (m_networkState == state)
         return;
+    ffmpegMediaLog("networkState %s -> %s", networkStateName(m_networkState), networkStateName(state));
     m_networkState = state;
     if (RefPtr player = m_player.get())
         player->networkStateChanged();
@@ -730,6 +879,7 @@ void MediaPlayerPrivateFFmpeg::setReadyState(MediaPlayer::ReadyState state)
 {
     if (m_readyState == state)
         return;
+    ffmpegMediaLog("readyState %s -> %s", readyStateName(m_readyState), readyStateName(state));
     m_readyState = state;
     if (RefPtr player = m_player.get())
         player->readyStateChanged();

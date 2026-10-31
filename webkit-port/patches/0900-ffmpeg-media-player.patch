@@ -138,10 +138,10 @@ index 581158cda..554fe4961 100644
  enum class MediaPlayerWirelessPlaybackTargetType : uint8_t {
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/AudioSink.cpp b/Source/WebCore/platform/graphics/ffmpeg/AudioSink.cpp
 new file mode 100644
-index 000000000..aa1d7104b
+index 000000000..e73204957
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/AudioSink.cpp
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,210 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -149,6 +149,7 @@ index 000000000..aa1d7104b
 +
 +#if ENABLE(VIDEO) && USE(FFMPEG)
 +
++#include "FFmpegLog.h"
 +#include "Logging.h"
 +#include <cstdlib>
 +#include <cstring>
@@ -252,9 +253,14 @@ index 000000000..aa1d7104b
 +    static std::unique_ptr<AudioSink> create(RenderCallback& render)
 +    {
 +        if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
-+            WTFLogAlways("[ffmpeg-media] SDL audio init failed: %s", SDL_GetError());
++            ffmpegMediaLog("audio sink: SDL_InitSubSystem(AUDIO) failed: %s", SDL_GetError());
 +            return nullptr;
 +        }
++        const char* driver = SDL_GetCurrentAudioDriver();
++        int devices = SDL_GetNumAudioDevices(0);
++        const char* deviceName = devices > 0 ? SDL_GetAudioDeviceName(0, 0) : nullptr;
++        ffmpegMediaLog("audio sink: SDL driver %s, %d output devices, opening the default (%s)",
++            driver ? driver : "(none)", devices, deviceName ? deviceName : "unnamed");
 +        auto sink = std::unique_ptr<SDLAudioSink>(new SDLAudioSink(WTF::move(render)));
 +        SDL_AudioSpec desired { };
 +        desired.freq = sampleRate;
@@ -267,10 +273,15 @@ index 000000000..aa1d7104b
 +        // No allowed changes: SDL converts to the device format itself.
 +        sink->m_device = SDL_OpenAudioDevice(nullptr, 0, &desired, &obtained, 0);
 +        if (!sink->m_device) {
-+            WTFLogAlways("[ffmpeg-media] SDL_OpenAudioDevice failed: %s", SDL_GetError());
++            ffmpegMediaLog("audio sink: SDL_OpenAudioDevice(%d Hz, f32, %d ch, %d samples) failed: %s",
++                desired.freq, desired.channels, desired.samples, SDL_GetError());
++            // The sink's destructor balances SDL_InitSubSystem.
 +            render = WTF::move(sink->m_render);
 +            return nullptr;
 +        }
++        ffmpegMediaLog("audio sink: SDL device %u open: requested %d Hz f32 %d ch %d samples, obtained %d Hz format 0x%x %d ch %d samples",
++            static_cast<unsigned>(sink->m_device), desired.freq, desired.channels, desired.samples,
++            obtained.freq, static_cast<unsigned>(obtained.format), obtained.channels, obtained.samples);
 +        // The callback fills one buffer while the device plays the previous.
 +        sink->m_latency = 2.0 * obtained.samples / sampleRate;
 +        return sink;
@@ -329,8 +340,11 @@ index 000000000..aa1d7104b
 +    if (!nullSinkRequested()) {
 +        if (auto sink = SDLAudioSink::create(render))
 +            return sink;
-+        WTFLogAlways("[ffmpeg-media] no audio output, playing silently");
-+    }
++        ffmpegMediaLog("audio sink: falling back to the null sink (no sound, the clock keeps running)");
++    } else
++        ffmpegMediaLog("audio sink: PS5BROWSER_MEDIA_AUDIO=null, using the null sink");
++#else
++    ffmpegMediaLog("audio sink: built without SDL audio, using the null sink");
 +#endif
 +    return createNull(WTF::move(render));
 +}
@@ -534,10 +548,10 @@ index 000000000..169cb8011
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegAudioDecoder.cpp b/Source/WebCore/platform/graphics/ffmpeg/FFmpegAudioDecoder.cpp
 new file mode 100644
-index 000000000..4e2ebd1a8
+index 000000000..d24d77c56
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegAudioDecoder.cpp
-@@ -0,0 +1,355 @@
+@@ -0,0 +1,362 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -547,10 +561,12 @@ index 000000000..4e2ebd1a8
 +
 +#include "FFmpegAVClock.h"
 +#include "FFmpegDemuxer.h"
++#include "FFmpegLog.h"
 +#include "Logging.h"
 +
 +extern "C" {
 +#include <libavutil/channel_layout.h>
++#include <libavutil/samplefmt.h>
 +#include <libswresample/swresample.h>
 +}
 +
@@ -585,9 +601,12 @@ index 000000000..4e2ebd1a8
 +    context->thread_count = 1;
 +    int result = avcodec_open2(context.get(), codec, nullptr);
 +    if (result < 0) {
-+        LOG(Media, "FFmpegAudioDecoder: cannot open %s: %s", codec->name, ffmpegErrorString(result).utf8().legacyCStringPointer());
++        ffmpegMediaLog("audio decoder %s: open failed: %s", codec->name, ffmpegErrorString(result).utf8().legacyCStringPointer());
 +        return nullptr;
 +    }
++    ffmpegMediaLog("audio decoder %s: %d Hz, %d ch, %s -> f32 %d Hz %d ch", codec->name, context->sample_rate,
++        context->ch_layout.nb_channels, av_get_sample_fmt_name(context->sample_fmt) ? av_get_sample_fmt_name(context->sample_fmt) : "?",
++        outputRate, outputChannels);
 +    return adoptRef(*new FFmpegAudioDecoder(stream, queue, WTF::move(context), outputRate, outputChannels));
 +}
 +
@@ -678,7 +697,8 @@ index 000000000..4e2ebd1a8
 +        result = avcodec_send_packet(m_codec.get(), packet);
 +    }
 +    if (result < 0 && result != AVERROR(EAGAIN) && result != AVERROR_EOF)
-+        LOG(Media, "FFmpegAudioDecoder: send_packet: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
++        if (!(m_decodeErrors++ % 100))
++            ffmpegMediaLog("audio decoder: send_packet: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
 +    receiveFrames();
 +}
 +
@@ -689,7 +709,8 @@ index 000000000..4e2ebd1a8
 +        if (result == AVERROR(EAGAIN) || result == AVERROR_EOF)
 +            return;
 +        if (result < 0) {
-+            LOG(Media, "FFmpegAudioDecoder: receive_frame: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
++            if (!(m_decodeErrors++ % 100))
++                ffmpegMediaLog("audio decoder: receive_frame: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
 +            return;
 +        }
 +        writeFrame(m_frame.get());
@@ -716,7 +737,7 @@ index 000000000..4e2ebd1a8
 +    av_channel_layout_uninit(&output);
 +    av_channel_layout_uninit(&input);
 +    if (result < 0 || !m_swr || swr_init(m_swr) < 0) {
-+        LOG(Media, "FFmpegAudioDecoder: cannot resample %d Hz format %d", frame->sample_rate, frame->format);
++        ffmpegMediaLog("audio decoder: cannot resample %d Hz format %d", frame->sample_rate, frame->format);
 +        swr_free(&m_swr);
 +        m_fatalError = true;
 +        return false;
@@ -895,10 +916,10 @@ index 000000000..4e2ebd1a8
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegAudioDecoder.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegAudioDecoder.h
 new file mode 100644
-index 000000000..d4be26f9d
+index 000000000..8f9c83b7c
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegAudioDecoder.h
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,113 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Audio decoding for the ffmpeg media engine: a worker thread decodes
@@ -991,6 +1012,7 @@ index 000000000..d4be26f9d
 +
 +    // Decoder thread only.
 +    unsigned m_serial { 0 };
++    unsigned m_decodeErrors { 0 };
 +    int m_swrInputRate { 0 };
 +    int m_swrInputFormat { -1 };
 +    AVChannelLayout m_swrInputLayout { };
@@ -1013,10 +1035,10 @@ index 000000000..d4be26f9d
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegDemuxer.cpp b/Source/WebCore/platform/graphics/ffmpeg/FFmpegDemuxer.cpp
 new file mode 100644
-index 000000000..d0bc05619
+index 000000000..d53935536
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegDemuxer.cpp
-@@ -0,0 +1,505 @@
+@@ -0,0 +1,612 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -1024,9 +1046,11 @@ index 000000000..d0bc05619
 +
 +#if ENABLE(VIDEO) && USE(FFMPEG)
 +
++#include "FFmpegLog.h"
 +#include "Logging.h"
 +#include "PlatformMediaResourceLoader.h"
 +#include <wtf/MainThread.h>
++#include <wtf/MonotonicTime.h>
 +
 +namespace WebCore {
 +
@@ -1192,6 +1216,8 @@ index 000000000..d0bc05619
 +    status.readerWaiting = m_readerWaiting;
 +    status.bytesReceived = m_shared->bytesReceived;
 +    status.buffered = m_buffered;
++    status.seekFailedSerial = m_seekFailedSerial;
++    status.seekDoneSerial = m_seekDoneSerial;
 +    return status;
 +}
 +
@@ -1200,6 +1226,8 @@ index 000000000..d0bc05619
 +    Locker locker { m_lock };
 +    m_pendingSeek = std::make_pair(time, serial);
 +    m_endOfStream = false;
++    // Wakes a top-level read that waits for data at the old position.
++    m_shared->seekPending = true;
 +    m_condition.notifyAll();
 +}
 +
@@ -1220,10 +1248,32 @@ index 000000000..d0bc05619
 +{
 +    auto* demuxer = static_cast<FFmpegDemuxer*>(context->opaque);
 +    URL parsed { String::fromUTF8(url) };
++    if (parsed.protocolIs("skd"_s)) {
++        // FairPlay (HLS SAMPLE-AES with an Apple key server): no key can
++        // ever be fetched, and libavformat would go on "decrypting" the
++        // segments with a zero key and feed garbage to the decoders.
++        if (!demuxer->m_shared->fairPlayKeyRequested.exchange(true))
++            ffmpegMediaLog("demuxer: HLS key %s:// is FairPlay DRM, which this engine cannot play", "skd");
++        return AVERROR(EPERM);
++    }
 +    if (!(flags & AVIO_FLAG_WRITE) && demuxer->usesResourceLoader(parsed)) {
 +        auto stream = FFmpegResourceStream::create(demuxer->m_loader.copyRef(), parsed, demuxer->m_shared.copyRef());
++        // HLS EXT-X-BYTERANGE: libavformat passes the segment's byte range as
++        // options for its http protocol and, believing the URL is http, does
++        // not seek to it itself.
++        if (options && *options) {
++            auto* offset = av_dict_get(*options, "offset", nullptr, 0);
++            auto* endOffset = av_dict_get(*options, "end_offset", nullptr, 0);
++            uint64_t start = offset ? strtoull(offset->value, nullptr, 10) : 0;
++            uint64_t end = endOffset ? strtoull(endOffset->value, nullptr, 10) : 0;
++            if (start || end)
++                stream->setByteRange(start, end);
++        }
 +        int result = stream->open();
 +        if (result < 0) {
++            if (result != AVERROR_EXIT)
++                ffmpegMediaLog("demuxer: open %s://%s failed: %s", parsed.protocol().utf8().legacyCStringPointer(),
++                    parsed.host().utf8().legacyCStringPointer(), ffmpegErrorString(result).utf8().legacyCStringPointer());
 +            stream->close();
 +            return result;
 +        }
@@ -1261,8 +1311,12 @@ index 000000000..d0bc05619
 +{
 +    if (openInput()) {
 +        selectStreams();
-+        if (!m_video.parameters && !m_audio.parameters) {
-+            LOG(Media, "FFmpegDemuxer: no decodable stream in %s", m_url.string().utf8().legacyCStringPointer());
++        logStreams();
++        if (m_shared->fairPlayKeyRequested) {
++            ffmpegMediaLog("demuxer: refusing the stream: it is FairPlay-encrypted");
++            fail(FFmpegMedia::LoadFailure::Open);
++        } else if (!m_video.parameters && !m_audio.parameters) {
++            ffmpegMediaLog("demuxer: no decodable stream");
 +            fail(FFmpegMedia::LoadFailure::Open);
 +        } else {
 +            {
@@ -1294,11 +1348,14 @@ index 000000000..d0bc05619
 +        // The top-level context is custom I/O: avformat_close_input() would
 +        // free a non-custom pb with avio_close(), which assumes a URLContext.
 +        auto stream = FFmpegResourceStream::create(m_loader.copyRef(), m_url, m_shared.copyRef());
++        stream->setInterruptibleBySeek(true);
 +        int result = stream->open();
 +        if (result < 0) {
 +            stream->close();
-+            if (!m_shared->aborted)
++            if (!m_shared->aborted) {
++                ffmpegMediaLog("demuxer: first request failed: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
 +                fail(FFmpegMedia::LoadFailure::Network);
++            }
 +            return false;
 +        }
 +        m_topLevelIO = FFmpegResourceStream::createAVIOContext(WTF::move(stream));
@@ -1326,7 +1383,7 @@ index 000000000..d0bc05619
 +        // avformat_open_input() freed the context on failure.
 +        m_context = nullptr;
 +        if (!m_shared->aborted) {
-+            LOG(Media, "FFmpegDemuxer: avformat_open_input failed: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
++            ffmpegMediaLog("demuxer: avformat_open_input failed: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
 +            fail(m_shared->networkError ? FFmpegMedia::LoadFailure::Network : FFmpegMedia::LoadFailure::Open);
 +        }
 +        return false;
@@ -1335,7 +1392,7 @@ index 000000000..d0bc05619
 +    m_isHLS = m_context->iformat && m_context->iformat->name && strstr(m_context->iformat->name, "hls");
 +    result = avformat_find_stream_info(m_context, nullptr);
 +    if (result < 0 && !m_shared->aborted)
-+        LOG(Media, "FFmpegDemuxer: avformat_find_stream_info: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
++        ffmpegMediaLog("demuxer: avformat_find_stream_info: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
 +    if (m_shared->aborted)
 +        return false;
 +
@@ -1414,19 +1471,78 @@ index 000000000..d0bc05619
 +    }
 +}
 +
-+void FFmpegDemuxer::performSeek(double time, unsigned serial)
++void FFmpegDemuxer::logStreams() const
 +{
-+    double startTime = m_video.index >= 0 ? m_video.startTime : m_audio.startTime;
-+    int64_t target = static_cast<int64_t>((time + startTime) * AV_TIME_BASE);
++    if (!ffmpegMediaLogEnabled() || !m_context)
++        return;
++    ffmpegMediaLog("demuxer: opened %s%s, duration %.3f s%s, start %.3f s, %u streams, %s", m_context->iformat && m_context->iformat->name ? m_context->iformat->name : "?",
++        m_isHLS ? " (HLS)" : "", m_duration, m_isLive ? " (live)" : "", m_context->start_time != AV_NOPTS_VALUE ? m_context->start_time / static_cast<double>(AV_TIME_BASE) : 0.0,
++        m_context->nb_streams, m_isSeekable ? "seekable" : "not seekable");
++    for (unsigned i = 0; i < m_context->nb_streams && i < 32; ++i) {
++        const AVStream* stream = m_context->streams[i];
++        const AVCodecParameters* parameters = stream->codecpar;
++        const char* type = av_get_media_type_string(parameters->codec_type);
++        const char* use = static_cast<int>(i) == m_video.index ? "VIDEO" : static_cast<int>(i) == m_audio.index ? "AUDIO" : "-";
++        if (parameters->codec_type == AVMEDIA_TYPE_VIDEO) {
++            ffmpegMediaLog("demuxer:  #%u %s %s %dx%d %lld b/s%s [%s]", i, type ? type : "?", avcodec_get_name(parameters->codec_id), parameters->width,
++                parameters->height, static_cast<long long>(streamBitRate(stream)), findSoftwareDecoder(parameters->codec_id) ? "" : " (no decoder)", use);
++        } else {
++            ffmpegMediaLog("demuxer:  #%u %s %s %d Hz %d ch %lld b/s%s [%s]", i, type ? type : "?", avcodec_get_name(parameters->codec_id), parameters->sample_rate,
++                parameters->ch_layout.nb_channels, static_cast<long long>(streamBitRate(stream)), findSoftwareDecoder(parameters->codec_id) ? "" : " (no decoder)", use);
++        }
++    }
++}
++
++int FFmpegDemuxer::seekTo(double time)
++{
++    const FFmpegStreamInfo& primary = m_video.index >= 0 ? m_video : m_audio;
++    int64_t target = static_cast<int64_t>((time + primary.startTime) * AV_TIME_BASE);
 +    // Land on the keyframe at or before the target; the decoders discard
 +    // what precedes the target (accurate seek).
 +    int result = avformat_seek_file(m_context, -1, std::numeric_limits<int64_t>::min(), target, target, 0);
-+    if (result < 0)
-+        LOG(Media, "FFmpegDemuxer: seek to %.3f failed: %s", time, ffmpegErrorString(result).utf8().legacyCStringPointer());
++    if (result >= 0 || primary.index < 0)
++        return result;
++    ffmpegMediaLog("demuxer: avformat_seek_file(%.3f) failed: %s, retrying on stream %d", time,
++        ffmpegErrorString(result).utf8().legacyCStringPointer(), primary.index);
++    int64_t streamTarget = av_rescale_q(target, AV_TIME_BASE_Q, primary.timeBase);
++    result = av_seek_frame(m_context, primary.index, streamTarget, AVSEEK_FLAG_BACKWARD);
++    if (result >= 0)
++        return result;
++    // Any frame, not only a keyframe: the video decoder then waits for the
++    // next keyframe, which beats not seeking at all.
++    return av_seek_frame(m_context, primary.index, streamTarget, AVSEEK_FLAG_BACKWARD | AVSEEK_FLAG_ANY);
++}
++
++void FFmpegDemuxer::performSeek(double time, unsigned serial)
++{
++    auto start = MonotonicTime::now();
++    // An interrupted read (seekPending) left its error in the top-level
++    // AVIOContext; libavio reports a stored error instead of EOF later.
++    if (m_topLevelIO)
++        m_topLevelIO->error = 0;
++    int result = seekTo(time);
 +    m_serial = serial;
 +    m_videoQueue.flush(serial);
 +    m_audioQueue.flush(serial);
 +    m_segmentStart = time;
++    {
++        Locker locker { m_lock };
++        // The read in flight when seek() was called may have hit the end of
++        // the stream after seek() cleared the flag: without this, the loop
++        // would idle on m_endOfStream and the new serial would never get a
++        // packet (playback frozen after the seek).
++        m_endOfStream = false;
++        if (!m_pendingSeek)
++            m_shared->seekPending = false;
++        m_seekDoneSerial = serial;
++        if (result < 0)
++            m_seekFailedSerial = serial;
++    }
++    if (result < 0)
++        ffmpegMediaLog("demuxer: seek #%u to %.3f FAILED: %s; reading on from the old position", serial, time,
++            ffmpegErrorString(result).utf8().legacyCStringPointer());
++    else
++        ffmpegMediaLog("demuxer: seek #%u to %.3f done in %.0f ms, queues flushed", serial, time, (MonotonicTime::now() - start).milliseconds());
 +}
 +
 +void FFmpegDemuxer::readLoop()
@@ -1461,14 +1577,27 @@ index 000000000..d0bc05619
 +
 +        int result = av_read_frame(m_context, packet.get());
 +        if (result < 0) {
-+            if (result == AVERROR_EXIT || m_shared->aborted)
++            if (m_shared->aborted)
 +                break;
++            if (result == AVERROR(EINTR) && m_shared->seekPending) {
++                // A read gave way to the pending seek (FFmpegResourceStream).
++                av_packet_unref(packet.get());
++                continue;
++            }
++            if (result == AVERROR_EXIT) {
++                ffmpegMediaLog("demuxer: av_read_frame: %s, stopping", ffmpegErrorString(result).utf8().legacyCStringPointer());
++                break;
++            }
 +            bool endOfFile = result == AVERROR_EOF || (m_context->pb && avio_feof(m_context->pb));
 +            if (!endOfFile && ++consecutiveErrors < maxConsecutiveReadErrors) {
++                if (consecutiveErrors == 1 || !(consecutiveErrors % 16))
++                    ffmpegMediaLog("demuxer: av_read_frame: %s (%u in a row)", ffmpegErrorString(result).utf8().legacyCStringPointer(), consecutiveErrors);
 +                Locker locker { m_lock };
 +                m_condition.waitFor(m_lock, 10_ms);
 +                continue;
 +            }
++            ffmpegMediaLog("demuxer: %s (serial %u): %s", endOfFile ? "end of stream" : "giving up after read errors", m_serial,
++                ffmpegErrorString(result).utf8().legacyCStringPointer());
 +            m_videoQueue.pushEndOfStream(m_serial);
 +            m_audioQueue.pushEndOfStream(m_serial);
 +            Locker locker { m_lock };
@@ -1524,10 +1653,10 @@ index 000000000..d0bc05619
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegDemuxer.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegDemuxer.h
 new file mode 100644
-index 000000000..4db9a2058
+index 000000000..520339e4d
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegDemuxer.h
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,169 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Demuxer of the ffmpeg media engine: one thread that opens the resource
@@ -1615,6 +1744,11 @@ index 000000000..4db9a2058
 +        bool readerWaiting { false };
 +        uint64_t bytesReceived { 0 };
 +        FFmpegMedia::TimeRangeSet buffered;
++        // Serial of the last seek the demuxer could not perform (0: none):
++        // reading went on from the old position.
++        unsigned seekFailedSerial { 0 };
++        // Serial of the last seek the demuxer has performed.
++        unsigned seekDoneSerial { 0 };
 +    };
 +    Status status() const;
 +
@@ -1642,6 +1776,8 @@ index 000000000..4db9a2058
 +    void selectStreams();
 +    void readLoop();
 +    void performSeek(double time, unsigned serial);
++    int seekTo(double time);
++    void logStreams() const;
 +    void fail(FFmpegMedia::LoadFailure);
 +    void closeInput();
 +    bool usesResourceLoader(const URL&) const;
@@ -1683,17 +1819,68 @@ index 000000000..4db9a2058
 +    bool m_readerWaiting WTF_GUARDED_BY_LOCK(m_lock) { false };
 +    FFmpegMedia::TimeRangeSet m_buffered WTF_GUARDED_BY_LOCK(m_lock);
 +    std::optional<std::pair<double, unsigned>> m_pendingSeek WTF_GUARDED_BY_LOCK(m_lock);
++    unsigned m_seekFailedSerial WTF_GUARDED_BY_LOCK(m_lock) { 0 };
++    unsigned m_seekDoneSerial WTF_GUARDED_BY_LOCK(m_lock) { 0 };
 +};
++
++} // namespace WebCore
++
++#endif // ENABLE(VIDEO) && USE(FFMPEG)
+diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegLog.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegLog.h
+new file mode 100644
+index 000000000..1ad425fa6
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegLog.h
+@@ -0,0 +1,43 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++//
++// Console diagnostics of the ffmpeg media engine. On the PS5 the shell
++// executable defines ps5_log_line() (src/frontend/ps5/ps5_log.cpp), which
++// prefixes "[ms role]" and appends to /data/ps5browser/log.txt; WebCore only
++// sees a weak declaration, so builds without that symbol (the smoke test,
++// other embedders) still link and log nothing. Lines start with "media:".
++// Thread-safe: ps5_log_line is.
++
++#pragma once
++
++#if ENABLE(VIDEO) && USE(FFMPEG)
++
++#include <cstdarg>
++#include <cstdio>
++
++extern "C" void ps5_log_line(const char*) __attribute__((weak));
++
++namespace WebCore {
++
++inline bool ffmpegMediaLogEnabled()
++{
++    return !!ps5_log_line;
++}
++
++inline void ffmpegMediaLog(const char* format, ...) __attribute__((format(printf, 1, 2)));
++
++inline void ffmpegMediaLog(const char* format, ...)
++{
++    if (!ps5_log_line)
++        return;
++    char line[512];
++    int prefix = snprintf(line, sizeof(line), "media: ");
++    va_list arguments;
++    va_start(arguments, format);
++    vsnprintf(line + prefix, sizeof(line) - prefix, format, arguments);
++    va_end(arguments);
++    ps5_log_line(line);
++}
 +
 +} // namespace WebCore
 +
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegPlaybackPolicy.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegPlaybackPolicy.h
 new file mode 100644
-index 000000000..85dbbc384
+index 000000000..8938a131b
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegPlaybackPolicy.h
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,164 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Buffering thresholds and the HTML readyState/networkState decisions of the
@@ -1711,8 +1898,8 @@ index 000000000..85dbbc384
 +// Demuxer read-ahead limits. Reading pauses (networkState IDLE) when either
 +// the total queued bytes reach maxQueuedBytes or every enabled stream has at
 +// least maxQueuedSeconds queued; it resumes once that is no longer true.
-+inline constexpr size_t maxQueuedBytes = 48u << 20;
-+inline constexpr double maxQueuedSeconds = 15.0;
++inline constexpr size_t maxQueuedBytes = 24u << 20;
++inline constexpr double maxQueuedSeconds = 10.0;
 +// A stream with fewer packets than this is never considered "full" (sparse
 +// streams or broken durations must not stall the other stream).
 +inline constexpr size_t minQueuedPackets = 25;
@@ -1743,9 +1930,9 @@ index 000000000..85dbbc384
 +// restarting the download and skipping to the position, which is expensive,
 +// so it gets a higher (but still finite) cap: buffering it without limit
 +// could take the whole body of a long progressive video into memory.
-+inline constexpr uint64_t networkHighWaterBytes = 16u << 20;
-+inline constexpr uint64_t networkLowWaterBytes = 4u << 20;
-+inline constexpr uint64_t networkNoRangeHighWaterBytes = 64u << 20;
++inline constexpr uint64_t networkHighWaterBytes = 8u << 20;
++inline constexpr uint64_t networkLowWaterBytes = 2u << 20;
++inline constexpr uint64_t networkNoRangeHighWaterBytes = 32u << 20;
 +
 +// unreadBytes: received data at or after the read position. size: total
 +// resource size, or < 0 when unknown (no Content-Length, chunked).
@@ -1760,6 +1947,32 @@ index 000000000..85dbbc384
 +inline bool networkShouldResume(uint64_t unreadBytes)
 +{
 +    return unreadBytes < networkLowWaterBytes;
++}
++
++// Layout of a decoded BGRA video frame. libswscale's x86 output loops store
++// 8 pixels per iteration (REAL_WRITEBGR32 in libswscale/x86/
++// swscale_template.c: "add $8, index; cmp dstw, index; jb"), so a row is
++// written up to the next multiple of 8 pixels: a tightly packed buffer
++// (stride = width * 4) is overrun by up to 28 bytes after its last row,
++// into the allocator's metadata. Rows are therefore padded to 64 bytes
++// (which is also what libswscale's SIMD paths want for alignment) and the
++// buffer gets a spare tail.
++inline constexpr size_t videoFrameAlignment = 64;
++inline constexpr size_t videoFrameTailPadding = 256;
++
++inline size_t videoFrameStride(int width)
++{
++    if (width <= 0)
++        return 0;
++    size_t bytes = static_cast<size_t>(width) * 4;
++    return (bytes + videoFrameAlignment - 1) & ~(videoFrameAlignment - 1);
++}
++
++inline size_t videoFrameBytes(int width, int height)
++{
++    if (width <= 0 || height <= 0)
++        return 0;
++    return videoFrameStride(width) * static_cast<size_t>(height) + videoFrameTailPadding;
 +}
 +
 +// Thresholds on contiguous data ahead of the current position.
@@ -1834,10 +2047,10 @@ index 000000000..85dbbc384
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegResourceIO.cpp b/Source/WebCore/platform/graphics/ffmpeg/FFmpegResourceIO.cpp
 new file mode 100644
-index 000000000..ee93fad82
+index 000000000..a4113b6f8
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegResourceIO.cpp
-@@ -0,0 +1,488 @@
+@@ -0,0 +1,517 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -1845,6 +2058,7 @@ index 000000000..ee93fad82
 +
 +#if ENABLE(VIDEO) && USE(FFMPEG)
 +
++#include "FFmpegLog.h"
 +#include "FFmpegPlaybackPolicy.h"
 +#include "HTTPHeaderNames.h"
 +#include "HTTPStatusCodes.h"
@@ -1992,10 +2206,17 @@ index 000000000..ee93fad82
 +    avio_context_free(&context);
 +}
 +
++void FFmpegResourceStream::setByteRange(uint64_t offset, uint64_t endOffset)
++{
++    Locker locker { m_lock };
++    m_readPosition = offset;
++    m_rangeEnd = endOffset > offset ? endOffset : 0;
++}
++
 +int FFmpegResourceStream::open()
 +{
 +    Locker locker { m_lock };
-+    startRequestLocked(0, false);
++    startRequestLocked(m_readPosition, false);
 +    while (m_state == RequestState::Pending) {
 +        if (m_shared->aborted || m_closed)
 +            return AVERROR_EXIT;
@@ -2090,6 +2311,8 @@ index 000000000..ee93fad82
 +            startRequestLocked(m_readPosition, m_readPosition == end);
 +            break;
 +        }
++        if (m_interruptibleBySeek && m_shared->seekPending)
++            return AVERROR(EINTR);
 +        if (!waitLocked())
 +            return AVERROR_EXIT;
 +    }
@@ -2151,12 +2374,21 @@ index 000000000..ee93fad82
 +    m_skipBytes = 0;
 +    m_state = RequestState::Pending;
 +    unsigned requestId = ++m_requestId;
-+    callOnMainThread([protectedThis = Ref { *this }, requestId, position] {
-+        protectedThis->dispatchRequest(requestId, position);
++    // The byte range end only bounds the first request (a segment); later
++    // requests (resumes, seeks) are open-ended.
++    uint64_t rangeEnd = std::exchange(m_rangeEnd, 0);
++    if (rangeEnd <= position)
++        rangeEnd = 0;
++    unsigned count = ++m_shared->requestCount;
++    if (position)
++        ffmpegMediaLog("net: request #%u bytes=%llu-%s", count, static_cast<unsigned long long>(position),
++            rangeEnd ? makeString(rangeEnd - 1).utf8().legacyCStringPointer() : "");
++    callOnMainThread([protectedThis = Ref { *this }, requestId, position, rangeEnd] {
++        protectedThis->dispatchRequest(requestId, position, rangeEnd);
 +    });
 +}
 +
-+void FFmpegResourceStream::dispatchRequest(unsigned requestId, uint64_t position)
++void FFmpegResourceStream::dispatchRequest(unsigned requestId, uint64_t position, uint64_t rangeEnd)
 +{
 +    ASSERT(isMainThread());
 +    {
@@ -2167,13 +2399,16 @@ index 000000000..ee93fad82
 +
 +    ResourceRequest request { URL { m_url } };
 +    request.setAllowCookies(true);
-+    if (position)
++    if (rangeEnd)
++        request.setHTTPHeaderField(HTTPHeaderName::Range, makeString("bytes="_s, position, '-', rangeEnd - 1));
++    else if (position)
 +        request.setHTTPHeaderField(HTTPHeaderName::Range, makeString("bytes="_s, position, '-'));
 +
 +    // Never call into the resource while holding m_lock: shutdown() and the
 +    // loader may call the client synchronously, which takes m_lock.
 +    RefPtr resource = m_loader->requestResource(WTF::move(request), PlatformMediaResourceLoader::LoadOption::DisallowCaching);
 +    if (!resource) {
++        ffmpegMediaLog("net: the media resource loader refused the request (%s)", m_url.protocol().utf8().legacyCStringPointer());
 +        Locker locker { m_lock };
 +        if (requestId == m_requestId) {
 +            m_state = RequestState::Failed;
@@ -2228,6 +2463,7 @@ index 000000000..ee93fad82
 +    bool isHTTP = response.url().protocolIsInHTTPFamily() || m_url.protocolIsInHTTPFamily();
 +    int status = response.httpStatusCode();
 +    if (isHTTP && status >= httpStatus400BadRequest) {
++        ffmpegMediaLog("net: HTTP %d for %s://%s", status, m_url.protocol().utf8().legacyCStringPointer(), m_url.host().utf8().legacyCStringPointer());
 +        m_state = RequestState::Failed;
 +        m_shared->networkError = true;
 +        m_condition.notifyAll();
@@ -2244,6 +2480,9 @@ index 000000000..ee93fad82
 +        // The server ignored Range and sends the whole body: skip to the
 +        // requested position and stop issuing range requests.
 +        m_skipBytes = m_requestPosition;
++        if (m_rangesSupported)
++            ffmpegMediaLog("net: %s ignored Range (HTTP %d), skipping %llu bytes", m_url.host().utf8().legacyCStringPointer(), status,
++                static_cast<unsigned long long>(m_requestPosition));
 +        m_rangesSupported = false;
 +    }
 +
@@ -2316,6 +2555,9 @@ index 000000000..ee93fad82
 +    Locker locker { m_lock };
 +    if (m_closed || requestId != m_requestId)
 +        return;
++    ffmpegMediaLog("net: load failed%s for %s://%s at byte %llu", isAccessControlFailure ? " (CORS)" : "",
++        m_url.protocol().utf8().legacyCStringPointer(), m_url.host().utf8().legacyCStringPointer(),
++        static_cast<unsigned long long>(m_requestPosition + m_receivedInRequest));
 +    m_state = RequestState::Failed;
 +    m_shared->networkError = true;
 +    if (isAccessControlFailure)
@@ -2328,10 +2570,10 @@ index 000000000..ee93fad82
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegResourceIO.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegResourceIO.h
 new file mode 100644
-index 000000000..07c503a40
+index 000000000..267ce18c5
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegResourceIO.h
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,138 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Byte-stream input for libavformat backed by WebCore's media resource
@@ -2378,6 +2620,13 @@ index 000000000..07c503a40
 +    std::atomic<bool> didPassAccessControlCheck { true };
 +    std::atomic<bool> sawResponse { false };
 +    std::atomic<uint64_t> bytesReceived { 0 };
++    // A seek is waiting for the demuxer thread: a read of the top-level
++    // stream that would block returns AVERROR(EINTR) instead, so the seek
++    // does not wait for data at the old position.
++    std::atomic<bool> seekPending { false };
++    // libavformat's HLS demuxer asked for an skd:// key (FairPlay DRM).
++    std::atomic<bool> fairPlayKeyRequested { false };
++    std::atomic<unsigned> requestCount { 0 };
 +
 +private:
 +    FFmpegIOShared() = default;
@@ -2387,6 +2636,14 @@ index 000000000..07c503a40
 +public:
 +    static Ref<FFmpegResourceStream> create(Ref<PlatformMediaResourceLoader>&&, const URL&, Ref<FFmpegIOShared>&&);
 +    ~FFmpegResourceStream();
++
++    // Before open(): serve only bytes [offset, endOffset) of the resource
++    // (HLS EXT-X-BYTERANGE, passed by libavformat as the "offset" and
++    // "end_offset" options; endOffset 0 means to the end). Reads then start
++    // at `offset`.
++    void setByteRange(uint64_t offset, uint64_t endOffset);
++    // The top-level stream gives way to a pending seek (see seekPending).
++    void setInterruptibleBySeek(bool interruptible) { m_interruptibleBySeek = interruptible; }
 +
 +    // Demuxer thread. open() issues the first request and waits for the
 +    // response; it returns 0 or a negative AVERROR.
@@ -2419,7 +2676,7 @@ index 000000000..07c503a40
 +        uint64_t end() const { return position + data.size(); }
 +    };
 +
-+    void dispatchRequest(unsigned requestId, uint64_t position);
++    void dispatchRequest(unsigned requestId, uint64_t position, uint64_t rangeEnd);
 +    void startRequestLocked(uint64_t position, bool keepBuffer) WTF_REQUIRES_LOCK(m_lock);
 +    void suspendLocked() WTF_REQUIRES_LOCK(m_lock);
 +    void stopResourceLocked() WTF_REQUIRES_LOCK(m_lock);
@@ -2446,6 +2703,9 @@ index 000000000..07c503a40
 +    RequestState m_state WTF_GUARDED_BY_LOCK(m_lock) { RequestState::None };
 +    bool m_rangesSupported WTF_GUARDED_BY_LOCK(m_lock) { true };
 +    bool m_closed WTF_GUARDED_BY_LOCK(m_lock) { false };
++    // Exclusive end of the first request's Range (0: open-ended).
++    uint64_t m_rangeEnd WTF_GUARDED_BY_LOCK(m_lock) { 0 };
++    bool m_interruptibleBySeek { false };
 +    RefPtr<PlatformMediaResource> m_resource WTF_GUARDED_BY_LOCK(m_lock);
 +};
 +
@@ -2895,10 +3155,10 @@ index 000000000..42b33eef1
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegUtilities.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegUtilities.h
 new file mode 100644
-index 000000000..d1f3f65a6
+index 000000000..4b6fe252f
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegUtilities.h
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,83 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// ffmpeg RAII helpers and timestamp conversion shared by the ffmpeg media
@@ -2918,6 +3178,7 @@ index 000000000..d1f3f65a6
 +#include <libavformat/avformat.h>
 +#include <libavutil/avutil.h>
 +#include <libavutil/error.h>
++#include <libavutil/mem.h>
 +}
 +
 +namespace WebCore {
@@ -2983,10 +3244,10 @@ index 000000000..d1f3f65a6
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp
 new file mode 100644
-index 000000000..5d4da5e6e
+index 000000000..81881a3b6
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp
-@@ -0,0 +1,361 @@
+@@ -0,0 +1,390 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -2995,7 +3256,10 @@ index 000000000..5d4da5e6e
 +#if ENABLE(VIDEO) && USE(FFMPEG)
 +
 +#include "FFmpegDemuxer.h"
++#include "FFmpegLog.h"
 +#include "Logging.h"
++#include <cstdlib>
++#include <cstring>
 +
 +extern "C" {
 +#include <libavutil/imgutils.h>
@@ -3012,13 +3276,23 @@ index 000000000..5d4da5e6e
 +// Decoded frames waiting for presentation. Small: each 1080p BGRA frame is
 +// 8 MiB, and the presentation tick only ever needs the next one or two.
 +constexpr size_t maxOutputFrames = 3;
-+constexpr size_t maxPooledFrames = 6;
++constexpr size_t maxPooledFrames = 5;
 +// Output is capped at 1080p; anything bigger is downscaled by swscale.
 +constexpr int maxOutputWidth = 1920;
 +constexpr int maxOutputHeight = 1080;
 +// Decoder threads. The WebProcess shares the Zen 2 cores with the UI
-+// process and the audio decoder; 4 leaves headroom.
++// process and the audio decoder; 4 leaves headroom. Slice threading only:
++// frame threading keeps a picture per thread in flight (more memory, more
++// latency), and its worker threads ("av:h264:df*") are where the console
++// crashes of run 4/5 surfaced. One Zen 2 core decodes 1080p30 H.264 in
++// real time; PS5BROWSER_MEDIA_FRAME_THREADS=1 turns frame threading back on.
 +constexpr int decoderThreads = 4;
++
++bool frameThreadsRequested()
++{
++    const char* value = getenv("PS5BROWSER_MEDIA_FRAME_THREADS");
++    return value && !strcmp(value, "1");
++}
 +// A frame this far behind the clock is dropped before conversion; one in
 +// lateFrameKeepInterval late frames is still shown so the picture moves.
 +constexpr double lateThreshold = 0.08;
@@ -3056,12 +3330,15 @@ index 000000000..5d4da5e6e
 +        return nullptr;
 +    context->pkt_timebase = stream.timeBase;
 +    context->thread_count = decoderThreads;
-+    context->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
++    context->thread_type = frameThreadsRequested() ? (FF_THREAD_FRAME | FF_THREAD_SLICE) : FF_THREAD_SLICE;
 +    int result = avcodec_open2(context.get(), codec, nullptr);
 +    if (result < 0) {
-+        LOG(Media, "FFmpegVideoDecoder: cannot open %s: %s", codec->name, ffmpegErrorString(result).utf8().legacyCStringPointer());
++        ffmpegMediaLog("video decoder %s: open failed: %s", codec->name, ffmpegErrorString(result).utf8().legacyCStringPointer());
 +        return nullptr;
 +    }
++    ffmpegMediaLog("video decoder %s: %dx%d %s, %d threads (%s)", codec->name, context->width, context->height,
++        av_get_pix_fmt_name(context->pix_fmt) ? av_get_pix_fmt_name(context->pix_fmt) : "?", context->thread_count,
++        (context->active_thread_type & FF_THREAD_FRAME) ? "frame+slice" : (context->active_thread_type & FF_THREAD_SLICE) ? "slice" : "none");
 +    return adoptRef(*new FFmpegVideoDecoder(stream, queue, WTF::move(context)));
 +}
 +
@@ -3183,7 +3460,8 @@ index 000000000..5d4da5e6e
 +    }
 +    if (result < 0 && result != AVERROR(EAGAIN) && result != AVERROR_EOF) {
 +        // Corrupt packets are routine in live streams; keep going.
-+        LOG(Media, "FFmpegVideoDecoder: send_packet: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
++        if (!(m_sendErrors++ % 100))
++            ffmpegMediaLog("video decoder: send_packet: %s (%u errors)", ffmpegErrorString(result).utf8().legacyCStringPointer(), m_sendErrors);
 +    }
 +    receiveFrames();
 +    return !m_stopping;
@@ -3196,7 +3474,8 @@ index 000000000..5d4da5e6e
 +        if (result == AVERROR(EAGAIN) || result == AVERROR_EOF)
 +            return;
 +        if (result < 0) {
-+            LOG(Media, "FFmpegVideoDecoder: receive_frame: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
++            if (!(m_sendErrors++ % 100))
++                ffmpegMediaLog("video decoder: receive_frame: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
 +            return;
 +        }
 +        ++m_decodedFrames;
@@ -3216,9 +3495,16 @@ index 000000000..5d4da5e6e
 +        if (frame->hasOneRef())
 +            return frame.ptr();
 +    }
-+    auto frame = FFmpegVideoFrame::create(width, height);
-+    if (m_pool.size() < maxPooledFrames)
-+        m_pool.append(frame);
++    RefPtr frame = FFmpegVideoFrame::create(width, height);
++    if (!frame) {
++        ffmpegMediaLog("video decoder: cannot allocate a %dx%d frame", width, height);
++        return nullptr;
++    }
++    if (m_pool.size() < maxPooledFrames) {
++        m_pool.append(Ref { *frame });
++        ffmpegMediaLog("video decoder: frame pool %zu x %dx%d (stride %zu, %zu KiB each)", m_pool.size(), width, height,
++            frame->stride(), frame->sizeInBytes() >> 10);
++    }
 +    return frame;
 +}
 +
@@ -3269,10 +3555,14 @@ index 000000000..5d4da5e6e
 +    int width = m_outputWidth;
 +    int height = m_outputHeight;
 +    RefPtr output = takePoolFrame(width, height);
++    if (!output) {
++        ++m_droppedFrames;
++        return;
++    }
 +    m_sws = sws_getCachedContext(m_sws, frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
 +        width, height, AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr, nullptr, nullptr);
 +    if (!m_sws) {
-+        LOG(Media, "FFmpegVideoDecoder: no swscale path from %s", av_get_pix_fmt_name(static_cast<AVPixelFormat>(frame->format)));
++        ffmpegMediaLog("video decoder: no swscale path from %s", av_get_pix_fmt_name(static_cast<AVPixelFormat>(frame->format)));
 +        m_fatalError = true;
 +        return;
 +    }
@@ -3350,10 +3640,10 @@ index 000000000..5d4da5e6e
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.h
 new file mode 100644
-index 000000000..b1fe650c2
+index 000000000..05620019b
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.h
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,155 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Software video decoding for the ffmpeg media engine: a worker thread pulls
@@ -3370,6 +3660,7 @@ index 000000000..b1fe650c2
 +
 +#if ENABLE(VIDEO) && USE(FFMPEG)
 +
++#include "FFmpegPlaybackPolicy.h"
 +#include "FFmpegUtilities.h"
 +#include <atomic>
 +#include <wtf/Condition.h>
@@ -3385,35 +3676,50 @@ index 000000000..b1fe650c2
 +
 +class FFmpegPacketQueue;
 +
++// Pixels live in an av_malloc() block (64-byte aligned) with rows padded to
++// videoFrameStride(): libswscale's SIMD stores run past the row end (see
++// FFmpegPlaybackPolicy.h), which overran a tightly packed buffer into the
++// heap allocator's metadata.
 +class FFmpegVideoFrame final : public ThreadSafeRefCounted<FFmpegVideoFrame> {
 +public:
-+    static Ref<FFmpegVideoFrame> create(int width, int height)
++    // nullptr when the allocation fails.
++    static RefPtr<FFmpegVideoFrame> create(int width, int height)
 +    {
-+        return adoptRef(*new FFmpegVideoFrame(width, height));
++        size_t bytes = FFmpegMedia::videoFrameBytes(width, height);
++        if (!bytes)
++            return nullptr;
++        auto* pixels = static_cast<uint8_t*>(av_malloc(bytes));
++        if (!pixels)
++            return nullptr;
++        return adoptRef(*new FFmpegVideoFrame(width, height, pixels, bytes));
 +    }
++
++    ~FFmpegVideoFrame() { av_free(m_pixels); }
 +
 +    int width() const { return m_width; }
 +    int height() const { return m_height; }
-+    size_t stride() const { return static_cast<size_t>(m_width) * 4; }
-+    uint8_t* data() { return m_pixels.mutableSpan().data(); }
-+    const uint8_t* data() const { return m_pixels.span().data(); }
-+    size_t sizeInBytes() const { return m_pixels.size(); }
++    size_t stride() const { return FFmpegMedia::videoFrameStride(m_width); }
++    uint8_t* data() { return m_pixels; }
++    const uint8_t* data() const { return m_pixels; }
++    size_t sizeInBytes() const { return m_bytes; }
 +
 +    double pts { 0 };
 +    double duration { 0 };
 +    unsigned serial { 0 };
 +
 +private:
-+    FFmpegVideoFrame(int width, int height)
++    FFmpegVideoFrame(int width, int height, uint8_t* pixels, size_t bytes)
 +        : m_width(width)
 +        , m_height(height)
-+        , m_pixels(static_cast<size_t>(width) * height * 4)
++        , m_pixels(pixels)
++        , m_bytes(bytes)
 +    {
 +    }
 +
-+    int m_width;
-+    int m_height;
-+    Vector<uint8_t> m_pixels;
++    const int m_width;
++    const int m_height;
++    uint8_t* const m_pixels;
++    const size_t m_bytes;
 +};
 +
 +class FFmpegVideoDecoder final : public ThreadSafeRefCounted<FFmpegVideoDecoder> {
@@ -3479,6 +3785,7 @@ index 000000000..b1fe650c2
 +    bool m_waitingForKeyframe { false };
 +    bool m_skippingLoopFilter { false };
 +    unsigned m_lateFrames { 0 };
++    unsigned m_sendErrors { 0 };
 +    Vector<Ref<FFmpegVideoFrame>> m_pool;
 +
 +    mutable Lock m_lock;
@@ -3494,10 +3801,10 @@ index 000000000..b1fe650c2
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp
 new file mode 100644
-index 000000000..ac3457e59
+index 000000000..d2551562a
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp
-@@ -0,0 +1,815 @@
+@@ -0,0 +1,965 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -3508,6 +3815,7 @@ index 000000000..ac3457e59
 +#include "AudioSink.h"
 +#include "FFmpegAudioDecoder.h"
 +#include "FFmpegDemuxer.h"
++#include "FFmpegLog.h"
 +#include "FFmpegSupportTable.h"
 +#include "FFmpegVideoDecoder.h"
 +#include "GraphicsContext.h"
@@ -3518,7 +3826,11 @@ index 000000000..ac3457e59
 +#include <skia/core/SkColorSpace.h>
 +#include <skia/core/SkImage.h>
 +#include <skia/core/SkPixmap.h>
++#include <mutex>
++#include <wtf/HashSet.h>
++#include <wtf/Lock.h>
 +#include <wtf/NeverDestroyed.h>
++#include <wtf/text/MakeString.h>
 +#include <wtf/TZoneMallocInlines.h>
 +
 +namespace WebCore {
@@ -3536,6 +3848,77 @@ index 000000000..ac3457e59
 +// (buffering) unless the stream has ended.
 +constexpr double stallThreshold = 0.1;
 +constexpr double audioWatchdogSeconds = 2.0;
++// Console log: pipeline statistics while playing or seeking.
++constexpr double statsIntervalSeconds = 5.0;
++
++const char* readyStateName(MediaPlayer::ReadyState state)
++{
++    switch (state) {
++    case MediaPlayer::ReadyState::HaveNothing: return "HaveNothing";
++    case MediaPlayer::ReadyState::HaveMetadata: return "HaveMetadata";
++    case MediaPlayer::ReadyState::HaveCurrentData: return "HaveCurrentData";
++    case MediaPlayer::ReadyState::HaveFutureData: return "HaveFutureData";
++    case MediaPlayer::ReadyState::HaveEnoughData: return "HaveEnoughData";
++    }
++    return "?";
++}
++
++const char* networkStateName(MediaPlayer::NetworkState state)
++{
++    switch (state) {
++    case MediaPlayer::NetworkState::Empty: return "Empty";
++    case MediaPlayer::NetworkState::Idle: return "Idle";
++    case MediaPlayer::NetworkState::Loading: return "Loading";
++    case MediaPlayer::NetworkState::Loaded: return "Loaded";
++    case MediaPlayer::NetworkState::FormatError: return "FormatError";
++    case MediaPlayer::NetworkState::NetworkError: return "NetworkError";
++    case MediaPlayer::NetworkState::DecodeError: return "DecodeError";
++    }
++    return "?";
++}
++
++const char* supportName(MediaPlayer::SupportsType type)
++{
++    switch (type) {
++    case MediaPlayer::SupportsType::IsNotSupported: return "\"\"";
++    case MediaPlayer::SupportsType::IsSupported: return "probably";
++    case MediaPlayer::SupportsType::MayBeSupported: return "maybe";
++    }
++    return "?";
++}
++
++// Logs each distinct canPlayType/source-selection query once (sites ask the
++// same questions over and over).
++void logSupportsType(const MediaEngineSupportParameters& parameters, MediaPlayer::SupportsType result)
++{
++    if (!ffmpegMediaLogEnabled())
++        return;
++    static Lock lock;
++    static NeverDestroyed<HashSet<String>> seen;
++    String key = makeString(parameters.type.raw(), parameters.platformType == PlatformMediaDecodingType::FileOrHLS ? ""_s : " (MSE/stream)"_s);
++    {
++        Locker locker { lock };
++        if (seen->size() >= 64 || !seen->add(key).isNewEntry)
++            return;
++    }
++    ffmpegMediaLog("supportsType %s -> %s", key.utf8().legacyCStringPointer(), supportName(result));
++}
++
++// av_malloc() relies on the SDK libc's posix_memalign() for libavcodec's
++// 64-byte SIMD alignment; check it once per process.
++void checkAllocatorAlignment()
++{
++    static std::once_flag once;
++    std::call_once(once, [] {
++        bool aligned = true;
++        for (size_t size : { 24u, 1000u, 65536u, 1u << 20 }) {
++            void* block = av_malloc(size);
++            aligned = aligned && block && !(reinterpret_cast<uintptr_t>(block) & 63);
++            av_free(block);
++        }
++        ffmpegMediaLog("av_malloc 64-byte alignment: %s", aligned ? "ok" : "BROKEN");
++    });
++}
 +
 +double monotonicNow()
 +{
@@ -3631,8 +4014,10 @@ index 000000000..ac3457e59
 +MediaPlayer::SupportsType MediaPlayerPrivateFFmpeg::supportsType(const MediaEngineSupportParameters& parameters)
 +{
 +    // MSE and MediaStream are not implemented by this engine.
-+    if (parameters.platformType != PlatformMediaDecodingType::FileOrHLS)
++    if (parameters.platformType != PlatformMediaDecodingType::FileOrHLS) {
++        logSupportsType(parameters, MediaPlayer::SupportsType::IsNotSupported);
 +        return MediaPlayer::SupportsType::IsNotSupported;
++    }
 +
 +    auto container = parameters.type.containerType();
 +    if (container.isEmpty())
@@ -3642,15 +4027,19 @@ index 000000000..ac3457e59
 +    for (auto& codec : parameters.type.codecs())
 +        codecs.push_back(codec.utf8().toStdString());
 +    auto containerString = container.utf8().toStdString();
++    auto result = MediaPlayer::SupportsType::IsNotSupported;
 +    switch (FFmpegMedia::evaluate(containerString, codecs, decoderAvailability())) {
 +    case FFmpegMedia::Support::IsSupported:
-+        return MediaPlayer::SupportsType::IsSupported;
++        result = MediaPlayer::SupportsType::IsSupported;
++        break;
 +    case FFmpegMedia::Support::MaybeSupported:
-+        return MediaPlayer::SupportsType::MayBeSupported;
++        result = MediaPlayer::SupportsType::MayBeSupported;
++        break;
 +    case FFmpegMedia::Support::NotSupported:
 +        break;
 +    }
-+    return MediaPlayer::SupportsType::IsNotSupported;
++    logSupportsType(parameters, result);
++    return result;
 +}
 +
 +// MARK: - Lifetime
@@ -3697,6 +4086,15 @@ index 000000000..ac3457e59
 +    stopPipeline();
 +    m_loadStarted = false;
 +    m_url = URL { urlString };
++    checkAllocatorAlignment();
++    {
++        auto path = m_url.path();
++        size_t dot = path.reverseFind('.');
++        String extension = dot != notFound && path.length() - dot <= 6 ? path.substring(dot).toString() : String();
++        ffmpegMediaLog("load %s://%s (*%s), preload %s", m_url.protocol().utf8().legacyCStringPointer(), m_url.host().utf8().legacyCStringPointer(),
++            extension.isEmpty() ? "" : extension.utf8().legacyCStringPointer(),
++            m_preload == MediaPlayer::Preload::None ? "none" : m_preload == MediaPlayer::Preload::MetaData ? "metadata" : "auto");
++    }
 +    m_metadataLoaded = false;
 +    m_failed = false;
 +    m_ended = false;
@@ -3752,6 +4150,7 @@ index 000000000..ac3457e59
 +
 +void MediaPlayerPrivateFFmpeg::cancelLoad()
 +{
++    ffmpegMediaLog("cancelLoad");
 +    stopPipeline();
 +    m_loadStarted = false;
 +    m_loadDeferred = false;
@@ -3783,6 +4182,7 @@ index 000000000..ac3457e59
 +    if (auto* stream = demuxer->audioStream())
 +        m_audioDecoder = FFmpegAudioDecoder::create(*stream, demuxer->audioQueue(), AudioSink::sampleRate, AudioSink::channels);
 +    if (!m_videoDecoder && !m_audioDecoder) {
++        ffmpegMediaLog("no decoder could be opened");
 +        m_failed = true;
 +        setNetworkState(MediaPlayer::NetworkState::FormatError);
 +        return;
@@ -3827,7 +4227,7 @@ index 000000000..ac3457e59
 +    };
 +    m_audioSink = forceNull ? AudioSink::createNull(WTF::move(render)) : AudioSink::create(WTF::move(render));
 +    m_lastAudioClock.reset();
-+    LOG(Media, "MediaPlayerPrivateFFmpeg: audio sink %s", m_audioSink->name());
++    ffmpegMediaLog("audio sink: using %s, latency %.0f ms", m_audioSink->name(), m_audioSink->latency() * 1000);
 +}
 +
 +// MARK: - Playback control
@@ -3963,6 +4363,10 @@ index 000000000..ac3457e59
 +    if (std::isfinite(m_duration))
 +        time = std::min(time, m_duration);
 +
++    ffmpegMediaLog("seek #%u to %.3f (from %.3f)", m_serial + 1, time, currentTime().toDouble());
++    m_seekStartedAt = monotonicNow();
++    m_seekFailureHandled = false;
++    m_loggedFirstFrameSerial = 0;
 +    ++m_serial;
 +    m_seekTime = time;
 +    m_seeking = true;
@@ -3992,6 +4396,9 @@ index 000000000..ac3457e59
 +    if (!videoReady || !audioReady)
 +        return;
 +
++    if (m_seekFailureHandled && m_currentFrame && m_currentFrame->serial == m_serial)
++        m_seekTime = m_currentFrame->pts;
++    ffmpegMediaLog("seek #%u finished at %.3f in %.0f ms", m_serial, m_seekTime, (now - m_seekStartedAt) * 1000);
 +    m_seeking = false;
 +    m_clock.reset(m_seekTime, now);
 +    updatePlaybackRunning();
@@ -4039,8 +4446,18 @@ index 000000000..ac3457e59
 +    if (RefPtr decoder = m_audioDecoder)
 +        decoder->setClockHint(position);
 +
++    if (m_seeking && status.seekFailedSerial == m_serial && !m_seekFailureHandled) {
++        // The demuxer could not seek and reads on from the old position:
++        // stop trimming to the target, show whatever comes next.
++        m_seekFailureHandled = true;
++        if (RefPtr decoder = m_videoDecoder)
++            decoder->setSeekTarget(-1, m_serial);
++        if (RefPtr decoder = m_audioDecoder)
++            decoder->setSeekTarget(-1, m_serial);
++    }
 +    presentVideo(m_seeking ? m_seekTime : position);
 +    finishSeekIfReady(now);
++    logStats(now, position, status.bytesReceived, status.readerWaiting, status.endOfStream);
 +
 +    double bufferedAhead = status.buffered.bufferedAhead(m_seeking ? m_seekTime : position);
 +    // Extrapolated clock (no audio master): hold still while starved.
@@ -4102,6 +4519,10 @@ index 000000000..ac3457e59
 +        m_naturalSize = size;
 +        if (player)
 +            player->sizeChanged();
++    }
++    if (needFirstFrame && m_loggedFirstFrameSerial != m_serial + 1) {
++        m_loggedFirstFrameSerial = m_serial + 1;
++        ffmpegMediaLog("first video frame%s: pts %.3f, %dx%d", m_serial ? " after seek" : "", m_currentFrame->pts, m_currentFrame->width(), m_currentFrame->height());
 +    }
 +    if (player) {
 +        if (needFirstFrame)
@@ -4210,9 +4631,43 @@ index 000000000..ac3457e59
 +    }
 +    if (now - m_lastAudioClockChange < audioWatchdogSeconds)
 +        return;
-+    WTFLogAlways("[ffmpeg-media] audio output %s stopped pulling samples, switching to the silent sink", m_audioSink->name());
++    ffmpegMediaLog("audio sink %s stopped pulling samples for %.0f s, switching to the null sink", m_audioSink->name(), audioWatchdogSeconds);
 +    createAudioSink(true);
 +    updatePlaybackRunning();
++}
++
++void MediaPlayerPrivateFFmpeg::logStats(double now, double position, uint64_t bytesReceived, bool readerWaiting, bool endOfStream)
++{
++    if (!ffmpegMediaLogEnabled())
++        return;
++    bool active = (m_clock.running() && !m_ended) || m_seeking;
++    if (!active) {
++        m_lastStatsAt = 0;
++        return;
++    }
++    if (!m_lastStatsAt) {
++        m_lastStatsAt = now;
++        return;
++    }
++    if (now - m_lastStatsAt < statsIntervalSeconds)
++        return;
++    m_lastStatsAt = now;
++    RefPtr demuxer = m_demuxer;
++    RefPtr video = m_videoDecoder;
++    RefPtr audio = m_audioDecoder;
++    auto videoLevel = demuxer ? demuxer->videoQueue().level() : FFmpegMedia::QueueLevel { };
++    auto audioLevel = demuxer ? demuxer->audioQueue().level() : FFmpegMedia::QueueLevel { };
++    std::optional<double> audioClock;
++    if (audio && m_audioSink)
++        audioClock = audio->clockTime(m_audioSink->latency());
++    ffmpegMediaLog("stats: t=%.2f%s video %u decoded %u dropped (+%u presenter) %zu queued, pts %.2f | packets v %zu/%.1fs a %zu/%.1fs %zu KiB | audio %s clock %.2f buffered %.2fs | net %llu KiB%s%s",
++        position, m_seeking ? makeString(" SEEKING #"_s, m_serial, " for "_s, static_cast<int>((now - m_seekStartedAt) * 1000), "ms"_s).utf8().legacyCStringPointer() : "",
++        video ? video->decodedFrames() : 0, video ? video->droppedFrames() : 0, m_presenterDropped, video ? video->queuedFrames() : 0,
++        m_currentFrame ? m_currentFrame->pts : -1.0,
++        videoLevel.packets, videoLevel.seconds, audioLevel.packets, audioLevel.seconds,
++        demuxer ? (demuxer->videoQueue().bytes() + demuxer->audioQueue().bytes()) >> 10 : 0,
++        m_audioSink ? m_audioSink->name() : "none", audioClock ? *audioClock : -1.0, audio ? audio->bufferedSeconds() : 0.0,
++        static_cast<unsigned long long>(bytesReceived >> 10), readerWaiting ? " reader idle" : "", endOfStream ? " EOS" : "");
 +}
 +
 +// MARK: - States
@@ -4221,6 +4676,7 @@ index 000000000..ac3457e59
 +{
 +    if (m_networkState == state)
 +        return;
++    ffmpegMediaLog("networkState %s -> %s", networkStateName(m_networkState), networkStateName(state));
 +    m_networkState = state;
 +    if (RefPtr player = m_player.get())
 +        player->networkStateChanged();
@@ -4230,6 +4686,7 @@ index 000000000..ac3457e59
 +{
 +    if (m_readyState == state)
 +        return;
++    ffmpegMediaLog("readyState %s -> %s", readyStateName(m_readyState), readyStateName(state));
 +    m_readyState = state;
 +    if (RefPtr player = m_player.get())
 +        player->readyStateChanged();
@@ -4315,10 +4772,10 @@ index 000000000..ac3457e59
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.h b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.h
 new file mode 100644
-index 000000000..b19e62c2e
+index 000000000..2cd26461d
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.h
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,187 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// MediaPlayerPrivate backed by ffmpeg (libavformat/libavcodec/libswscale/
@@ -4442,6 +4899,7 @@ index 000000000..b19e62c2e
 +    void updateStates(bool endOfStream, bool readerWaiting, double position, double bufferedAhead, FFmpegMedia::LoadFailure);
 +    void updatePlaybackRunning();
 +    void checkAudioWatchdog(double now);
++    void logStats(double now, double position, uint64_t bytesReceived, bool readerWaiting, bool endOfStream);
 +    void applyGain();
 +
 +    void setNetworkState(MediaPlayer::NetworkState);
@@ -4494,7 +4952,12 @@ index 000000000..b19e62c2e
 +    bool m_isLive { false };
 +    bool m_isSeekable { false };
 +    bool m_failed { false };
++    bool m_seekFailureHandled { false };
 +    double m_duration { 0 };
++    // Console log bookkeeping.
++    double m_seekStartedAt { 0 };
++    double m_lastStatsAt { 0 };
++    unsigned m_loggedFirstFrameSerial { 0 };
 +};
 +
 +} // namespace WebCore

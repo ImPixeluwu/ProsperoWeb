@@ -85,6 +85,11 @@ public:
         bool readerWaiting { false };
         uint64_t bytesReceived { 0 };
         FFmpegMedia::TimeRangeSet buffered;
+        // Serial of the last seek the demuxer could not perform (0: none):
+        // reading went on from the old position.
+        unsigned seekFailedSerial { 0 };
+        // Serial of the last seek the demuxer has performed.
+        unsigned seekDoneSerial { 0 };
     };
     Status status() const;
 
@@ -112,6 +117,8 @@ private:
     void selectStreams();
     void readLoop();
     void performSeek(double time, unsigned serial);
+    int seekTo(double time);
+    void logStreams() const;
     void fail(FFmpegMedia::LoadFailure);
     void closeInput();
     bool usesResourceLoader(const URL&) const;
@@ -153,6 +160,8 @@ private:
     bool m_readerWaiting WTF_GUARDED_BY_LOCK(m_lock) { false };
     FFmpegMedia::TimeRangeSet m_buffered WTF_GUARDED_BY_LOCK(m_lock);
     std::optional<std::pair<double, unsigned>> m_pendingSeek WTF_GUARDED_BY_LOCK(m_lock);
+    unsigned m_seekFailedSerial WTF_GUARDED_BY_LOCK(m_lock) { 0 };
+    unsigned m_seekDoneSerial WTF_GUARDED_BY_LOCK(m_lock) { 0 };
 };
 
 } // namespace WebCore

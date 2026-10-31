@@ -121,6 +121,7 @@ private:
     void updateStates(bool endOfStream, bool readerWaiting, double position, double bufferedAhead, FFmpegMedia::LoadFailure);
     void updatePlaybackRunning();
     void checkAudioWatchdog(double now);
+    void logStats(double now, double position, uint64_t bytesReceived, bool readerWaiting, bool endOfStream);
     void applyGain();
 
     void setNetworkState(MediaPlayer::NetworkState);
@@ -173,7 +174,12 @@ private:
     bool m_isLive { false };
     bool m_isSeekable { false };
     bool m_failed { false };
+    bool m_seekFailureHandled { false };
     double m_duration { 0 };
+    // Console log bookkeeping.
+    double m_seekStartedAt { 0 };
+    double m_lastStatsAt { 0 };
+    unsigned m_loggedFirstFrameSerial { 0 };
 };
 
 } // namespace WebCore

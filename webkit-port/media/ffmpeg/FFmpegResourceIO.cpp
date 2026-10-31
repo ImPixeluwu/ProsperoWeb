@@ -5,6 +5,7 @@
 
 #if ENABLE(VIDEO) && USE(FFMPEG)
 
+#include "FFmpegLog.h"
 #include "FFmpegPlaybackPolicy.h"
 #include "HTTPHeaderNames.h"
 #include "HTTPStatusCodes.h"
@@ -152,10 +153,17 @@ void FFmpegResourceStream::destroyAVIOContext(AVIOContext* context)
     avio_context_free(&context);
 }
 
+void FFmpegResourceStream::setByteRange(uint64_t offset, uint64_t endOffset)
+{
+    Locker locker { m_lock };
+    m_readPosition = offset;
+    m_rangeEnd = endOffset > offset ? endOffset : 0;
+}
+
 int FFmpegResourceStream::open()
 {
     Locker locker { m_lock };
-    startRequestLocked(0, false);
+    startRequestLocked(m_readPosition, false);
     while (m_state == RequestState::Pending) {
         if (m_shared->aborted || m_closed)
             return AVERROR_EXIT;
@@ -250,6 +258,8 @@ int FFmpegResourceStream::read(uint8_t* buffer, int size)
             startRequestLocked(m_readPosition, m_readPosition == end);
             break;
         }
+        if (m_interruptibleBySeek && m_shared->seekPending)
+            return AVERROR(EINTR);
         if (!waitLocked())
             return AVERROR_EXIT;
     }
@@ -311,12 +321,21 @@ void FFmpegResourceStream::startRequestLocked(uint64_t position, bool keepBuffer
     m_skipBytes = 0;
     m_state = RequestState::Pending;
     unsigned requestId = ++m_requestId;
-    callOnMainThread([protectedThis = Ref { *this }, requestId, position] {
-        protectedThis->dispatchRequest(requestId, position);
+    // The byte range end only bounds the first request (a segment); later
+    // requests (resumes, seeks) are open-ended.
+    uint64_t rangeEnd = std::exchange(m_rangeEnd, 0);
+    if (rangeEnd <= position)
+        rangeEnd = 0;
+    unsigned count = ++m_shared->requestCount;
+    if (position)
+        ffmpegMediaLog("net: request #%u bytes=%llu-%s", count, static_cast<unsigned long long>(position),
+            rangeEnd ? makeString(rangeEnd - 1).utf8().legacyCStringPointer() : "");
+    callOnMainThread([protectedThis = Ref { *this }, requestId, position, rangeEnd] {
+        protectedThis->dispatchRequest(requestId, position, rangeEnd);
     });
 }
 
-void FFmpegResourceStream::dispatchRequest(unsigned requestId, uint64_t position)
+void FFmpegResourceStream::dispatchRequest(unsigned requestId, uint64_t position, uint64_t rangeEnd)
 {
     ASSERT(isMainThread());
     {
@@ -327,13 +346,16 @@ void FFmpegResourceStream::dispatchRequest(unsigned requestId, uint64_t position
 
     ResourceRequest request { URL { m_url } };
     request.setAllowCookies(true);
-    if (position)
+    if (rangeEnd)
+        request.setHTTPHeaderField(HTTPHeaderName::Range, makeString("bytes="_s, position, '-', rangeEnd - 1));
+    else if (position)
         request.setHTTPHeaderField(HTTPHeaderName::Range, makeString("bytes="_s, position, '-'));
 
     // Never call into the resource while holding m_lock: shutdown() and the
     // loader may call the client synchronously, which takes m_lock.
     RefPtr resource = m_loader->requestResource(WTF::move(request), PlatformMediaResourceLoader::LoadOption::DisallowCaching);
     if (!resource) {
+        ffmpegMediaLog("net: the media resource loader refused the request (%s)", m_url.protocol().utf8().legacyCStringPointer());
         Locker locker { m_lock };
         if (requestId == m_requestId) {
             m_state = RequestState::Failed;
@@ -388,6 +410,7 @@ void FFmpegResourceStream::didReceiveResponse(unsigned requestId, const Resource
     bool isHTTP = response.url().protocolIsInHTTPFamily() || m_url.protocolIsInHTTPFamily();
     int status = response.httpStatusCode();
     if (isHTTP && status >= httpStatus400BadRequest) {
+        ffmpegMediaLog("net: HTTP %d for %s://%s", status, m_url.protocol().utf8().legacyCStringPointer(), m_url.host().utf8().legacyCStringPointer());
         m_state = RequestState::Failed;
         m_shared->networkError = true;
         m_condition.notifyAll();
@@ -404,6 +427,9 @@ void FFmpegResourceStream::didReceiveResponse(unsigned requestId, const Resource
         // The server ignored Range and sends the whole body: skip to the
         // requested position and stop issuing range requests.
         m_skipBytes = m_requestPosition;
+        if (m_rangesSupported)
+            ffmpegMediaLog("net: %s ignored Range (HTTP %d), skipping %llu bytes", m_url.host().utf8().legacyCStringPointer(), status,
+                static_cast<unsigned long long>(m_requestPosition));
         m_rangesSupported = false;
     }
 
@@ -476,6 +502,9 @@ void FFmpegResourceStream::didFail(unsigned requestId, bool isAccessControlFailu
     Locker locker { m_lock };
     if (m_closed || requestId != m_requestId)
         return;
+    ffmpegMediaLog("net: load failed%s for %s://%s at byte %llu", isAccessControlFailure ? " (CORS)" : "",
+        m_url.protocol().utf8().legacyCStringPointer(), m_url.host().utf8().legacyCStringPointer(),
+        static_cast<unsigned long long>(m_requestPosition + m_receivedInRequest));
     m_state = RequestState::Failed;
     m_shared->networkError = true;
     if (isAccessControlFailure)

@@ -44,6 +44,13 @@ public:
     std::atomic<bool> didPassAccessControlCheck { true };
     std::atomic<bool> sawResponse { false };
     std::atomic<uint64_t> bytesReceived { 0 };
+    // A seek is waiting for the demuxer thread: a read of the top-level
+    // stream that would block returns AVERROR(EINTR) instead, so the seek
+    // does not wait for data at the old position.
+    std::atomic<bool> seekPending { false };
+    // libavformat's HLS demuxer asked for an skd:// key (FairPlay DRM).
+    std::atomic<bool> fairPlayKeyRequested { false };
+    std::atomic<unsigned> requestCount { 0 };
 
 private:
     FFmpegIOShared() = default;
@@ -53,6 +60,14 @@ class FFmpegResourceStream final : public ThreadSafeRefCounted<FFmpegResourceStr
 public:
     static Ref<FFmpegResourceStream> create(Ref<PlatformMediaResourceLoader>&&, const URL&, Ref<FFmpegIOShared>&&);
     ~FFmpegResourceStream();
+
+    // Before open(): serve only bytes [offset, endOffset) of the resource
+    // (HLS EXT-X-BYTERANGE, passed by libavformat as the "offset" and
+    // "end_offset" options; endOffset 0 means to the end). Reads then start
+    // at `offset`.
+    void setByteRange(uint64_t offset, uint64_t endOffset);
+    // The top-level stream gives way to a pending seek (see seekPending).
+    void setInterruptibleBySeek(bool interruptible) { m_interruptibleBySeek = interruptible; }
 
     // Demuxer thread. open() issues the first request and waits for the
     // response; it returns 0 or a negative AVERROR.
@@ -85,7 +100,7 @@ private:
         uint64_t end() const { return position + data.size(); }
     };
 
-    void dispatchRequest(unsigned requestId, uint64_t position);
+    void dispatchRequest(unsigned requestId, uint64_t position, uint64_t rangeEnd);
     void startRequestLocked(uint64_t position, bool keepBuffer) WTF_REQUIRES_LOCK(m_lock);
     void suspendLocked() WTF_REQUIRES_LOCK(m_lock);
     void stopResourceLocked() WTF_REQUIRES_LOCK(m_lock);
@@ -112,6 +127,9 @@ private:
     RequestState m_state WTF_GUARDED_BY_LOCK(m_lock) { RequestState::None };
     bool m_rangesSupported WTF_GUARDED_BY_LOCK(m_lock) { true };
     bool m_closed WTF_GUARDED_BY_LOCK(m_lock) { false };
+    // Exclusive end of the first request's Range (0: open-ended).
+    uint64_t m_rangeEnd WTF_GUARDED_BY_LOCK(m_lock) { 0 };
+    bool m_interruptibleBySeek { false };
     RefPtr<PlatformMediaResource> m_resource WTF_GUARDED_BY_LOCK(m_lock);
 };
 

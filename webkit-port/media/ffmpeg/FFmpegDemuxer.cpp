@@ -5,9 +5,11 @@
 
 #if ENABLE(VIDEO) && USE(FFMPEG)
 
+#include "FFmpegLog.h"
 #include "Logging.h"
 #include "PlatformMediaResourceLoader.h"
 #include <wtf/MainThread.h>
+#include <wtf/MonotonicTime.h>
 
 namespace WebCore {
 
@@ -173,6 +175,8 @@ FFmpegDemuxer::Status FFmpegDemuxer::status() const
     status.readerWaiting = m_readerWaiting;
     status.bytesReceived = m_shared->bytesReceived;
     status.buffered = m_buffered;
+    status.seekFailedSerial = m_seekFailedSerial;
+    status.seekDoneSerial = m_seekDoneSerial;
     return status;
 }
 
@@ -181,6 +185,8 @@ void FFmpegDemuxer::seek(double time, unsigned serial)
     Locker locker { m_lock };
     m_pendingSeek = std::make_pair(time, serial);
     m_endOfStream = false;
+    // Wakes a top-level read that waits for data at the old position.
+    m_shared->seekPending = true;
     m_condition.notifyAll();
 }
 
@@ -201,10 +207,32 @@ int FFmpegDemuxer::ioOpen(AVFormatContext* context, AVIOContext** pb, const char
 {
     auto* demuxer = static_cast<FFmpegDemuxer*>(context->opaque);
     URL parsed { String::fromUTF8(url) };
+    if (parsed.protocolIs("skd"_s)) {
+        // FairPlay (HLS SAMPLE-AES with an Apple key server): no key can
+        // ever be fetched, and libavformat would go on "decrypting" the
+        // segments with a zero key and feed garbage to the decoders.
+        if (!demuxer->m_shared->fairPlayKeyRequested.exchange(true))
+            ffmpegMediaLog("demuxer: HLS key %s:// is FairPlay DRM, which this engine cannot play", "skd");
+        return AVERROR(EPERM);
+    }
     if (!(flags & AVIO_FLAG_WRITE) && demuxer->usesResourceLoader(parsed)) {
         auto stream = FFmpegResourceStream::create(demuxer->m_loader.copyRef(), parsed, demuxer->m_shared.copyRef());
+        // HLS EXT-X-BYTERANGE: libavformat passes the segment's byte range as
+        // options for its http protocol and, believing the URL is http, does
+        // not seek to it itself.
+        if (options && *options) {
+            auto* offset = av_dict_get(*options, "offset", nullptr, 0);
+            auto* endOffset = av_dict_get(*options, "end_offset", nullptr, 0);
+            uint64_t start = offset ? strtoull(offset->value, nullptr, 10) : 0;
+            uint64_t end = endOffset ? strtoull(endOffset->value, nullptr, 10) : 0;
+            if (start || end)
+                stream->setByteRange(start, end);
+        }
         int result = stream->open();
         if (result < 0) {
+            if (result != AVERROR_EXIT)
+                ffmpegMediaLog("demuxer: open %s://%s failed: %s", parsed.protocol().utf8().legacyCStringPointer(),
+                    parsed.host().utf8().legacyCStringPointer(), ffmpegErrorString(result).utf8().legacyCStringPointer());
             stream->close();
             return result;
         }
@@ -242,8 +270,12 @@ void FFmpegDemuxer::run()
 {
     if (openInput()) {
         selectStreams();
-        if (!m_video.parameters && !m_audio.parameters) {
-            LOG(Media, "FFmpegDemuxer: no decodable stream in %s", m_url.string().utf8().legacyCStringPointer());
+        logStreams();
+        if (m_shared->fairPlayKeyRequested) {
+            ffmpegMediaLog("demuxer: refusing the stream: it is FairPlay-encrypted");
+            fail(FFmpegMedia::LoadFailure::Open);
+        } else if (!m_video.parameters && !m_audio.parameters) {
+            ffmpegMediaLog("demuxer: no decodable stream");
             fail(FFmpegMedia::LoadFailure::Open);
         } else {
             {
@@ -275,11 +307,14 @@ bool FFmpegDemuxer::openInput()
         // The top-level context is custom I/O: avformat_close_input() would
         // free a non-custom pb with avio_close(), which assumes a URLContext.
         auto stream = FFmpegResourceStream::create(m_loader.copyRef(), m_url, m_shared.copyRef());
+        stream->setInterruptibleBySeek(true);
         int result = stream->open();
         if (result < 0) {
             stream->close();
-            if (!m_shared->aborted)
+            if (!m_shared->aborted) {
+                ffmpegMediaLog("demuxer: first request failed: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
                 fail(FFmpegMedia::LoadFailure::Network);
+            }
             return false;
         }
         m_topLevelIO = FFmpegResourceStream::createAVIOContext(WTF::move(stream));
@@ -307,7 +342,7 @@ bool FFmpegDemuxer::openInput()
         // avformat_open_input() freed the context on failure.
         m_context = nullptr;
         if (!m_shared->aborted) {
-            LOG(Media, "FFmpegDemuxer: avformat_open_input failed: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
+            ffmpegMediaLog("demuxer: avformat_open_input failed: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
             fail(m_shared->networkError ? FFmpegMedia::LoadFailure::Network : FFmpegMedia::LoadFailure::Open);
         }
         return false;
@@ -316,7 +351,7 @@ bool FFmpegDemuxer::openInput()
     m_isHLS = m_context->iformat && m_context->iformat->name && strstr(m_context->iformat->name, "hls");
     result = avformat_find_stream_info(m_context, nullptr);
     if (result < 0 && !m_shared->aborted)
-        LOG(Media, "FFmpegDemuxer: avformat_find_stream_info: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
+        ffmpegMediaLog("demuxer: avformat_find_stream_info: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
     if (m_shared->aborted)
         return false;
 
@@ -395,19 +430,78 @@ void FFmpegDemuxer::selectStreams()
     }
 }
 
-void FFmpegDemuxer::performSeek(double time, unsigned serial)
+void FFmpegDemuxer::logStreams() const
 {
-    double startTime = m_video.index >= 0 ? m_video.startTime : m_audio.startTime;
-    int64_t target = static_cast<int64_t>((time + startTime) * AV_TIME_BASE);
+    if (!ffmpegMediaLogEnabled() || !m_context)
+        return;
+    ffmpegMediaLog("demuxer: opened %s%s, duration %.3f s%s, start %.3f s, %u streams, %s", m_context->iformat && m_context->iformat->name ? m_context->iformat->name : "?",
+        m_isHLS ? " (HLS)" : "", m_duration, m_isLive ? " (live)" : "", m_context->start_time != AV_NOPTS_VALUE ? m_context->start_time / static_cast<double>(AV_TIME_BASE) : 0.0,
+        m_context->nb_streams, m_isSeekable ? "seekable" : "not seekable");
+    for (unsigned i = 0; i < m_context->nb_streams && i < 32; ++i) {
+        const AVStream* stream = m_context->streams[i];
+        const AVCodecParameters* parameters = stream->codecpar;
+        const char* type = av_get_media_type_string(parameters->codec_type);
+        const char* use = static_cast<int>(i) == m_video.index ? "VIDEO" : static_cast<int>(i) == m_audio.index ? "AUDIO" : "-";
+        if (parameters->codec_type == AVMEDIA_TYPE_VIDEO) {
+            ffmpegMediaLog("demuxer:  #%u %s %s %dx%d %lld b/s%s [%s]", i, type ? type : "?", avcodec_get_name(parameters->codec_id), parameters->width,
+                parameters->height, static_cast<long long>(streamBitRate(stream)), findSoftwareDecoder(parameters->codec_id) ? "" : " (no decoder)", use);
+        } else {
+            ffmpegMediaLog("demuxer:  #%u %s %s %d Hz %d ch %lld b/s%s [%s]", i, type ? type : "?", avcodec_get_name(parameters->codec_id), parameters->sample_rate,
+                parameters->ch_layout.nb_channels, static_cast<long long>(streamBitRate(stream)), findSoftwareDecoder(parameters->codec_id) ? "" : " (no decoder)", use);
+        }
+    }
+}
+
+int FFmpegDemuxer::seekTo(double time)
+{
+    const FFmpegStreamInfo& primary = m_video.index >= 0 ? m_video : m_audio;
+    int64_t target = static_cast<int64_t>((time + primary.startTime) * AV_TIME_BASE);
     // Land on the keyframe at or before the target; the decoders discard
     // what precedes the target (accurate seek).
     int result = avformat_seek_file(m_context, -1, std::numeric_limits<int64_t>::min(), target, target, 0);
-    if (result < 0)
-        LOG(Media, "FFmpegDemuxer: seek to %.3f failed: %s", time, ffmpegErrorString(result).utf8().legacyCStringPointer());
+    if (result >= 0 || primary.index < 0)
+        return result;
+    ffmpegMediaLog("demuxer: avformat_seek_file(%.3f) failed: %s, retrying on stream %d", time,
+        ffmpegErrorString(result).utf8().legacyCStringPointer(), primary.index);
+    int64_t streamTarget = av_rescale_q(target, AV_TIME_BASE_Q, primary.timeBase);
+    result = av_seek_frame(m_context, primary.index, streamTarget, AVSEEK_FLAG_BACKWARD);
+    if (result >= 0)
+        return result;
+    // Any frame, not only a keyframe: the video decoder then waits for the
+    // next keyframe, which beats not seeking at all.
+    return av_seek_frame(m_context, primary.index, streamTarget, AVSEEK_FLAG_BACKWARD | AVSEEK_FLAG_ANY);
+}
+
+void FFmpegDemuxer::performSeek(double time, unsigned serial)
+{
+    auto start = MonotonicTime::now();
+    // An interrupted read (seekPending) left its error in the top-level
+    // AVIOContext; libavio reports a stored error instead of EOF later.
+    if (m_topLevelIO)
+        m_topLevelIO->error = 0;
+    int result = seekTo(time);
     m_serial = serial;
     m_videoQueue.flush(serial);
     m_audioQueue.flush(serial);
     m_segmentStart = time;
+    {
+        Locker locker { m_lock };
+        // The read in flight when seek() was called may have hit the end of
+        // the stream after seek() cleared the flag: without this, the loop
+        // would idle on m_endOfStream and the new serial would never get a
+        // packet (playback frozen after the seek).
+        m_endOfStream = false;
+        if (!m_pendingSeek)
+            m_shared->seekPending = false;
+        m_seekDoneSerial = serial;
+        if (result < 0)
+            m_seekFailedSerial = serial;
+    }
+    if (result < 0)
+        ffmpegMediaLog("demuxer: seek #%u to %.3f FAILED: %s; reading on from the old position", serial, time,
+            ffmpegErrorString(result).utf8().legacyCStringPointer());
+    else
+        ffmpegMediaLog("demuxer: seek #%u to %.3f done in %.0f ms, queues flushed", serial, time, (MonotonicTime::now() - start).milliseconds());
 }
 
 void FFmpegDemuxer::readLoop()
@@ -442,14 +536,27 @@ void FFmpegDemuxer::readLoop()
 
         int result = av_read_frame(m_context, packet.get());
         if (result < 0) {
-            if (result == AVERROR_EXIT || m_shared->aborted)
+            if (m_shared->aborted)
                 break;
+            if (result == AVERROR(EINTR) && m_shared->seekPending) {
+                // A read gave way to the pending seek (FFmpegResourceStream).
+                av_packet_unref(packet.get());
+                continue;
+            }
+            if (result == AVERROR_EXIT) {
+                ffmpegMediaLog("demuxer: av_read_frame: %s, stopping", ffmpegErrorString(result).utf8().legacyCStringPointer());
+                break;
+            }
             bool endOfFile = result == AVERROR_EOF || (m_context->pb && avio_feof(m_context->pb));
             if (!endOfFile && ++consecutiveErrors < maxConsecutiveReadErrors) {
+                if (consecutiveErrors == 1 || !(consecutiveErrors % 16))
+                    ffmpegMediaLog("demuxer: av_read_frame: %s (%u in a row)", ffmpegErrorString(result).utf8().legacyCStringPointer(), consecutiveErrors);
                 Locker locker { m_lock };
                 m_condition.waitFor(m_lock, 10_ms);
                 continue;
             }
+            ffmpegMediaLog("demuxer: %s (serial %u): %s", endOfFile ? "end of stream" : "giving up after read errors", m_serial,
+                ffmpegErrorString(result).utf8().legacyCStringPointer());
             m_videoQueue.pushEndOfStream(m_serial);
             m_audioQueue.pushEndOfStream(m_serial);
             Locker locker { m_lock };
