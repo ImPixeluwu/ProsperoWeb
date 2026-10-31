@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <optional>
 
@@ -151,6 +152,9 @@ int Ps5App::run() {
     return 1;
   }
   log_line("SDL_CreateWindow: ok");
+  // Before any WebKit work: proves the display path independently of
+  // WebKit painting (a WKPagePaint without a WebProcess leaves zeros).
+  draw_splash();
   // Printable keyboard input arrives as SDL_TEXTINPUT (see pump_sdl_events).
   SDL_StartTextInput();
 
@@ -210,6 +214,37 @@ int Ps5App::run() {
   log_line("ps5browser UI stopped");
   log_close();
   return 0;
+}
+
+void Ps5App::draw_splash() {
+  const std::uint64_t t0 = SDL_GetTicks64();
+  SDL_Surface* surface = SDL_GetWindowSurface(window_);
+  if (!surface) {
+    log_printf("splash: SDL_GetWindowSurface failed: %s", SDL_GetError());
+    return;
+  }
+  // Opaque dark blue, an orange top band and a white centre square: three
+  // colours that cannot be mistaken for an empty (black) buffer.
+  const SDL_Rect band{0, 0, surface->w, std::min(96, surface->h)};
+  const int side = std::min({200, surface->w, surface->h});
+  const SDL_Rect square{(surface->w - side) / 2, (surface->h - side) / 2, side, side};
+  SDL_FillRect(surface, nullptr, SDL_MapRGBA(surface->format, 0x1A, 0x2B, 0x4C, 0xFF));
+  SDL_FillRect(surface, &band, SDL_MapRGBA(surface->format, 0xFF, 0x8C, 0x00, 0xFF));
+  SDL_FillRect(surface, &square, SDL_MapRGBA(surface->format, 0xFF, 0xFF, 0xFF, 0xFF));
+  if (SDL_UpdateWindowSurface(window_) != 0) {
+    log_printf("splash: SDL_UpdateWindowSurface failed: %s", SDL_GetError());
+    return;
+  }
+  log_printf("splash: filled and flipped (%llu ms)",
+             static_cast<unsigned long long>(SDL_GetTicks64() - t0));
+
+  const char* hold = std::getenv("PS5BROWSER_SPLASH_HOLD_MS");
+  const long hold_ms = hold ? std::strtol(hold, nullptr, 10) : 0;
+  if (hold_ms > 0) {
+    log_printf("splash: holding %ld ms (PS5BROWSER_SPLASH_HOLD_MS)", hold_ms);
+    SDL_Delay(static_cast<std::uint32_t>(hold_ms));
+    log_line("splash: hold done");
+  }
 }
 
 void Ps5App::frame_trampoline(void* self) {
@@ -356,6 +391,7 @@ std::vector<SDL_Rect> Ps5App::derive_chrome_rects() {
 
 void Ps5App::paint_chrome() {
   DirtyRect dirty = chrome_->web().take_dirty();
+  webkit_painted_ = webkit_painted_ || dirty.valid;
   if (!chrome_painted_) {
     dirty = DirtyRect{true, 0, 0, width_, height_};
     chrome_painted_ = true;
@@ -383,6 +419,7 @@ void Ps5App::paint_content() {
   const int top = std::clamp(controller_->content_top(), 0, height_);
   const int content_height = height_ - top;
   DirtyRect dirty = view ? view->web().take_dirty() : DirtyRect{};
+  webkit_painted_ = webkit_painted_ || dirty.valid;
 
   // A different view or geometry invalidates the whole cache; otherwise only
   // what WebKit reported changed is repainted (nothing on an idle page).
@@ -422,6 +459,17 @@ void Ps5App::composite_and_present() {
   paint_content();
   paint_chrome();
   const std::vector<SDL_Rect> chrome_rects = derive_chrome_rects();
+
+  // Keep the splash until WebKit has painted something real; composing the
+  // still empty caches would replace it with black.
+  if (!splash_replaced_) {
+    if (!webkit_painted_) {
+      return;
+    }
+    splash_replaced_ = true;
+    log_printf("splash: replaced by the first WebKit frame (frame %llu)",
+               static_cast<unsigned long long>(frames_));
+  }
 
   // 2. Compose into the ABGR8888 window surface: the page, with the
   //    premultiplied chrome blended over it inside the chrome rects. Neither

@@ -37,6 +37,7 @@ class Ps5App {
   void paint_content();
   void paint_chrome();
   void composite_and_present();
+  void draw_splash();
   std::vector<SDL_Rect> derive_chrome_rects();
 
   static void frame_trampoline(void* self);
@@ -74,6 +75,10 @@ class Ps5App {
   bool surface_logged_ = false;
   bool first_flip_logged_ = false;
   bool flip_error_logged_ = false;
+  // The startup splash stays on screen until WebKit reports its first paint
+  // (page or chrome); until then the frame loop does not flip.
+  bool webkit_painted_ = false;
+  bool splash_replaced_ = false;
 };
 
 }  // namespace ps5browser::frontend
