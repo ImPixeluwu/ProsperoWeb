@@ -1,0 +1,90 @@
+Subject: WebCore: fix the PlayStation Skia build and FreeBSD socket headers
+
+PlatformDisplaySkia.cpp only defines the thread-local s_skiaGLContext
+when !(PLATFORM(PLAYSTATION) && USE(COORDINATED_GRAPHICS)), but the
+functions at the end of the file use it unconditionally, so the
+PlayStation port does not compile with USE_SKIA. In that configuration
+skiaGLContext() already returns nullptr (no GL for Skia), so make the
+remaining per-thread Skia GL entry points no-ops.
+
+DNS.cpp uses AF_INET/AF_INET6, which FreeBSD's <arpa/inet.h> does not
+provide; include <sys/socket.h> on FreeBSD as on QNX.
+
+Page::preferredFilterRenderingModes() reads the HardwareAccelerationEnabled
+setting for every Skia port but Windows, while the setting only exists
+for GTK and WPE; exclude PlayStation too (software filters only).
+diff --git a/Source/WebCore/page/Page.cpp b/Source/WebCore/page/Page.cpp
+index 5c7695e86..46eac1aa7 100644
+--- a/Source/WebCore/page/Page.cpp
++++ b/Source/WebCore/page/Page.cpp
+@@ -5263,7 +5263,7 @@ OptionSet<FilterRenderingMode> Page::preferredFilterRenderingModes(const Graphic
+         modes.add(FilterRenderingMode::Accelerated);
+ #endif
+ 
+-#if USE(SKIA) && !PLATFORM(WIN) && (!PLATFORM(WPE) || ENABLE(WPE_PLATFORM))
++#if USE(SKIA) && !PLATFORM(WIN) && !PLATFORM(PLAYSTATION) && (!PLATFORM(WPE) || ENABLE(WPE_PLATFORM))
+     if (settings().hardwareAccelerationEnabled())
+         modes.add(FilterRenderingMode::Accelerated);
+ #endif
+diff --git a/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp b/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp
+index 22bcc672f..4f7acf15d 100644
+--- a/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp
++++ b/Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp
+@@ -395,6 +395,36 @@ void PlatformDisplay::makeSkiaGLContextCurrentIfExists()
+         glContext->makeContextCurrent();
+ }
+ 
++#if PLATFORM(PLAYSTATION) && USE(COORDINATED_GRAPHICS)
++// skiaGLContext() never creates a context in this configuration (see above),
++// so there is no per-thread Skia GL state: Skia always rasterizes on the CPU.
++void PlatformDisplay::setSkiaGLContextForCurrentThread(std::unique_ptr<GLContext>&&)
++{
++}
++
++GrDirectContext* PlatformDisplay::skiaGrContext() const
++{
++    return nullptr;
++}
++
++unsigned PlatformDisplay::msaaSampleCount() const
++{
++    return 0;
++}
++
++size_t PlatformDisplay::maxSkiaResourceCacheBytes() const
++{
++    return 0;
++}
++
++void PlatformDisplay::skiaReleaseUnusedResources(WTF::Critical)
++{
++}
++
++void PlatformDisplay::clearSkiaGLContext()
++{
++}
++#else
+ void PlatformDisplay::setSkiaGLContextForCurrentThread(std::unique_ptr<GLContext>&& glContext)
+ {
+     if (!glContext) {
+@@ -432,6 +462,7 @@ void PlatformDisplay::clearSkiaGLContext()
+ {
+     s_skiaGLContext = nullptr;
+ }
++#endif // PLATFORM(PLAYSTATION) && USE(COORDINATED_GRAPHICS)
+ 
+ } // namespace WebCore
+ 
+diff --git a/Source/WebCore/platform/network/DNS.cpp b/Source/WebCore/platform/network/DNS.cpp
+index a73014971..d0e958876 100644
+--- a/Source/WebCore/platform/network/DNS.cpp
++++ b/Source/WebCore/platform/network/DNS.cpp
+@@ -42,7 +42,7 @@
+ #include <arpa/inet.h>
+ #endif
+ 
+-#if OS(QNX)
++#if OS(QNX) || OS(FREEBSD)
+ #include <sys/socket.h>
+ #endif
+ 

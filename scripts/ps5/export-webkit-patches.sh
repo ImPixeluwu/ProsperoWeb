@@ -20,6 +20,8 @@ TOPICS=(
     "0004-webcore-curl-ca-bundle|Source/WebCore/platform/network/playstation/CurlSSLHandlePlayStation.cpp"
     "0005-webkit-static-multicall-processes|Source/WebKit/CMakeLists.txt Source/WebKit/PlatformPlayStation.cmake Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp Source/WebKit/WebProcess/EntryPoint/playstation/WebProcessMain.cpp Source/WebKit/NetworkProcess/EntryPoint/playstation/NetworkProcessMain.cpp"
     "0006-wtf-payload-sdk-compat|Source/WTF/wtf/Compiler.h Source/WTF/wtf/AvailableMemory.cpp Source/WTF/wtf/RAMSize.cpp Source/WTF/wtf/unix/MemoryPressureHandlerUnix.cpp Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp Source/WTF/wtf/playstation/LanguagePlayStation.cpp"
+    "0007-webcore-playstation-build-fixes|Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp Source/WebCore/platform/network/DNS.cpp Source/WebCore/page/Page.cpp"
+    "0008-skia-freebsd-malloc-usable-size|Source/ThirdParty/skia/src/ports/SkMemory_malloc.cpp"
 )
 
 mkdir -p "${PATCH_DIR}"

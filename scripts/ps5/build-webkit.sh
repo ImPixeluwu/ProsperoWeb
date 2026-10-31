@@ -73,6 +73,7 @@ configure() {
         -DOpenGLES2_LIBRARY="${STUBS_BUILD}/libGLESv2.a" \
         -DUSE_SKIA=ON \
         -DUSE_SYSTEM_MALLOC=ON \
+        -DUSE_THIN_ARCHIVES=OFF \
         -DENABLE_UNIFIED_BUILDS=ON \
         -DENABLE_STATIC_JSC=ON \
         -DENABLE_JIT=OFF -DENABLE_DFG_JIT=OFF -DENABLE_FTL_JIT=OFF \
@@ -136,7 +137,7 @@ case "${stage}" in
     configure) configure ;;
     wtf)       build WTF bmalloc ;;
     jsc)       build jsc ;;
-    webcore)   build WebCore ;;
+    webcore)   build PAL Skia WebCore WebCoreDOMAndRendering WebCoreInspector WebCoreJSBindings WebCoreStyle ;;
     webkit)    build WebKit ;;
     package)   package ;;
     all)
@@ -144,7 +145,7 @@ case "${stage}" in
         configure
         build WTF bmalloc
         build jsc
-        build WebCore
+        build PAL Skia WebCore WebCoreDOMAndRendering WebCoreInspector WebCoreJSBindings WebCoreStyle
         build WebKit
         package
         ;;
