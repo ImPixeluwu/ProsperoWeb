@@ -85,4 +85,14 @@ TEST_SUITE("gamepad_mapper") {
                                 {Button::PS, Action::None},
                             });
   }
+
+  TEST_CASE("osk caret and layout buttons do not change other modes") {
+    const GamepadMapper m;
+    CHECK(m.map(Button::L1, true, Mode::Page) == Action::PrevTab);
+    CHECK(m.map(Button::R1, true, Mode::Page) == Action::NextTab);
+    CHECK(m.map(Button::Touchpad, true, Mode::Page) == Action::NewTab);
+    CHECK(m.map(Button::L1, true, Mode::Chrome) == Action::PrevTab);
+    CHECK(m.map(Button::Touchpad, true, Mode::Chrome) == Action::NewTab);
+    CHECK(m.map(Button::L2, true, Mode::Osk) == Action::OskShift);
+  }
 }
