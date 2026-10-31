@@ -7,8 +7,9 @@
 // (mse/). No EME, WebAudio or hardware decoding. Video is painted from BGRA frames through NativeImage,
 // audio goes to an AudioSink (SDL2, or a silent fallback).
 //
-// Threads: main (this object, a presentation/state tick), demuxer, video
-// decoder, audio decoder, audio sink. See webkit-port/media/README.md.
+// Threads: main (this object, a low-rate state tick), demuxer, video
+// decoder, video presenter (FFmpegVideoPresenter.h), audio decoder, audio
+// sink. See webkit-port/media/README.md.
 
 #pragma once
 
@@ -19,6 +20,7 @@
 #include "FFmpegPlaybackPolicy.h"
 #include "FFmpegSupportTable.h"
 #include "FFmpegTimeRanges.h"
+#include "FFmpegVideoPresenter.h"
 #include "MediaPlayerPrivate.h"
 #include <memory>
 #include <optional>
@@ -67,6 +69,13 @@ public:
     // Shared painting: a hole while `overlay` shows the video (only for the
     // element's own painting, `forElement`), otherwise the frame.
     static void paintVideo(GraphicsContext&, const FloatRect&, FFmpegVideoOverlay*, bool forElement, const RefPtr<NativeImage>&);
+    // Main tick periods shared with the MSE player: the presenter thread
+    // shows the frames, the tick only keeps the HTML states current.
+    static constexpr Seconds playingStateTick = 250_ms;
+    static constexpr Seconds busyStateTick = 50_ms;
+    static constexpr Seconds idleStateTick = 100_ms;
+    // The overlay's geometry follows layout and scrolling at this rate.
+    static constexpr Seconds overlayGeometryTick = 33_ms;
 
     void load(const String&) final;
 #if ENABLE(MEDIA_SOURCE)
@@ -113,7 +122,7 @@ public:
     void paintCurrentFrameInContext(GraphicsContext&, const FloatRect&) final;
     RefPtr<NativeImage> nativeImageForCurrentTime() final;
     ColorSpace colorSpace() final { return ColorSpace::SRGB(); }
-    bool hasAvailableVideoFrame() const final { return !!m_currentFrame; }
+    bool hasAvailableVideoFrame() const final;
 
     bool supportsFullscreen() const final { return true; }
     unsigned decodedFrameCount() const final;
@@ -129,7 +138,12 @@ private:
     void tick();
     void scheduleTick(Seconds);
     double clockTime(double now) const;
-    void presentVideo(double position);
+    void startPresenter();
+    void stopPresenter();
+    void handlePresenterEvents(unsigned);
+    RefPtr<FFmpegVideoFrame> currentFrame() const;
+    void overlayTick();
+    unsigned presenterDroppedFrames() const { return m_presenterDroppedBefore + (m_presenter ? m_presenter->droppedFrames() : 0); }
     void finishSeekIfReady(double now);
     void checkEnded(bool endOfStream, double position);
     void updateBuffered(const FFmpegMedia::TimeRangeSet&);
@@ -139,6 +153,7 @@ private:
     void logStats(double now, double position, uint64_t bytesReceived, bool readerWaiting, bool endOfStream);
     void applyGain();
     void updateOverlay();
+    void setAudioSink(std::unique_ptr<AudioSink>&&);
 
     void setNetworkState(MediaPlayer::NetworkState);
     void setReadyState(MediaPlayer::ReadyState);
@@ -146,13 +161,15 @@ private:
 
     ThreadSafeWeakPtr<MediaPlayer> m_player;
     RunLoop::Timer m_tickTimer;
+    RunLoop::Timer m_overlayTimer;
     URL m_url;
 
     RefPtr<FFmpegDemuxer> m_demuxer;
     RefPtr<FFmpegVideoDecoder> m_videoDecoder;
     RefPtr<FFmpegAudioDecoder> m_audioDecoder;
     std::unique_ptr<AudioSink> m_audioSink;
-    mutable FFmpegMedia::AVClock m_clock;
+    const Ref<FFmpegPlaybackClock> m_clock;
+    RefPtr<FFmpegVideoPresenter> m_presenter;
 
     MediaPlayer::NetworkState m_networkState { MediaPlayer::NetworkState::Empty };
     MediaPlayer::ReadyState m_readyState { MediaPlayer::ReadyState::HaveNothing };
@@ -160,7 +177,10 @@ private:
     PlatformTimeRanges m_buffered;
     mutable uint64_t m_lastProgressBytes { 0 };
 
-    RefPtr<FFmpegVideoFrame> m_currentFrame;
+    // The frame on screen after the presenter stopped (cancelLoad).
+    RefPtr<FFmpegVideoFrame> m_retainedFrame;
+    // currentNativeImage() cache, valid for m_imageFrame.
+    RefPtr<FFmpegVideoFrame> m_imageFrame;
     RefPtr<NativeImage> m_currentImage;
     FloatSize m_naturalSize;
     // Video overlay (FFmpegVideoOverlay.h), created with the video pipeline.
@@ -173,7 +193,8 @@ private:
     double m_volume { 1 };
     double m_rate { 1 };
     unsigned m_serial { 0 };
-    unsigned m_presenterDropped { 0 };
+    // Frames the presenters of earlier pipelines dropped.
+    unsigned m_presenterDroppedBefore { 0 };
 
     // Audio sink watchdog: a device that opens but never pulls data would
     // freeze the audio clock forever.

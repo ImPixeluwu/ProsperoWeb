@@ -8,7 +8,8 @@
 // FFmpegVideoDecoder/FFmpegAudioDecoder, AVClock, AudioSink and frame
 // painting the progressive MediaPlayerPrivateFFmpeg uses. readyState is the
 // MediaSource's (computed from buffered ranges), held at HAVE_METADATA until
-// the frame at the position is on screen. Main thread.
+// the frame at the position is on screen. Main thread, except that the
+// FFmpegVideoPresenter thread shows the frames.
 
 #pragma once
 
@@ -16,6 +17,7 @@
 
 #include "FFmpegAVClock.h"
 #include "FFmpegUtilities.h"
+#include "FFmpegVideoPresenter.h"
 #include "MediaPlayerPrivate.h"
 #include <memory>
 #include <optional>
@@ -120,7 +122,7 @@ private:
     void paintCurrentFrameInContext(GraphicsContext&, const FloatRect&) final;
     RefPtr<NativeImage> nativeImageForCurrentTime() final;
     ColorSpace colorSpace() final;
-    bool hasAvailableVideoFrame() const final { return !!m_currentFrame; }
+    bool hasAvailableVideoFrame() const final;
 
     bool supportsFullscreen() const final { return true; }
     unsigned decodedFrameCount() const final;
@@ -153,12 +155,18 @@ private:
     void createAudioSink(bool forceNull);
     void applyGain();
     void updateOverlay();
+    void overlayTick();
+    void setAudioSink(std::unique_ptr<AudioSink>&&);
+    void startPresenter();
+    void stopPresenter();
+    void handlePresenterEvents(unsigned);
+    RefPtr<FFmpegVideoFrame> currentFrame() const;
+    unsigned presenterDroppedFrames() const { return m_presenterDroppedBefore + (m_presenter ? m_presenter->droppedFrames() : 0); }
 
     void tick();
     void scheduleTick(Seconds);
     double clockTime(double now) const;
     double playbackPosition() const;
-    void presentVideo(double position);
     void finishSeekIfReady(double now);
     void checkEnded(double position);
     void updateReadyState();
@@ -172,6 +180,7 @@ private:
 
     ThreadSafeWeakPtr<MediaPlayer> m_player;
     RunLoop::Timer m_tickTimer;
+    RunLoop::Timer m_overlayTimer;
     RefPtr<MediaSourcePrivateFFmpeg> m_mediaSourcePrivate;
 
     Pipeline m_video;
@@ -179,12 +188,16 @@ private:
     RefPtr<FFmpegVideoDecoder> m_videoDecoder;
     RefPtr<FFmpegAudioDecoder> m_audioDecoder;
     std::unique_ptr<AudioSink> m_audioSink;
-    mutable FFmpegMedia::AVClock m_clock;
+    const Ref<FFmpegPlaybackClock> m_clock;
+    RefPtr<FFmpegVideoPresenter> m_presenter;
 
     MediaPlayer::NetworkState m_networkState { MediaPlayer::NetworkState::Empty };
     MediaPlayer::ReadyState m_readyState { MediaPlayer::ReadyState::HaveNothing };
 
-    RefPtr<FFmpegVideoFrame> m_currentFrame;
+    // The frame on screen after the presenter stopped.
+    RefPtr<FFmpegVideoFrame> m_retainedFrame;
+    // currentNativeImage() cache, valid for m_imageFrame.
+    RefPtr<FFmpegVideoFrame> m_imageFrame;
     RefPtr<NativeImage> m_currentImage;
     // Video overlay (FFmpegVideoOverlay.h), created with the video decoder.
     std::unique_ptr<FFmpegVideoOverlay> m_overlay;
@@ -200,7 +213,7 @@ private:
     double m_endTime { 0 };
     double m_volume { 1 };
     double m_rate { 1 };
-    unsigned m_presenterDropped { 0 };
+    unsigned m_presenterDroppedBefore { 0 };
 
     std::optional<double> m_lastAudioClock;
     double m_lastAudioClockChange { 0 };

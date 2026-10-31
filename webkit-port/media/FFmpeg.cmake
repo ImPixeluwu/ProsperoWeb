@@ -16,6 +16,7 @@ list(APPEND WebCore_SOURCES
     platform/graphics/ffmpeg/FFmpegResourceIO.cpp
     platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp
     platform/graphics/ffmpeg/FFmpegVideoOverlay.cpp
+    platform/graphics/ffmpeg/FFmpegVideoPresenter.cpp
     platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp
     platform/graphics/ffmpeg/mse/FFmpegAppendParser.cpp
     platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.cpp

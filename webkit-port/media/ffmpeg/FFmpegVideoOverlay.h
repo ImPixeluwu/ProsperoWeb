@@ -17,14 +17,16 @@
 // the page would: not connected, a rotated/skewed box, a hidden page or
 // element, or no frame yet. In that case paint() draws the frame as before.
 //
-// Main thread only, except that frames are copied and sent on the client's
-// sender thread.
+// Main thread only, except submit() and punchesHole(), which the player's
+// presenter thread (FFmpegVideoPresenter.h) calls; frames are copied and
+// sent on the client's sender thread.
 
 #pragma once
 
 #if ENABLE(VIDEO) && USE(FFMPEG)
 
 #include "FFmpegVideoOverlayWire.h"
+#include <atomic>
 #include <memory>
 #include <optional>
 #include <wtf/TZoneMalloc.h>
@@ -53,7 +55,7 @@ public:
     bool update(MediaPlayer&, bool pageVisible, bool hasFrame);
     // paint() clears the video box instead of drawing the frame.
     bool punchesHole() const { return m_punching; }
-    // The frame to show now (the player's A/V clock decided).
+    // The frame to show now (the player's A/V clock decided). Any thread.
     void submit(FFmpegVideoFrame&);
     // The picture is gone (new load, decoder reset).
     void clear();
@@ -68,7 +70,9 @@ private:
     unsigned m_player;
     std::optional<FFmpegMedia::VideoWire::Geometry> m_geometry;
     bool m_rectilinear { true };
-    bool m_punching { false };
+    std::atomic<bool> m_punching { false };
+    // The geometry is visible: submitted frames are sent.
+    std::atomic<bool> m_acceptsFrames { false };
     bool m_loggedFailure { false };
     bool m_loggedSkew { false };
 };

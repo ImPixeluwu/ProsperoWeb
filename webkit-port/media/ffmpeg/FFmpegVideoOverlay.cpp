@@ -176,11 +176,12 @@ bool FFmpegVideoOverlay::update(MediaPlayer& player, bool pageVisible, bool hasF
         m_geometry = geometry;
         m_client->setGeometry(geometry);
     }
+    m_acceptsFrames = m_geometry && m_geometry->visible;
     if (m_client->state() == Wire::VideoOverlayClient::State::Failed && !std::exchange(m_loggedFailure, true))
         ffmpegMediaLog("video overlay: player %u: no overlay server, painting video into the page", m_player);
 
     bool punch = m_client->usable() && geometry.visible && hasFrame;
-    if (punch == m_punching)
+    if (punch == m_punching.load())
         return false;
     m_punching = punch;
     ffmpegMediaLog("video overlay: player %u: hole punch %s", m_player, punch ? "on" : "off");
@@ -189,7 +190,7 @@ bool FFmpegVideoOverlay::update(MediaPlayer& player, bool pageVisible, bool hasF
 
 void FFmpegVideoOverlay::submit(FFmpegVideoFrame& frame)
 {
-    if (!m_client->usable() || !m_geometry || !m_geometry->visible)
+    if (!m_client->usable() || !m_acceptsFrames)
         return;
     Ref protectedFrame = frame;
     FFmpegVideoFrame* held = &protectedFrame.leakRef();
@@ -229,7 +230,7 @@ void FFmpegVideoOverlay::logStats(double seconds)
     }
     Wire::Geometry geometry = m_geometry.value_or(Wire::Geometry { });
     ffmpegMediaLog("video overlay: player %u: %s sent %.1f/s replaced %u copy %.2f ms | hole %s rect %d,%d %dx%d%s", m_player, state,
-        seconds > 0 ? stats.sent / seconds : 0.0, stats.replaced, stats.copyMilliseconds, m_punching ? "on" : "off",
+        seconds > 0 ? stats.sent / seconds : 0.0, stats.replaced, stats.copyMilliseconds, m_punching.load() ? "on" : "off",
         geometry.x, geometry.y, geometry.width, geometry.height, geometry.visible ? "" : " hidden");
 }
 

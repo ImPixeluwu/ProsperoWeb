@@ -8,7 +8,8 @@
 
 | File | Role |
 |---|---|
-| `MediaPlayerPrivateFFmpeg.{h,cpp}` | `MediaPlayerPrivateInterface` implementation, factory and `supportsType`, presentation tick, HTML state machine, painting |
+| `MediaPlayerPrivateFFmpeg.{h,cpp}` | `MediaPlayerPrivateInterface` implementation, factory and `supportsType`, state tick, HTML state machine, painting |
+| `FFmpegVideoPresenter.{h,cpp}` | presenter thread of both players (frames to the overlay or a repaint) and `FFmpegPlaybackClock`, the A/V clock behind a lock |
 | `FFmpegDemuxer.{h,cpp}` | demuxer thread: `avformat_open_input`/`av_read_frame`, stream selection, per-stream packet queues, seeks, buffered ranges |
 | `FFmpegResourceIO.{h,cpp}` | `AVIOContext` over WebCore's `PlatformMediaResourceLoader` (also installed as `AVFormatContext::io_open` for HLS playlists, keys and segments) |
 | `FFmpegVideoDecoder.{h,cpp}` | video decoder thread: libavcodec, libswscale to BGRA, frame pool, output queue |
@@ -18,7 +19,7 @@
 | `FFmpegVideoOverlay.{h,cpp}` | video overlay of both players: the element's video box in view coordinates, the hole-punch decision, frames to the client |
 | `FFmpegVideoOverlayWire.h`, `FFmpegVideoOverlayClient.h` | video overlay protocol, shared-memory layout and seqlock, sender thread with transport negotiation (no WebCore/WTF; also used by the UI's server in `src/ps5/video` and by `tests/ps5`) |
 | `FFmpegUtilities.h` | ffmpeg RAII types, `FFmpegStreamInfo`, `findSoftwareDecoder()` |
-| `FFmpegSupportTable.h`, `FFmpegTimeRanges.h`, `FFmpegAVClock.h`, `FFmpegRingBuffer.h`, `FFmpegPlaybackPolicy.h` | engine-independent logic (no WebCore/WTF/ffmpeg), unit-tested on the host by `tests/media/` |
+| `FFmpegSupportTable.h`, `FFmpegTimeRanges.h`, `FFmpegAVClock.h`, `FFmpegRingBuffer.h`, `FFmpegPlaybackPolicy.h`, `FFmpegPresenterPolicy.h` | engine-independent logic (no WebCore/WTF/ffmpeg), unit-tested on the host by `tests/media/` |
 | `mse/MediaPlayerPrivateFFmpegMSE.{h,cpp}` | MSE engine (`MediaEngineIdentifier::FFmpegMSE`): decoder pipelines per selected track, seeks, readyState gating, painting |
 | `mse/MediaSourcePrivateFFmpeg.{h,cpp}`, `mse/SourceBufferPrivateFFmpeg.{h,cpp}` | `MediaSourcePrivate`/`SourceBufferPrivate` subclasses on top of the generic WebCore sample maps |
 | `mse/FFmpegAppendParser.{h,cpp}` | appended bytes to segments to libavformat (`mov`/`matroska`, from memory) to packets; ffmpeg and the C++ library only |
@@ -32,7 +33,8 @@
 
 | Thread | Work |
 |---|---|
-| main | `MediaPlayerPrivateFFmpeg`. A `RunLoop::Timer` tick (8 ms while video plays and the page is visible, 50 ms for audio, 100 ms when idle) reads the clock, presents video frames, finishes seeks, detects the end, and updates `buffered`/`readyState`/`networkState`. It also runs the `PlatformMediaResourceLoader` requests and their client callbacks. |
+| main | `MediaPlayerPrivateFFmpeg`. A `RunLoop::Timer` state tick (250 ms while playing, 50 ms while seeking, 100 ms when idle, and at once when the presenter reports the first frame of a position or the end of the video) finishes seeks, detects the end, and updates `buffered`/`readyState`/`networkState`. A second timer refreshes the video overlay's geometry every 33 ms. The main thread also runs the `PlatformMediaResourceLoader` requests and their client callbacks. |
+| `FFmpegPresenter` | one per video pipeline (`FFmpegVideoPresenter.h`): reads the clock, takes the due frame from the decoder and hands it to the video overlay, then sleeps until the next frame is due (1-10 ms). The main thread only gets coalesced `callOnMainThread` events: a repaint when the page paints the video, the first frame of a position. |
 | `FFmpegDemuxer` | opens the input, then loops `av_read_frame` into the queues; handles seek requests; waits when the queues are full |
 | `FFmpegVideoDecoder` | packets → frames → BGRA |
 | `FFmpegAudioDecoder` | packets → float samples → ring buffer |
@@ -60,7 +62,7 @@ Only the foreground application is heard on the PS5, and the WebProcess is a pla
 
 `FFmpegAVClock.h`. Audio is the master when there is an audio stream, the sink is running and the rate is 1. The clock is the base pts of the first sample written since the last flush, plus the frames the sink consumed, divided by 48000, minus the sink latency: two SDL buffers for the local sink; for the remote sink, the frames sent but not yet retired by the server plus the server's two SDL buffers. The audio decoder keeps that timeline linear: it fills timestamp gaps with silence and trims to the seek target. In every other case the clock extrapolates monotonic time times the rate from the last anchor: no audio, audio ended before video, playback rate other than 1, or the silent sink after a failure. The extrapolated clock stalls while less than 0.1 s of data is demuxed ahead (buffering). The clock never goes backwards except across a seek.
 
-Each video frame waits until its pts is reached and is dropped if the next frame is also due. While paused or seeking, the first frame at the new position is shown at once. The decoder drops frames that are already 80 ms behind the clock before running swscale, still showing one in eight. After four consecutive late frames it turns on `skip_loop_filter` (no deblocking) until it catches up.
+Video frames are presented by the presenter thread, not the main thread: on the console, YouTube's page repaints starved an 8 ms main-thread tick to about 10 frames per second while 26 were decoded. Each frame waits until its pts is reached (5 ms early tolerance). A due frame is shown even when late, unless it is more than 1.5 frame intervals late and a newer frame is already decoded; then it is dropped (`FFmpegPresenterPolicy.h`). While paused or seeking, the first frame at the new position is shown at once. The presenter logs `presenter: due N shown N late-dropped N max lateness X ms` every 5 s while frames are due (` [mse]` for the MSE player). The clock (`FFmpegPlaybackClock`) is the `AVClock` behind a lock with the audio decoder and sink attached, so the presenter and `currentTime()` read the same position. The decoder drops frames that are already 80 ms behind the clock before running swscale, still showing one in eight. After four consecutive late frames it turns on `skip_loop_filter` (no deblocking) until it catches up.
 
 At rates other than 1 there is no time-stretching. The audio decoder discards samples, paced against the clock, and the sink plays silence. When the rate returns to 1, the ring buffer resynchronises at the next decoded frame.
 
@@ -81,7 +83,7 @@ At rates other than 1 there is no time-stretching. The audio decoder discards sa
 
 Frames are opaque BGRA from swscale, in `av_malloc` blocks whose rows are padded to 64 bytes plus a 256-byte tail (`videoFrameStride`/`videoFrameBytes` in `FFmpegPlaybackPolicy.h`): libswscale's x86 output loops store 8 pixels per iteration, and a tightly packed buffer of a width that is not a multiple of 8 was overrun after its last row, into the allocator's metadata. The colour matrix comes from the stream: BT.601, BT.709 or BT.2020, with full or limited range. Output is capped at 1920x1080, and the sample aspect ratio is applied. `paint()` and `nativeImageForCurrentTime()` wrap the current frame without copying, through `SkImages::RasterFromPixmap`. The `SkImage` holds a reference to the frame, and the decoder only reuses pool frames nobody else references. Rendering is software only: no `platformLayer()`, no accelerated compositing.
 
-On PlayStation the frames normally bypass page painting (the video overlay, `FFmpegVideoOverlay.h`): `paint()` clears the video box to transparent while the UI process shows the frames under the page, and each presented frame is copied into a shared-memory slot (or sent inline) by a per-player sender thread instead of repainting the element. `paintCurrentFrameInContext()` (canvas, snapshots) always draws the frame. `PROSPEROWEB_VIDEO_OVERLAY=0` restores per-frame page painting; see `docs/ps5-runtime.md` ("Video overlay").
+On PlayStation the frames normally bypass page painting (the video overlay, `FFmpegVideoOverlay.h`): `paint()` clears the video box to transparent while the UI process shows the frames under the page, and each presented frame is handed by the presenter thread to a per-player sender thread, which copies it into a shared-memory slot (or sends it inline), instead of repainting the element. With the overlay off the presenter asks the main thread for one repaint per shown frame. `paintCurrentFrameInContext()` (canvas, snapshots) always draws the frame. `PROSPEROWEB_VIDEO_OVERLAY=0` restores per-frame page painting; see `docs/ps5-runtime.md` ("Video overlay").
 
 ## Support
 
