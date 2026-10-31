@@ -160,5 +160,11 @@ inline bool mseShouldLogAppend(unsigned appendNumber, double secondsSinceSeek, b
     return !positionBuffered;
 }
 
+// A media segment that arrived in at least this many appends (YouTube
+// streams segments in 16-64 KiB pieces) is reported once per SourceBuffer.
+inline constexpr unsigned mseStreamedSegmentAppends = 8;
+// Partial data beyond this is reported: a segment that never completes.
+inline constexpr size_t msePendingWarningBytes = 4u << 20;
+
 } // namespace FFmpegMedia
 } // namespace WebCore

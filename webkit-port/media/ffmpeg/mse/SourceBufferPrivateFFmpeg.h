@@ -85,6 +85,8 @@ private:
     uint64_t m_lastContentSize { 0 };
     double m_appendFirst { 0 };
     double m_appendLast { 0 };
+    bool m_loggedStreamedSegment { false };
+    bool m_warnedPending { false };
 #if !RELEASE_LOG_DISABLED
     const Ref<const Logger> m_logger;
     const uint64_t m_logIdentifier;

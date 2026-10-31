@@ -6,8 +6,9 @@
 //  - ByteQueue: growable byte buffer with the read/seek semantics an
 //    AVIOContext needs;
 //  - SegmentScanner: splits appended ISO BMFF (fragmented MP4) or WebM bytes
-//    into complete initialization and media segments at top-level box /
-//    element boundaries, keeping partial data for the next append;
+//    into initialization and media segments at top-level box / element
+//    boundaries, keeping partial data for the next append and exposing the
+//    head of a fragment that is still arriving;
 //  - timestamp helpers: exact stream-timebase to (value, timescale)
 //    conversion, microsecond conversion, and filling missing durations.
 //
@@ -24,6 +25,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace WebCore {
@@ -115,6 +117,12 @@ enum class ByteStreamFormat { MP4, WebM };
 struct ByteStreamSegment {
     enum class Kind { Initialization, Media };
     Kind kind { Kind::Media };
+    // Media only. partial: the head of fragment `fragment` (still being
+    // received); its samples complete in `bytes` may be used, and a later
+    // partial or complete segment repeats them. Complete media: `fragment`
+    // is nonzero when its first fragment was emitted partially before.
+    bool partial { false };
+    uint64_t fragment { 0 };
     std::vector<uint8_t> bytes;
 };
 
@@ -211,27 +219,45 @@ inline ParseStatus readEBMLHeader(const uint8_t* p, size_t available, EBMLHeader
     return ParseStatus::Ok;
 }
 
-// Splits an appended byte stream into complete segments.
+// Splits an appended byte stream into initialization and media segments.
 //  MP4:  ftyp ... moov  -> initialization segment (only ftyp and moov kept);
-//        moof + mdat    -> media data, emitted per append (styp, sidx, ssix,
-//                          prft, emsg, free, skip, mfra are dropped).
+//        moof + mdat    -> media data (styp, sidx, ssix, prft, emsg, free,
+//                          skip, mfra and other boxes are dropped).
 //  WebM: EBML header + Segment header + Info + Tracks -> initialization
 //        segment (SeekHead, Void, Tags, ... dropped: their offsets would not
 //        match); Cluster (known or unknown size) -> media data; Cues and other
 //        level-1 elements after the Tracks are dropped.
+// Complete fragments (moof + mdat, or a whole Cluster) of one append are
+// emitted together as one Media segment. A fragment still being received
+// (players that stream a segment in many small appends, e.g. YouTube) is
+// additionally emitted as a `partial` Media segment whenever at least
+// `partialStep` new bytes arrived: moof + the mdat received so far, or the
+// Cluster header + its complete children, so its first samples become
+// buffered before the last byte of the fragment arrives. The parser keeps
+// count of what it already took from fragment `fragment` (see
+// ByteStreamSegment). Partial data is held in one buffer per fragment and
+// never dropped; only resetParserState() discards it.
 // A media segment before any initialization segment is an error, as is a
 // malformed box or element.
 class SegmentScanner {
 public:
-    explicit SegmentScanner(ByteStreamFormat format)
+    static constexpr size_t defaultPartialStep = 64 * 1024;
+
+    explicit SegmentScanner(ByteStreamFormat format, size_t partialStep = defaultPartialStep)
         : m_format(format)
+        , m_partialStep(partialStep ? partialStep : 1)
     {
     }
 
     ByteStreamFormat format() const { return m_format; }
     bool hasInitializationSegment() const { return m_hasInitialization; }
-    size_t pendingBytes() const { return m_pending.size() + m_partialMedia.size(); }
+    size_t pendingBytes() const { return m_pending.size() + m_fragment.size(); }
     const std::string& error() const { return m_error; }
+
+    // Diagnostics of the fragment completed last: how many appends carried
+    // its bytes, and its size.
+    unsigned lastFragmentAppends() const { return m_lastFragmentAppends; }
+    size_t lastFragmentBytes() const { return m_lastFragmentBytes; }
 
     // Returns false on a parse error (error() says why); segments completed
     // before the error are still appended to `out`.
@@ -239,14 +265,15 @@ public:
     {
         if (!m_error.empty())
             return false;
+        m_lastFragmentAppends = 0;
+        m_lastFragmentBytes = 0;
+        if (m_fragmentOpen)
+            ++m_fragmentAppends;
         m_pending.append(data, size);
         bool ok = m_format == ByteStreamFormat::MP4 ? scanMP4(out) : scanWebM(out);
-        if (!m_media.empty()) {
-            ByteStreamSegment segment;
-            segment.kind = ByteStreamSegment::Kind::Media;
-            segment.bytes.swap(m_media);
-            out.push_back(segment);
-        }
+        flushMedia(out);
+        if (ok)
+            emitPartial(out);
         return ok;
     }
 
@@ -255,8 +282,9 @@ public:
     void reset()
     {
         m_pending.clear();
-        m_partialMedia.clear();
+        closeFragment();
         m_media.clear();
+        m_mediaContinues = 0;
         m_init.clear();
         m_inInitialization = false;
         m_inSegment = false;
@@ -271,22 +299,30 @@ private:
     {
         m_error = message;
         m_pending.clear();
+        closeFragment();
         return false;
+    }
+
+    void flushMedia(std::vector<ByteStreamSegment>& out)
+    {
+        if (m_media.empty())
+            return;
+        ByteStreamSegment segment;
+        segment.kind = ByteStreamSegment::Kind::Media;
+        segment.fragment = m_mediaContinues;
+        segment.bytes.swap(m_media);
+        out.push_back(std::move(segment));
+        m_mediaContinues = 0;
     }
 
     void emitInitialization(std::vector<ByteStreamSegment>& out)
     {
         // Media of the previous initialization segment goes first.
-        if (!m_media.empty()) {
-            ByteStreamSegment media;
-            media.kind = ByteStreamSegment::Kind::Media;
-            media.bytes.swap(m_media);
-            out.push_back(media);
-        }
+        flushMedia(out);
         ByteStreamSegment segment;
         segment.kind = ByteStreamSegment::Kind::Initialization;
         segment.bytes.swap(m_init);
-        out.push_back(segment);
+        out.push_back(std::move(segment));
         m_inInitialization = false;
         m_hasInitialization = true;
     }
@@ -297,9 +333,85 @@ private:
         m_pending.consume(count);
     }
 
+    // MARK: Fragment in progress
+
+    void openFragment()
+    {
+        closeFragment();
+        m_fragmentOpen = true;
+        m_fragmentSerial = ++m_serials;
+        m_fragmentAppends = 1;
+    }
+
+    void closeFragment()
+    {
+        m_fragment.clear();
+        m_fragmentOpen = false;
+        m_fragmentPartialEmitted = false;
+        m_fragmentPartialSize = 0;
+        m_fragmentRemaining = 0;
+        m_fragmentUnknownSize = false;
+        m_fragmentDataStarted = false;
+        m_fragmentHeaderSize = 0;
+        m_childrenEnd = 0;
+    }
+
+    // The fragment is complete: move it to the media of this append.
+    void completeFragment()
+    {
+        if (m_media.empty() && m_fragmentPartialEmitted)
+            m_mediaContinues = m_fragmentSerial;
+        m_lastFragmentAppends = m_fragmentAppends;
+        m_lastFragmentBytes = m_fragment.size();
+        m_media.insert(m_media.end(), m_fragment.begin(), m_fragment.end());
+        closeFragment();
+    }
+
+    void emitPartial(std::vector<ByteStreamSegment>& out)
+    {
+        if (!m_fragmentOpen || !m_fragmentDataStarted)
+            return;
+        size_t usable = m_format == ByteStreamFormat::MP4 ? m_fragment.size() : m_childrenEnd;
+        // Step grows with the fragment, so a large fragment arriving in tiny
+        // appends is demuxed O(log) rather than O(appends) times.
+        size_t step = std::max(m_partialStep, m_fragmentPartialSize / 4);
+        if (usable <= m_fragmentHeaderSize || usable < m_fragmentPartialSize + step)
+            return;
+        ByteStreamSegment segment;
+        segment.kind = ByteStreamSegment::Kind::Media;
+        segment.partial = true;
+        segment.fragment = m_fragmentSerial;
+        segment.bytes.assign(m_fragment.begin(), m_fragment.begin() + static_cast<std::ptrdiff_t>(usable));
+        out.push_back(std::move(segment));
+        m_fragmentPartialEmitted = true;
+        m_fragmentPartialSize = usable;
+    }
+
+    // MARK: MP4
+
     bool scanMP4(std::vector<ByteStreamSegment>& out)
     {
-        while (m_pending.size() >= 8) {
+        while (true) {
+            if (m_skipRemaining) {
+                size_t count = static_cast<size_t>(std::min<uint64_t>(m_skipRemaining, m_pending.size()));
+                m_pending.consume(count);
+                m_skipRemaining -= count;
+                if (m_skipRemaining)
+                    return true;
+                continue;
+            }
+            if (m_fragmentOpen && m_fragmentDataStarted) {
+                // mdat payload of the current fragment.
+                size_t count = static_cast<size_t>(std::min<uint64_t>(m_fragmentRemaining, m_pending.size()));
+                take(m_fragment, count);
+                m_fragmentRemaining -= count;
+                if (m_fragmentRemaining)
+                    return true;
+                completeFragment();
+                continue;
+            }
+            if (m_pending.size() < 8)
+                return true;
             const uint8_t* p = m_pending.data();
             uint64_t size = readBigEndian32(p);
             uint32_t type = readBigEndian32(p + 4);
@@ -315,40 +427,55 @@ private:
                 return fail("MP4 box smaller than its header");
             if (size > maxElementSize)
                 return fail("MP4 box larger than 1 GiB");
-            if (m_pending.size() < size)
-                return true;
 
-            if (type == fourCC("ftyp")) {
-                m_init.clear();
-                m_partialMedia.clear();
-                m_inInitialization = true;
-                take(m_init, size);
-            } else if (type == fourCC("moov")) {
-                if (!m_inInitialization)
-                    m_init.clear();
-                take(m_init, size);
-                emitInitialization(out);
-            } else if (type == fourCC("moof")) {
+            if (type == fourCC("mdat")) {
                 if (!m_hasInitialization || m_inInitialization)
                     return fail("media segment before the initialization segment");
-                m_partialMedia.clear();
-                take(m_partialMedia, size);
-            } else if (type == fourCC("mdat")) {
-                if (!m_hasInitialization || m_inInitialization)
-                    return fail("media segment before the initialization segment");
-                if (m_partialMedia.empty()) {
+                if (!m_fragmentOpen) {
                     // mdat without a moof: nothing references it.
-                    m_pending.consume(size);
+                    m_skipRemaining = size;
                     continue;
                 }
-                m_media.insert(m_media.end(), m_partialMedia.begin(), m_partialMedia.end());
-                m_partialMedia.clear();
-                take(m_media, size);
-            } else
-                m_pending.consume(size);
+                // Streamed into the fragment as it arrives.
+                take(m_fragment, headerLength);
+                m_fragmentHeaderSize = m_fragment.size();
+                m_fragmentRemaining = size - headerLength;
+                m_fragmentDataStarted = true;
+                continue;
+            }
+
+            bool initialization = type == fourCC("ftyp") || type == fourCC("moov");
+            if (type == fourCC("moof") || initialization) {
+                if (m_pending.size() < size)
+                    return true;
+            } else {
+                // Anything else is skipped, possibly across appends.
+                m_skipRemaining = size;
+                continue;
+            }
+
+            if (type == fourCC("ftyp")) {
+                closeFragment();
+                m_init.clear();
+                m_inInitialization = true;
+                take(m_init, static_cast<size_t>(size));
+            } else if (type == fourCC("moov")) {
+                closeFragment();
+                if (!m_inInitialization)
+                    m_init.clear();
+                take(m_init, static_cast<size_t>(size));
+                emitInitialization(out);
+            } else {
+                if (!m_hasInitialization || m_inInitialization)
+                    return fail("media segment before the initialization segment");
+                // A moof without its mdat is superseded by the next one.
+                openFragment();
+                take(m_fragment, static_cast<size_t>(size));
+            }
         }
-        return true;
     }
+
+    // MARK: WebM
 
     bool isLevelOneElement(uint32_t id) const
     {
@@ -362,37 +489,71 @@ private:
             || id == WebMID::SimpleBlock || id == WebMID::BlockGroup || id == WebMID::EncryptedBlock || id == WebMID::Void || id == WebMID::CRC32;
     }
 
-    // Length of an unknown-size cluster starting at the front of m_pending,
-    // or 0 while its end is not known yet.
-    size_t unknownSizeClusterLength(size_t headerLength, ParseStatus& status) const
+    // Known-size cluster: advances m_childrenEnd over the complete children
+    // received so far. Children that do not parse only stop the partial
+    // emission; the whole cluster still goes to the demuxer once complete.
+    void advanceKnownSizeChildren()
     {
-        const uint8_t* p = m_pending.data();
-        size_t available = m_pending.size();
-        size_t offset = headerLength;
-        status = ParseStatus::Ok;
-        while (offset < available) {
+        while (m_childrenEnd < m_fragment.size()) {
             EBMLHeader child;
-            auto result = readEBMLHeader(p + offset, available - offset, child);
-            if (result == ParseStatus::NeedMoreData)
-                return 0;
-            if (result == ParseStatus::Invalid) {
-                status = ParseStatus::Invalid;
-                return 0;
-            }
-            if (!isClusterChild(child.id))
-                return offset;
-            if (child.unknownSize || child.size > maxElementSize) {
-                status = ParseStatus::Invalid;
-                return 0;
-            }
-            offset += child.headerLength + child.size;
+            auto status = readEBMLHeader(m_fragment.data() + m_childrenEnd, m_fragment.size() - m_childrenEnd, child);
+            if (status != ParseStatus::Ok || !isClusterChild(child.id) || child.unknownSize || child.size > maxElementSize)
+                return;
+            uint64_t end = m_childrenEnd + child.headerLength + child.size;
+            if (end > m_fragment.size())
+                return;
+            m_childrenEnd = static_cast<size_t>(end);
         }
-        return 0;
+    }
+
+    // Unknown-size cluster: takes its complete children from m_pending. It
+    // ends at the first element that is not a cluster child.
+    bool scanUnknownSizeCluster()
+    {
+        while (!m_pending.empty()) {
+            EBMLHeader child;
+            auto status = readEBMLHeader(m_pending.data(), m_pending.size(), child);
+            if (status == ParseStatus::NeedMoreData)
+                return true;
+            if (status == ParseStatus::Invalid)
+                return fail("malformed WebM cluster");
+            if (!isClusterChild(child.id)) {
+                completeFragment();
+                return true;
+            }
+            if (child.unknownSize || child.size > maxElementSize)
+                return fail("malformed WebM cluster");
+            uint64_t total = child.headerLength + child.size;
+            if (m_pending.size() < total)
+                return true;
+            take(m_fragment, static_cast<size_t>(total));
+            m_childrenEnd = m_fragment.size();
+        }
+        return true;
     }
 
     bool scanWebM(std::vector<ByteStreamSegment>& out)
     {
-        while (!m_pending.empty()) {
+        while (true) {
+            if (m_fragmentOpen) {
+                if (m_fragmentUnknownSize) {
+                    if (!scanUnknownSizeCluster())
+                        return false;
+                    if (m_fragmentOpen)
+                        return true;
+                    continue;
+                }
+                size_t count = static_cast<size_t>(std::min<uint64_t>(m_fragmentRemaining, m_pending.size()));
+                take(m_fragment, count);
+                m_fragmentRemaining -= count;
+                advanceKnownSizeChildren();
+                if (m_fragmentRemaining)
+                    return true;
+                completeFragment();
+                continue;
+            }
+            if (m_pending.empty())
+                return true;
             if (m_skipRemaining) {
                 size_t count = static_cast<size_t>(std::min<uint64_t>(m_skipRemaining, m_pending.size()));
                 m_pending.consume(count);
@@ -419,21 +580,17 @@ private:
             if (header.id == WebMID::Cluster) {
                 if (!m_hasInitialization || m_inInitialization)
                     return fail("media segment before the initialization segment");
-                if (header.unknownSize) {
-                    ParseStatus clusterStatus;
-                    size_t length = unknownSizeClusterLength(header.headerLength, clusterStatus);
-                    if (clusterStatus == ParseStatus::Invalid)
-                        return fail("malformed WebM cluster");
-                    if (!length)
-                        return true;
-                    take(m_media, length);
-                    continue;
-                }
-                if (header.size > maxElementSize)
+                if (!header.unknownSize && header.size > maxElementSize)
                     return fail("WebM cluster larger than 1 GiB");
-                if (m_pending.size() < total)
-                    return true;
-                take(m_media, static_cast<size_t>(total));
+                openFragment();
+                take(m_fragment, header.headerLength);
+                m_fragmentHeaderSize = m_fragment.size();
+                m_childrenEnd = m_fragment.size();
+                m_fragmentDataStarted = true;
+                m_fragmentUnknownSize = header.unknownSize;
+                m_fragmentRemaining = header.unknownSize ? 0 : header.size;
+                if (!header.unknownSize && !header.size)
+                    completeFragment();
                 continue;
             }
 
@@ -465,18 +622,31 @@ private:
                 return fail("unexpected WebM element");
             // Everything else (SeekHead, Void, Cues, Tags, ...) is skipped,
             // possibly across appends.
-            size_t now = static_cast<size_t>(std::min<uint64_t>(total, m_pending.size()));
-            m_pending.consume(now);
-            m_skipRemaining = total - now;
+            m_skipRemaining = total;
         }
-        return true;
     }
 
     const ByteStreamFormat m_format;
+    const size_t m_partialStep;
     ByteQueue m_pending;
     std::vector<uint8_t> m_init;
-    std::vector<uint8_t> m_partialMedia; // MP4: a moof waiting for its mdat
     std::vector<uint8_t> m_media; // complete media data of the current append
+    uint64_t m_mediaContinues { 0 }; // fragment serial m_media starts with, if partially emitted
+    // The fragment being received: moof + mdat so far, or a Cluster.
+    std::vector<uint8_t> m_fragment;
+    bool m_fragmentOpen { false };
+    bool m_fragmentDataStarted { false }; // mdat header / Cluster header taken
+    bool m_fragmentUnknownSize { false };
+    bool m_fragmentPartialEmitted { false };
+    uint64_t m_fragmentRemaining { 0 };
+    size_t m_fragmentHeaderSize { 0 }; // bytes before the first sample data
+    size_t m_fragmentPartialSize { 0 }; // size of the last partial emission
+    size_t m_childrenEnd { 0 }; // WebM: end of the complete cluster children
+    uint64_t m_fragmentSerial { 0 };
+    uint64_t m_serials { 0 };
+    unsigned m_fragmentAppends { 0 };
+    unsigned m_lastFragmentAppends { 0 };
+    size_t m_lastFragmentBytes { 0 };
     uint64_t m_skipRemaining { 0 };
     bool m_inInitialization { false };
     bool m_inSegment { false };

@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Parser of one MSE SourceBuffer's byte stream (fragmented MP4 or WebM).
-// SegmentScanner cuts the appended bytes into complete initialization and
-// media segments; each initialization segment is opened with libavformat
-// (mov or matroska demuxer) to describe the tracks, and each batch of media
-// segments is demuxed together with the current initialization segment from
-// an in-memory AVIOContext. libavformat thus always sees a complete, seekable
-// file and never waits for data; demuxing is synchronous on the caller's
-// thread.
+// SegmentScanner cuts the appended bytes into initialization and media
+// segments; each initialization segment is opened with libavformat (mov or
+// matroska demuxer) to describe the tracks, and each batch of media segments
+// is demuxed together with the current initialization segment from an
+// in-memory AVIOContext. libavformat thus always sees a seekable file and
+// never waits for data; demuxing is synchronous on the caller's thread.
+// A fragment streamed in many small appends is also demuxed while it
+// arrives: samples whose bytes are complete are emitted at once, and are
+// skipped when the fragment is demuxed again (per track, the samples taken
+// so far are a prefix of the fragment's samples).
 //
 // Uses only ffmpeg and the C++ library (no WebCore/WTF), so it also runs in
 // a host harness linked against a desktop libavformat.
@@ -62,7 +65,8 @@ public:
 
 class FFmpegAppendParser {
 public:
-    explicit FFmpegAppendParser(FFmpegMedia::ByteStreamFormat);
+    // partialStep: see SegmentScanner (tests use small steps).
+    explicit FFmpegAppendParser(FFmpegMedia::ByteStreamFormat, size_t partialStep = FFmpegMedia::SegmentScanner::defaultPartialStep);
     ~FFmpegAppendParser();
 
     // Parses `size` more bytes; returns false on a parse error (error()).
@@ -77,10 +81,16 @@ public:
     size_t pendingBytes() const { return m_scanner.pendingBytes(); }
 
     unsigned lastAppendSamples() const { return m_lastAppendSamples; }
+    // Of the last append: samples of fragments still being received.
+    unsigned lastAppendPartialSamples() const { return m_lastAppendPartialSamples; }
+    // The fragment the last append completed: appends that carried it, and
+    // its size (0 when the append completed none).
+    unsigned lastCompletedFragmentAppends() const { return m_scanner.lastFragmentAppends(); }
+    size_t lastCompletedFragmentBytes() const { return m_scanner.lastFragmentBytes(); }
 
 private:
     bool parseInitialization(const std::vector<uint8_t>&, FFmpegAppendParserClient&);
-    bool demuxMedia(const std::vector<uint8_t>&, FFmpegAppendParserClient&);
+    bool demuxMedia(const FFmpegMedia::ByteStreamSegment&, FFmpegAppendParserClient&);
     const AVInputFormat* inputFormat() const;
 
     const FFmpegMedia::ByteStreamFormat m_format;
@@ -89,6 +99,11 @@ private:
     FFmpegParsedInitializationSegment m_current;
     std::string m_error;
     unsigned m_lastAppendSamples { 0 };
+    unsigned m_lastAppendPartialSamples { 0 };
+    // Samples per track (index into m_current.tracks) already emitted from
+    // the fragment the scanner numbered m_partialFragment.
+    uint64_t m_partialFragment { 0 };
+    std::vector<size_t> m_partialTaken;
 };
 
 } // namespace WebCore

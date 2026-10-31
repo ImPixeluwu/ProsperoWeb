@@ -126,9 +126,9 @@ FFmpegParsedTrack::~FFmpegParsedTrack()
         avcodec_parameters_free(&parameters);
 }
 
-FFmpegAppendParser::FFmpegAppendParser(FFmpegMedia::ByteStreamFormat format)
+FFmpegAppendParser::FFmpegAppendParser(FFmpegMedia::ByteStreamFormat format, size_t partialStep)
     : m_format(format)
-    , m_scanner(format)
+    , m_scanner(format, partialStep)
 {
 }
 
@@ -143,18 +143,21 @@ void FFmpegAppendParser::reset()
 {
     m_scanner.reset();
     m_error.clear();
+    m_partialFragment = 0;
+    m_partialTaken.clear();
 }
 
 bool FFmpegAppendParser::append(const uint8_t* data, size_t size, FFmpegAppendParserClient& client)
 {
     m_lastAppendSamples = 0;
+    m_lastAppendPartialSamples = 0;
     m_error.clear();
     std::vector<FFmpegMedia::ByteStreamSegment> segments;
     bool scanned = m_scanner.append(data, size, segments);
     for (auto& segment : segments) {
         bool ok = segment.kind == FFmpegMedia::ByteStreamSegment::Kind::Initialization
             ? parseInitialization(segment.bytes, client)
-            : demuxMedia(segment.bytes, client);
+            : demuxMedia(segment, client);
         if (!ok)
             return false;
     }
@@ -215,6 +218,8 @@ bool FFmpegAppendParser::parseInitialization(const std::vector<uint8_t>& bytes, 
     }
 
     m_initialization = bytes;
+    m_partialFragment = 0;
+    m_partialTaken.clear();
     m_current.tracks.clear();
     for (auto& track : segment.tracks)
         m_current.tracks.push_back(track);
@@ -223,23 +228,38 @@ bool FFmpegAppendParser::parseInitialization(const std::vector<uint8_t>& bytes, 
     return true;
 }
 
-bool FFmpegAppendParser::demuxMedia(const std::vector<uint8_t>& bytes, FFmpegAppendParserClient& client)
+bool FFmpegAppendParser::demuxMedia(const FFmpegMedia::ByteStreamSegment& segment, FFmpegAppendParserClient& client)
 {
+    const bool partial = segment.partial;
     if (m_initialization.empty()) {
         m_error = "media segment before the initialization segment";
         return false;
     }
+    // Samples of a partially emitted fragment that were already delivered.
+    std::vector<size_t> skip(m_current.tracks.size(), 0);
+    if (segment.fragment && segment.fragment == m_partialFragment) {
+        for (size_t t = 0; t < skip.size() && t < m_partialTaken.size(); ++t)
+            skip[t] = m_partialTaken[t];
+    }
+    if (!partial) {
+        m_partialFragment = 0;
+        m_partialTaken.clear();
+    }
+
     const AVInputFormat* format = inputFormat();
     // Matroska would follow SeekHead/Cues offsets of the original file on a
     // seekable input; the concatenated segment is read front to back.
-    MemoryDemuxer demuxer(m_initialization, &bytes, m_format == FFmpegMedia::ByteStreamFormat::MP4);
+    MemoryDemuxer demuxer(m_initialization, &segment.bytes, m_format == FFmpegMedia::ByteStreamFormat::MP4);
     int result = demuxer.open(format);
     if (result < 0) {
+        if (partial)
+            return true; // retried with more data
         char buffer[AV_ERROR_MAX_STRING_SIZE] = { };
         m_error = std::string("media segment: ") + errorText(result, buffer);
         return false;
     }
     auto* context = demuxer.context();
+    const int64_t inputSize = static_cast<int64_t>(m_initialization.size() + segment.bytes.size());
 
     // stream index -> track of the current initialization segment
     std::vector<int> trackForStream(context->nb_streams, -1);
@@ -256,8 +276,11 @@ bool FFmpegAppendParser::demuxMedia(const std::vector<uint8_t>& bytes, FFmpegApp
     struct Collected {
         int track;
         AVPacket* packet;
+        bool hadDuration;
     };
     std::vector<Collected> collected;
+    // Partial: a track stops at its first sample that is not complete.
+    std::vector<bool> trackStopped(m_current.tracks.size(), false);
     AVPacket* packet = av_packet_alloc();
     if (!packet) {
         m_error = "out of memory";
@@ -272,6 +295,17 @@ bool FFmpegAppendParser::demuxMedia(const std::vector<uint8_t>& bytes, FFmpegApp
             break;
         }
         int track = packet->stream_index >= 0 && static_cast<unsigned>(packet->stream_index) < trackForStream.size() ? trackForStream[packet->stream_index] : -1;
+        if (track >= 0 && partial) {
+            // A sample cut by the end of the data is read short (and may not
+            // be flagged corrupt): one reaching the end is not trusted yet.
+            bool complete = !(packet->flags & AV_PKT_FLAG_CORRUPT) && packet->pos >= 0 && packet->pos + packet->size < inputSize;
+            if (!complete)
+                trackStopped[track] = true;
+            if (trackStopped[track]) {
+                av_packet_unref(packet);
+                continue;
+            }
+        }
         if (track < 0 || (packet->flags & AV_PKT_FLAG_CORRUPT) || (packet->dts == AV_NOPTS_VALUE && packet->pts == AV_NOPTS_VALUE)) {
             av_packet_unref(packet);
             continue;
@@ -286,10 +320,12 @@ bool FFmpegAppendParser::demuxMedia(const std::vector<uint8_t>& bytes, FFmpegApp
             break;
         }
         av_packet_move_ref(owned, packet);
-        collected.push_back({ track, owned });
+        collected.push_back({ track, owned, owned->duration > 0 });
     }
     av_packet_free(&packet);
 
+    std::vector<size_t> taken(m_current.tracks.size(), 0);
+    std::vector<bool> emit(collected.size(), false);
     for (size_t t = 0; t < m_current.tracks.size(); ++t) {
         auto& track = m_current.tracks[t];
         std::vector<FFmpegMedia::SampleTiming> timings;
@@ -309,17 +345,45 @@ bool FFmpegAppendParser::demuxMedia(const std::vector<uint8_t>& bytes, FFmpegApp
         }
         int64_t fallback = track.timeBase.num > 0 ? std::max<int64_t>(1, std::llround(fallbackSeconds * track.timeBase.den / track.timeBase.num)) : 1;
         FFmpegMedia::fillMissingDurations(timings, fallback);
-        size_t index = 0;
-        for (auto& entry : collected) {
-            if (entry.track == static_cast<int>(t))
-                entry.packet->duration = timings[index++].duration;
+        // Partial: the last sample's duration needs the next one's decode
+        // time unless the container gave it.
+        size_t usable = timings.size();
+        if (partial && !collected.empty()) {
+            for (auto it = collected.rbegin(); it != collected.rend(); ++it) {
+                if (it->track == static_cast<int>(t)) {
+                    if (!it->hadDuration)
+                        --usable;
+                    break;
+                }
+            }
         }
+        size_t index = 0;
+        for (size_t i = 0; i < collected.size(); ++i) {
+            auto& entry = collected[i];
+            if (entry.track != static_cast<int>(t))
+                continue;
+            entry.packet->duration = timings[index].duration;
+            emit[i] = index >= skip[t] && index < usable;
+            ++index;
+        }
+        taken[t] = std::max(skip[t], usable);
     }
 
-    for (auto& entry : collected) {
-        client.appendParserDidParseSample(m_current.tracks[entry.track], entry.packet);
+    unsigned emitted = 0;
+    for (size_t i = 0; i < collected.size(); ++i) {
+        auto& entry = collected[i];
+        if (emit[i]) {
+            client.appendParserDidParseSample(m_current.tracks[entry.track], entry.packet);
+            ++emitted;
+        }
         av_packet_free(&entry.packet);
-        ++m_lastAppendSamples;
+    }
+    m_lastAppendSamples += emitted;
+    if (partial) {
+        m_lastAppendPartialSamples += emitted;
+        m_partialFragment = segment.fragment;
+        m_partialTaken = taken;
+        return true;
     }
 
     if (readError && collected.empty()) {

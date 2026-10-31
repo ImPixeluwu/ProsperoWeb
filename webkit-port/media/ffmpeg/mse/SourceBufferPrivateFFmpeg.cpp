@@ -165,6 +165,17 @@ Ref<MediaPromise> SourceBufferPrivateFFmpeg::appendInternal(Ref<SharedBuffer>&& 
     }
 
     unsigned samples = m_parser.lastAppendSamples();
+    unsigned fragmentAppends = m_parser.lastCompletedFragmentAppends();
+    if (!m_loggedStreamedSegment && fragmentAppends >= FFmpegMedia::mseStreamedSegmentAppends) {
+        m_loggedStreamedSegment = true;
+        ffmpegMediaLog("mse: #%u segment completed after %u appends (%zu bytes)", m_identifier, fragmentAppends, m_parser.lastCompletedFragmentBytes());
+    }
+    size_t pending = m_parser.pendingBytes();
+    if (!m_warnedPending && pending > FFmpegMedia::msePendingWarningBytes) {
+        m_warnedPending = true;
+        ffmpegMediaLog("mse: #%u warning: %zu KiB of an incomplete segment pending", m_identifier, pending >> 10);
+    } else if (m_warnedPending && pending <= FFmpegMedia::msePendingWarningBytes / 2)
+        m_warnedPending = false;
     double sinceSeek = m_seekAt < 0 ? -1 : MonotonicTime::now().secondsSinceEpoch().seconds() - m_seekAt;
     bool positionBuffered = true;
     if (RefPtr mediaSource = m_mediaSource.get()) {
@@ -173,11 +184,11 @@ Ref<MediaPromise> SourceBufferPrivateFFmpeg::appendInternal(Ref<SharedBuffer>&& 
     }
     if (FFmpegMedia::mseShouldLogAppend(m_appends, sinceSeek, positionBuffered) || !samples) {
         if (samples)
-            ffmpegMediaLog("mse: #%u append %zu bytes -> %u samples (%.3f-%.3f), buffer %llu KiB of %zu KiB, %llu KiB appended in %u appends",
-                m_identifier, bytes.size(), samples, m_appendFirst, m_appendLast, static_cast<unsigned long long>(contentSize >> 10),
-                platformMaximumBufferSize() >> 10, static_cast<unsigned long long>(m_bytesAppended >> 10), m_appends);
+            ffmpegMediaLog("mse: #%u append %zu bytes -> %u samples%s (%.3f-%.3f), buffer %llu KiB of %zu KiB, %llu KiB appended in %u appends",
+                m_identifier, bytes.size(), samples, m_parser.lastAppendPartialSamples() == samples ? " of a partial segment" : "", m_appendFirst, m_appendLast,
+                static_cast<unsigned long long>(contentSize >> 10), platformMaximumBufferSize() >> 10, static_cast<unsigned long long>(m_bytesAppended >> 10), m_appends);
         else
-            ffmpegMediaLog("mse: #%u append %zu bytes -> no samples (%zu bytes pending)", m_identifier, bytes.size(), m_parser.pendingBytes());
+            ffmpegMediaLog("mse: #%u append %zu bytes -> no samples (%zu bytes pending)", m_identifier, bytes.size(), pending);
     }
     return MediaPromise::createAndResolve();
 }
