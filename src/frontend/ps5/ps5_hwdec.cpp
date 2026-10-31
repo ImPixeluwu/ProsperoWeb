@@ -36,6 +36,25 @@ int sceKernelMapNamedFlexibleMemory(void** addr, std::size_t len, int prot, int 
 int sceKernelMunmap(void* addr, std::size_t len);
 }
 
+#if PROSPEROWEB_NATIVE_TITLE
+// The native title imports the decoder by NID like the references do (a
+// title has no runtime loader for dlsym by name): the link stub is
+// src/frontend/ps5/native/videodec2_stub.c, the module is loaded with
+// sceSysmoduleLoadModule before the first call.
+extern "C" {
+int sceSysmoduleLoadModule(std::uint16_t id);
+int sceVideodec2QueryComputeMemoryInfo(void* info);
+int sceVideodec2AllocateComputeQueue(const void* config, const void* memory, void** queue);
+int sceVideodec2ReleaseComputeQueue(void* queue);
+int sceVideodec2QueryDecoderMemoryInfo(const void* config, void* memory);
+int sceVideodec2CreateDecoder(const void* config, const void* memory, void** decoder);
+int sceVideodec2DeleteDecoder(void* decoder);
+int sceVideodec2Decode(void* decoder, const void* input, void* frame, void* output);
+int sceVideodec2Flush(void* decoder, void* frame, void* output);
+int sceVideodec2Reset(void* decoder);
+}
+#endif
+
 namespace prosperoweb::frontend {
 
 namespace {
@@ -317,6 +336,7 @@ int query_memory(DecoderConfigInfo& config, DecoderMemoryInfo& memory) {
   return rc;
 }
 
+#if !PROSPEROWEB_NATIVE_TITLE
 template <typename T>
 bool resolve(void* lib, const char* name, T& out) {
   out = reinterpret_cast<T>(dlsym(lib, name));
@@ -325,6 +345,7 @@ bool resolve(void* lib, const char* name, T& out) {
   }
   return out != nullptr;
 }
+#endif
 
 std::uint64_t decoder_affinity() {
   cpu::CpuMask mask;
@@ -641,6 +662,7 @@ std::string ptr(const void* p) {
   return text;
 }
 
+#if !PROSPEROWEB_NATIVE_TITLE
 // dlopen as a watched call.
 void* load_library(video::HwdecProbe& probe, const char* name) {
   void* handle = nullptr;
@@ -656,6 +678,7 @@ void* load_library(video::HwdecProbe& probe, const char* name) {
   });
   return handle;
 }
+#endif
 
 // Direct memory for the compute queue, each kernel call watched.
 bool queue_memory(video::HwdecProbe& probe, Mem& m, std::size_t len) {
@@ -753,6 +776,12 @@ bool cache_memory_answers(video::HwdecProbe& probe) {
 // title had been given full access (src/platform_ps5.c). hbldr gives this
 // process uid 0, every capability and no jail before main() runs.
 void log_process_identity() {
+#if PROSPEROWEB_NATIVE_TITLE
+  // A title has no kernel R/W (the payload crt's kernel_* helpers are not
+  // linked); it runs with the application credentials the system gave it.
+  log_printf("hwdec: process uid %u euid %u (native title, application credentials)",
+             static_cast<unsigned>(getuid()), static_cast<unsigned>(geteuid()));
+#else
   const pid_t self = getpid();
   std::uint8_t caps[16] = {};
   std::string caps_hex = "?";
@@ -773,6 +802,7 @@ void log_process_identity() {
              static_cast<std::uint64_t>(kernel_get_ucred_authid(self)), caps_hex.c_str(),
              jail ? "set" : "none", root == kernel_get_root_vnode() ? "/" : "other",
              static_cast<unsigned>(kernel_get_fw_version()));
+#endif
 }
 
 // The probe body: libraries, functions, the shared compute queue, memory
@@ -780,9 +810,40 @@ void log_process_identity() {
 // libraries in the process before the decoder's (all four have libSceAgc
 // and libSceAgcDriver among the title's own imports), the decoder's system
 // module, then the queue in 16 KiB-aligned CPU+GPU direct memory of type 12.
-bool probe_body(video::HwdecProbe& probe) {
-  State& s = state();
-  log_process_identity();
+#if PROSPEROWEB_NATIVE_TITLE
+// The native title: sysmodule 207, then the imported functions (VLC for
+// PS5's order: the library and its compute queue before anything else in
+// the process, ZiZc3/VLC src/platform_ps5.c).
+bool load_api(video::HwdecProbe& probe, Api& api) {
+  const int rc = probe.call("sceSysmoduleLoadModule", std::to_string(kSysmoduleVideodec2),
+                            [&](std::string&) { return sceSysmoduleLoadModule(kSysmoduleVideodec2); });
+  if (rc != 0) {
+    probe.fail("sysmodule " + std::to_string(kSysmoduleVideodec2) + " " +
+               hex(static_cast<std::uint32_t>(rc)));
+    return false;
+  }
+  api.query_compute_memory = reinterpret_cast<decltype(api.query_compute_memory)>(
+      &sceVideodec2QueryComputeMemoryInfo);
+  api.allocate_compute_queue = reinterpret_cast<decltype(api.allocate_compute_queue)>(
+      &sceVideodec2AllocateComputeQueue);
+  api.release_compute_queue = reinterpret_cast<decltype(api.release_compute_queue)>(
+      &sceVideodec2ReleaseComputeQueue);
+  api.query_decoder_memory = reinterpret_cast<decltype(api.query_decoder_memory)>(
+      &sceVideodec2QueryDecoderMemoryInfo);
+  api.create_decoder =
+      reinterpret_cast<decltype(api.create_decoder)>(&sceVideodec2CreateDecoder);
+  api.delete_decoder =
+      reinterpret_cast<decltype(api.delete_decoder)>(&sceVideodec2DeleteDecoder);
+  api.decode = reinterpret_cast<decltype(api.decode)>(&sceVideodec2Decode);
+  api.flush = reinterpret_cast<decltype(api.flush)>(&sceVideodec2Flush);
+  api.reset = reinterpret_cast<decltype(api.reset)>(&sceVideodec2Reset);
+  log_line("hwdec: libSceVideodec2 functions imported (native title)");
+  return true;
+}
+#else
+// The payload: the libraries are loaded with dlopen and the functions
+// resolved by name through the payload SDK's runtime loader.
+bool load_api(video::HwdecProbe& probe, Api& api) {
   if (!env_off("PROSPEROWEB_HWDEC_AGC", "0")) {
     for (const char* name : {"libSceAgcDriver.sprx", "libSceAgc.sprx"}) {
       load_library(probe, name);  // a failure is logged; the decoder may still work
@@ -808,7 +869,6 @@ bool probe_body(video::HwdecProbe& probe) {
     probe.fail("libSceVideodec2.sprx did not load");
     return false;
   }
-  Api& api = s.api;
   const bool ok =
       resolve(lib, "sceVideodec2QueryComputeMemoryInfo", api.query_compute_memory) &&
       resolve(lib, "sceVideodec2AllocateComputeQueue", api.allocate_compute_queue) &&
@@ -821,6 +881,17 @@ bool probe_body(video::HwdecProbe& probe) {
   log_printf("hwdec: libSceVideodec2 functions %s", ok ? "resolved" : "MISSING");
   if (!ok) {
     probe.fail("libSceVideodec2 functions missing");
+    return false;
+  }
+  return true;
+}
+#endif
+
+bool probe_body(video::HwdecProbe& probe) {
+  State& s = state();
+  log_process_identity();
+  Api& api = s.api;
+  if (!load_api(probe, api)) {
     return false;
   }
   s.affinity = decoder_affinity();
@@ -871,15 +942,36 @@ bool probe_body(video::HwdecProbe& probe) {
 // How long the decoder factory waits for a probe still running before it
 // refuses the stream (the WebProcess decodes that one in software).
 constexpr std::chrono::milliseconds kOpenWait{4000};
+// How long the native title's main() waits for the startup probe.
+[[maybe_unused]] constexpr std::chrono::milliseconds kNativeStartupWait{8000};
 
 std::shared_ptr<video::HwdecProbe>& probe_slot() {
   static auto* probe = new std::shared_ptr<video::HwdecProbe>();  // never destroyed
   return *probe;
 }
 
+// The native title decodes in hardware unless PROSPEROWEB_HWDEC=0. The
+// payload (websrv) build does not by default: in the hbldr payload context
+// the decoder's first calls stopped the process for good on a console
+// (docs/ps5-runtime.md, "Hardware decoding"); PROSPEROWEB_HWDEC=1 opts in.
 bool hwdec_disabled() {
-  return env_off("PROSPEROWEB_VIDEO_DECODE", "webprocess") || env_off("PROSPEROWEB_HWDEC", "0");
+  if (env_off("PROSPEROWEB_VIDEO_DECODE", "webprocess")) {
+    return true;
+  }
+  const char* value = std::getenv("PROSPEROWEB_HWDEC");
+#if PROSPEROWEB_NATIVE_TITLE
+  return value && !std::strcmp(value, "0");
+#else
+  return !value || std::strcmp(value, "1") != 0;
+#endif
 }
+
+constexpr const char* kHwdecOffReason =
+#if PROSPEROWEB_NATIVE_TITLE
+    "PROSPEROWEB_VIDEO_DECODE=webprocess or PROSPEROWEB_HWDEC=0";
+#else
+    "payload build: off unless PROSPEROWEB_HWDEC=1; or PROSPEROWEB_VIDEO_DECODE=webprocess";
+#endif
 
 std::shared_ptr<video::HwdecProbe> ensure_probe(const char* why) {
   static std::once_flag once;
@@ -896,11 +988,31 @@ std::shared_ptr<video::HwdecProbe> ensure_probe(const char* why) {
 
 }  // namespace
 
-void hwdec_startup_done() {
+void hwdec_native_startup() {
+#if PROSPEROWEB_NATIVE_TITLE
   if (hwdec_disabled()) {
-    log_line("hwdec: off (PROSPEROWEB_VIDEO_DECODE=webprocess or PROSPEROWEB_HWDEC=0)");
+    log_printf("hwdec: off (%s)", kHwdecOffReason);
     return;
   }
+  // Before WebKit, SDL and every other thread: the decoder library and its
+  // compute queue first, as VLC for PS5 does. Watched like any probe, so a
+  // hang turns hardware decoding off instead of holding the splash.
+  auto probe = ensure_probe("native title startup");
+  const auto result = probe->wait(kNativeStartupWait);
+  log_printf("hwdec: native startup probe %s%s%s", video::to_string(result),
+             probe->reason().empty() ? "" : ": ", probe->reason().c_str());
+#endif
+}
+
+void hwdec_startup_done() {
+  if (hwdec_disabled()) {
+    log_printf("hwdec: off (%s)", kHwdecOffReason);
+    return;
+  }
+#if PROSPEROWEB_NATIVE_TITLE
+  log_line("hwdec: compute queue created at startup (native title)");
+  return;
+#endif
   const char* when = std::getenv("PROSPEROWEB_HWDEC_PROBE");
   if (when && !std::strcmp(when, "startup")) {
     ensure_probe("after startup, PROSPEROWEB_HWDEC_PROBE=startup");
