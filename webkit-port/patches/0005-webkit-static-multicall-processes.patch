@@ -151,16 +151,21 @@ index 0a6968d20..8caba173f 100644
      UIProcess/API/C/playstation/WKViewClient.h
  )
 diff --git a/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp b/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp
-index f510f5eeb..177072caa 100644
+index f510f5eeb..14856ea21 100644
 --- a/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp
 +++ b/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp
-@@ -36,13 +36,16 @@
+@@ -36,13 +36,21 @@
  
  #if USE(WPE_BACKEND_PLAYSTATION)
  #include "ProcessProviderLibWPE.h"
 +#elif defined(PS5_HOMEBREW)
++#include <array>
++#include <cstring>
 +#include <inttypes.h>
 +#include <ps5webkit/spawn.h>
++#include <wtf/NeverDestroyed.h>
++#include <wtf/RunLoop.h>
++#include <wtf/WorkQueue.h>
  #else
  #include <process-launcher.h>
  #endif
@@ -172,62 +177,75 @@ index f510f5eeb..177072caa 100644
  #define MAKE_PROCESS_PATH(x) "/app0/" #x "Process.self"
  static const char* defaultProcessPath(ProcessLauncher::ProcessType processType)
  {
-@@ -72,6 +75,24 @@ void ProcessLauncher::launchProcess()
+@@ -72,6 +80,50 @@ void ProcessLauncher::launchProcess()
      setsockopt(socketPair.server.value(), SOL_SOCKET, SO_RCVBUF, &recvBufSize, 4);
      setsockopt(socketPair.client.value(), SOL_SOCKET, SO_RCVBUF, &recvBufSize, 4);
  
 +#if defined(PS5_HOMEBREW) && !USE(WPE_BACKEND_PLAYSTATION)
 +    // The shell re-executes its own multi-call ELF: argv[0] selects the role
 +    // and the client socket is passed as fd 3 (see ps5webkit/spawn.h).
++    //
++    // ps5_spawn_self blocks on the broker round trip (~250 ms, more under load
++    // and on the first-use image mapping). Running it on the main thread would
++    // stall the UI run loop, painting and input, so dispatch it to a work queue
++    // and post didFinishLaunchingProcess back to the main run loop, the way the
++    // other ports complete asynchronously. The worker owns the socket pair for
++    // the duration of the call: the client fd must stay open until the broker
++    // has rdup'ed it, which happens inside ps5_spawn_self.
 +    char coreProcessIdentifierString[32];
 +    snprintf(coreProcessIdentifierString, sizeof coreProcessIdentifierString, "%" PRIu64, m_launchOptions.processIdentifier.toUInt64());
++    std::array<char, 32> identifierString;
++    memcpy(identifierString.data(), coreProcessIdentifierString, sizeof coreProcessIdentifierString);
++    ProcessLauncher::ProcessType processType = m_launchOptions.processType;
 +
-+    const char* processName = "WebProcess";
-+    if (m_launchOptions.processType == ProcessLauncher::ProcessType::Network)
-+        processName = "NetworkProcess";
++    static NeverDestroyed<Ref<WorkQueue>> spawnQueue(WorkQueue::create("com.prosperobrowser.spawn"_s));
++    spawnQueue.get()->dispatch([protectedThis = Ref { *this }, processType, identifierString, socketPair = WTF::move(socketPair)]() mutable {
++        const char* processName = "WebProcess";
++        if (processType == ProcessLauncher::ProcessType::Network)
++            processName = "NetworkProcess";
 +#if ENABLE(GPU_PROCESS)
-+    else if (m_launchOptions.processType == ProcessLauncher::ProcessType::GPU)
-+        processName = "GPUProcess";
++        else if (processType == ProcessLauncher::ProcessType::GPU)
++            processName = "GPUProcess";
 +#endif
++        const char* argv[] = { processName, identifierString.data(), "3", nullptr };
++        int fds[] = { socketPair.client.value() };
++        int32_t appLocalPid = ps5_spawn_self(argv, fds, 1);
 +
-+    const char* argv[] = { processName, coreProcessIdentifierString, "3", nullptr };
-+    int fds[] = { socketPair.client.value() };
-+    int32_t appLocalPid = ps5_spawn_self(argv, fds, 1);
++        RunLoop::mainSingleton().dispatch([protectedThis = WTF::move(protectedThis), appLocalPid, processType, serverIdentifier = WTF::move(socketPair.server)]() mutable {
++            if (appLocalPid < 0) {
++                // Report the failure like the GLib launcher does: an invalid
++                // connection identifier makes the process proxy run its
++                // terminated/failed-to-launch path instead of waiting forever.
++                SAFE_FPRINTF(stderr, "ps5webkit: failed to launch auxiliary process type %d (ps5_spawn_self returned %d)\n", static_cast<int>(processType), appLocalPid);
++                protectedThis->didFinishLaunchingProcess(0, { });
++                return;
++            }
++            protectedThis->didFinishLaunchingProcess(appLocalPid, IPC::Connection::Identifier { WTF::move(serverIdentifier) });
++        });
++    });
++    return;
 +#else
      char coreProcessIdentifierString[16];
      snprintf(coreProcessIdentifierString, sizeof coreProcessIdentifierString, "%ld", m_launchOptions.processIdentifier.toUInt64());
  
-@@ -79,9 +100,12 @@ void ProcessLauncher::launchProcess()
-         coreProcessIdentifierString,
-         nullptr
-     };
-+#endif
- 
- #if USE(WPE_BACKEND_PLAYSTATION)
-     auto appLocalPid = ProcessProviderLibWPE::singleton().launchProcess(m_launchOptions, argv, socketPair.client.value());
-+#elif defined(PS5_HOMEBREW)
-+    // Launched above.
- #else
-     PlayStation::LaunchParam param { socketPair.client.value(), m_launchOptions.userId };
-     int32_t appLocalPid = PlayStation::launchProcess(
-@@ -90,7 +114,15 @@ void ProcessLauncher::launchProcess()
+@@ -90,7 +142,7 @@ void ProcessLauncher::launchProcess()
  #endif
  
      if (appLocalPid < 0) {
 -#ifndef NDEBUG
-+#if defined(PS5_HOMEBREW) && !USE(WPE_BACKEND_PLAYSTATION)
-+        // Report the failure like the GLib launcher does: an invalid
-+        // connection identifier makes the process proxy run its
-+        // terminated/failed-to-launch path instead of waiting forever.
-+        SAFE_FPRINTF(stderr, "ps5webkit: failed to launch auxiliary process type %d (ps5_spawn_self returned %d)\n", static_cast<int>(m_launchOptions.processType), appLocalPid);
-+        RunLoop::mainSingleton().dispatch([protectedThis = Ref { *this }] mutable {
-+            protectedThis->didFinishLaunchingProcess(0, { });
-+        });
-+#elif !defined(NDEBUG)
++#if !defined(NDEBUG)
          SAFE_FPRINTF(stderr, "Failed to launch process. err=0x%08x path=%s\n", appLocalPid, m_launchOptions.processPath.utf8());
  #endif
          return;
-@@ -109,6 +141,8 @@ void ProcessLauncher::terminateProcess(const String&)
+@@ -100,6 +152,7 @@ void ProcessLauncher::launchProcess()
+     RunLoop::mainSingleton().dispatch([protectedThis = Ref { *this }, appLocalPid, serverIdentifier = WTF::move(socketPair.server)] mutable {
+         protectedThis->didFinishLaunchingProcess(appLocalPid, IPC::Connection::Identifier { WTF::move(serverIdentifier) });
+     });
++#endif
+ }
+ 
+ void ProcessLauncher::terminateProcess(const String&)
+@@ -109,6 +162,8 @@ void ProcessLauncher::terminateProcess(const String&)
  
  #if USE(WPE_BACKEND_PLAYSTATION)
      ProcessProviderLibWPE::singleton().kill(m_processID);
