@@ -535,12 +535,14 @@ void WkWebView::set_visible(bool visible) {
 // --- input ------------------------------------------------------------------
 
 void WkWebView::pointer_move(int x, int y) {
-  WKMouseEvent e = WKMouseEventMake(kWKEventMouseMove, kWKEventMouseButtonNoButton,
+  WKMouseEvent e = WKMouseEventMake(kWKEventMouseMove,
+                                    static_cast<WKEventMouseButton>(held_mouse_button_),
                                     WKPointMake(x, y), 0, 0);
   WKPageHandleMouseEvent(page_, e);
 }
 
 void WkWebView::pointer_button(int x, int y, int wk_mouse_button, bool pressed) {
+  held_mouse_button_ = pressed ? wk_mouse_button : static_cast<int>(kWKEventMouseButtonNoButton);
   WKMouseEvent e = WKMouseEventMake(pressed ? kWKEventMouseDown : kWKEventMouseUp,
                                     static_cast<WKEventMouseButton>(wk_mouse_button),
                                     WKPointMake(x, y), 1, 0);

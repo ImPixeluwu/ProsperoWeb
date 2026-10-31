@@ -79,6 +79,7 @@ set(_frontend_sources
   ps5_log.cpp
   ps5_runtime_env.cpp
   ps5_splash_text.cpp
+  ps5_touchpad.cpp
   ps5_video_overlay.cpp
   wk_web_view.cpp
   wpe_loader.cpp
@@ -121,7 +122,8 @@ target_link_libraries(prosperobrowser PRIVATE
   prosperobrowser::cpu
   ${PS5WEBKIT_LINK_LIBRARIES}
   ${SDL2_LIBRARIES}
-  SceImeDialog SceUserService)  # ps5_ime.cpp (also on SDL2's own link line)
+  # ps5_ime.cpp, ps5_touchpad.cpp (also on SDL2's own link line)
+  SceImeDialog SceUserService ScePad)
 target_link_directories(prosperobrowser PRIVATE ${SDL2_LIBRARY_DIRS})
 # libWebKitPS5.a holds every WebKit object; drop what the browser never reaches.
 target_link_options(prosperobrowser PRIVATE -Wl,--gc-sections)

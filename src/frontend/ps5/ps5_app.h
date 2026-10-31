@@ -26,6 +26,7 @@
 #include "ps5_engine_view.h"
 #include "ps5_ime.h"
 #include "ps5_presenter.h"
+#include "ps5_touchpad.h"
 #include "ps5_video_overlay.h"
 
 namespace prosperobrowser::frontend {
@@ -44,6 +45,7 @@ class Ps5App {
   void pump_sdl_events();
   void handle_controller_button(const SDL_ControllerButtonEvent& e, bool pressed);
   void handle_axis_motion();
+  void handle_touchpad(std::uint64_t now);
   void trigger_edge(core::Button button, bool down, bool& was_down);
   void paint_content();
   void paint_chrome();
@@ -74,6 +76,10 @@ class Ps5App {
 
   SDL_Window* window_ = nullptr;
   SDL_GameController* pad_ = nullptr;
+  // Touchpad fingers, fed to the shell every frame.
+  Ps5Touchpad touchpad_;
+  std::vector<core::TouchContact> touch_contacts_;
+  float touchpad_aspect_ = 0.0f;  // last aspect given to the shell
   std::unique_ptr<Ps5AudioServer> audio_server_;
   std::unique_ptr<Ps5VideoOverlay> video_overlay_;
   std::unique_ptr<Ps5Presenter> presenter_;

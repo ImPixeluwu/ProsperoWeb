@@ -85,6 +85,8 @@ class WkWebView {
   void set_visible(bool visible);
 
   // Trusted input (real engine events).
+  // Moves carry the button held since pointer_button(.., true), so a press,
+  // moves and a release make a drag (text selection, sliders).
   void pointer_move(int x, int y);
   void pointer_button(int x, int y, int wk_mouse_button, bool pressed);
   void scroll(int x, int y, int dx, int dy);
@@ -153,6 +155,7 @@ class WkWebView {
   display::AreaStat needs_display_stats_;
   int width_ = 1920;
   int height_ = 1080;
+  int held_mouse_button_ = -2;  // kWKEventMouseButtonNoButton
   bool in_fullscreen_ = false;
   // Diagnostics: the view's name in log.txt and one-shot "first" events.
   std::string name_;

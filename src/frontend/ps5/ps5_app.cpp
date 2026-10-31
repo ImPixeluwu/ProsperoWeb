@@ -425,6 +425,7 @@ void Ps5App::frame() {
   }
   pump_sdl_events();
   handle_axis_motion();
+  handle_touchpad(now);
   if (share_down_ && !share_long_fired_ && now - share_down_ticks_ >= kShareLongPressMs) {
     share_long_fired_ = true;
     screenshot_pending_ = true;
@@ -459,12 +460,14 @@ void Ps5App::pump_sdl_events() {
       case SDL_CONTROLLERDEVICEADDED:
         if (!pad_) {
           pad_ = SDL_GameControllerOpen(e.cdevice.which);
+          touchpad_.reset();
         }
         break;
       case SDL_CONTROLLERDEVICEREMOVED:
         if (pad_) {
           SDL_GameControllerClose(pad_);
           pad_ = nullptr;
+          touchpad_.reset();
         }
         break;
       case SDL_CONTROLLERBUTTONDOWN:
@@ -643,6 +646,15 @@ void Ps5App::handle_axis_motion() {
   trigger_edge(core::Button::R2,
                SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000,
                r2_down_);
+}
+
+void Ps5App::handle_touchpad(std::uint64_t now) {
+  touchpad_.read(pad_, now, touch_contacts_);
+  if (touchpad_.aspect() != touchpad_aspect_) {
+    touchpad_aspect_ = touchpad_.aspect();
+    controller_->set_touchpad_aspect(touchpad_aspect_);
+  }
+  controller_->on_touchpad(touch_contacts_, now);
 }
 
 void Ps5App::trigger_edge(core::Button button, bool down, bool& was_down) {
