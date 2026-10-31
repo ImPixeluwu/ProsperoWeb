@@ -401,13 +401,13 @@ WkWebView::WkWebView(WKContextRef context, WKWebsiteDataStoreRef data_store,
       auto f = make_wk_string(family);
       fn(preferences_, f.get());
     };
-    set(WKPreferencesSetStandardFontFamily, "DejaVu Sans");
-    set(WKPreferencesSetSansSerifFontFamily, "DejaVu Sans");
-    set(WKPreferencesSetSerifFontFamily, "DejaVu Serif");
-    set(WKPreferencesSetFixedFontFamily, "DejaVu Sans Mono");
-    set(WKPreferencesSetCursiveFontFamily, "DejaVu Serif");
-    set(WKPreferencesSetFantasyFontFamily, "DejaVu Sans");
-    set(WKPreferencesSetPictographFontFamily, "DejaVu Sans");
+    set(WKPreferencesSetStandardFontFamily, "Noto Sans");
+    set(WKPreferencesSetSansSerifFontFamily, "Noto Sans");
+    set(WKPreferencesSetSerifFontFamily, "Noto Serif");
+    set(WKPreferencesSetFixedFontFamily, "Liberation Mono");
+    set(WKPreferencesSetCursiveFontFamily, "Noto Serif");
+    set(WKPreferencesSetFantasyFontFamily, "Noto Sans");
+    set(WKPreferencesSetPictographFontFamily, "Noto Color Emoji");
     WKPreferencesSetDefaultFontSize(preferences_, 16);
     WKPreferencesSetDefaultFixedFontSize(preferences_, 13);
   }
