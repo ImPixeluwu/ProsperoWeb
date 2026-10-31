@@ -24,7 +24,10 @@ along with this program; see the file COPYING. If not, see
      - elfldr_spawn() -> elfldr_spawn_fds(): same signature change; also
        forwards the current environment to the child (WebKit needs the
        PS5BROWSER_* variables).
-     - elfldr_read()/elfldr_find_pid() dropped (not used by ps5-browser). */
+     - elfldr_read()/elfldr_find_pid() dropped (not used by ps5-browser).
+     - the load mirror is calloc'ed (memsz gaps reach the child as zeros), a
+       replaced child descriptor is logged, and a child that fails to set up
+       is reaped after SIGKILL. */
 
 #include <elf.h>
 #include <fcntl.h>
@@ -157,8 +160,11 @@ elfldr_load(pid_t pid, const uint8_t* elf) {
     return 0;
   }
 
-  if(!(ctx.base_mirror = malloc(ctx.base_size))) {
-    LOG_PERROR("malloc");
+  /* calloc, not malloc: the bytes between p_filesz and p_memsz of each
+     segment (and the gaps between segments) must reach the child as zeros,
+     not recycled heap contents. */
+  if(!(ctx.base_mirror = calloc(1, ctx.base_size))) {
+    LOG_PERROR("calloc");
     return 0;
   }
 
@@ -461,6 +467,12 @@ elfldr_inject_fds(pid_t pid, const struct ps5_spawn_fd_entry* fds, int nfds) {
     if(tmp[i] == fds[i].child_fd) {
       continue;
     }
+    /* The child ran SceSpZeroConf's own init before we got here; if that left
+       a descriptor at the target number, dup2 silently replaces it. Say so. */
+    if(pt_syscall(pid, SYS_fcntl, fds[i].child_fd, F_GETFD) >= 0) {
+      LOG_PRINTF("elfldr_inject_fds: child fd %d already open, replacing it "
+		 "(our duplicate landed at %d)\n", fds[i].child_fd, tmp[i]);
+    }
     if(pt_dup2(pid, tmp[i], fds[i].child_fd) < 0) {
       LOG_PT_PERROR(pid, "pt_dup2");
       return -1;
@@ -599,6 +611,15 @@ elfldr_rfork_entry(void* ctx) {
 }
 
 
+/* Kill a child that failed to set up and reap it, so a failed spawn does
+   not leave a zombie behind. */
+static void
+elfldr_abort(pid_t pid) {
+  pt_detach(pid, SIGKILL);
+  waitpid(pid, 0, 0);
+}
+
+
 pid_t
 elfldr_spawn_fds(char* const argv[], const struct ps5_spawn_fd_entry* fds,
 		 int nfds, const uint8_t* elf, size_t elf_size) {
@@ -649,7 +670,7 @@ elfldr_spawn_fds(char* const argv[], const struct ps5_spawn_fd_entry* fds,
   if(!(libkernel_entry = kernel_dynlib_entry_addr(pid, 1)) ||
      !(eboot_entry = kernel_dynlib_entry_addr(pid, 0))) {
     LOG_PUTS("kernel_dynlib_entry_addr failed");
-    pt_detach(pid, SIGKILL);
+    elfldr_abort(pid);
     return -1;
   }
 
@@ -663,7 +684,7 @@ elfldr_spawn_fds(char* const argv[], const struct ps5_spawn_fd_entry* fds,
 
   if(pt_breakat(pid, libkernel_entry + need_reloc_offset)) {
     LOG_PERROR("pt_breakat");
-    pt_detach(pid, SIGKILL);
+    elfldr_abort(pid);
     return -1;
   }
 
@@ -671,7 +692,7 @@ elfldr_spawn_fds(char* const argv[], const struct ps5_spawn_fd_entry* fds,
 
   if(pt_breakat(pid, eboot_entry + main_offset)) {
     LOG_PERROR("pt_breakat");
-    pt_detach(pid, SIGKILL);
+    elfldr_abort(pid);
     return -1;
   }
 
@@ -680,6 +701,7 @@ elfldr_spawn_fds(char* const argv[], const struct ps5_spawn_fd_entry* fds,
 
   if(elfldr_exec_fds(pid, fds, nfds, elf)) {
     kill(pid, SIGKILL);
+    waitpid(pid, 0, 0);
     return -1;
   }
 

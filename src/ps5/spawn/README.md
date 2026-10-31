@@ -24,11 +24,22 @@ Changes made for ps5-browser (also noted in each file's header):
   environment is forwarded to the child (`elfldr_set_environ`, taken from the
   shsrv variant of elfldr) so the role process sees the `PS5BROWSER_*`
   variables. `elfldr_read()` and `elfldr_find_pid()` were dropped as unused.
+  The load mirror is `calloc`ed so the `p_filesz`..`p_memsz` gaps reach the
+  child as zeros, an already open child descriptor replaced by `pt_dup2` is
+  logged, and a child that fails during setup is reaped after `SIGKILL`.
+  The `EVFILT_PROC`/`NOTE_EXEC` registration after `rfork_thread` is kept in
+  upstream's order (elfldr, shsrv and websrv all do the same).
 
 Kernel read/write comes from the payload arguments parsed by the ps5-payload
 SDK crt; the loader uses `kernel_*` from `<ps5/kernel.h>` where upstream elfldr
 used its own kernel helpers.
 
 `spawn.c` and `spawn_util.c` are original to ps5-browser (GPL-3.0-or-later).
+`spawn.c` maps the self ELF once (read-only `MAP_PRIVATE`, read into memory
+only if `mmap` fails), tracks every child until it is reaped: by
+`ps5_terminate_process()` (`SIGKILL`, then a bounded wait) or, for children
+that exit on their own, by a reaper thread polling the tracked pids once a
+second (never `waitpid(-1)`, which would also consume the loader's ptrace
+stops).
 `spawn_util.c` is pure (no ptrace/kernel) and is unit-tested on the host
 (`tests/ps5`).
