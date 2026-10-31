@@ -170,8 +170,12 @@ where `sys_budget_set(0)` exists again.
    also the process name, so the broker shows up as `spawn-broker`. websrv
    answers `200` once the payload runs, `503` if it could not start it.
    The broker binds the first AF_UNIX path that works (console run 3:
-   `/data` gives `EOPNOTSUPP`) and also listens on loopback TCP; it exits
-   only if it can listen on nothing.
+   `/data` gives `EOPNOTSUPP`) and also listens on loopback TCP; it fails
+   to start only if it can listen on nothing. It lives as long as the UI's
+   connection (the UI never closes it): when the UI exits or crashes, the
+   broker logs `broker: client disconnected, terminating N children and
+   exiting`, kills the WebProcess/NetworkProcess and exits, so every UI run
+   asks websrv once.
 4. The UI polls all endpoints for up to 5 s, pings the broker, and sends the
    spawn request. Every later spawn reuses the connection.
 5. The broker spawns the child with the UI's ELF path, `argv` and whole

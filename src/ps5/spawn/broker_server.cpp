@@ -419,17 +419,13 @@ int Server::run(const std::atomic<bool>* stop) {
       ps5_log_line("broker: stop requested");
       break;
     }
+    // Before the UI's first connection only: websrv started the broker and
+    // the UI is about to connect. Once it has, the broker lives exactly as
+    // long as that connection (see below).
     if (client_fd_ < 0) {
-      const size_t alive = child_count();
       const long long alone = ms_since(alone_since);
-      if (alive == 0 && alone >= opt_.idle_ms) {
-        ps5_log_printf("broker: no client and no children for %lldms, exiting", alone);
-        break;
-      }
-      if (alive > 0 && alone >= opt_.orphan_ms) {
-        ps5_log_printf("broker: no client for %lldms, killing %zu orphaned children", alone,
-                       alive);
-        kill_all_children();
+      if (alone >= opt_.idle_ms) {
+        ps5_log_printf("broker: no client for %lldms, exiting", alone);
         break;
       }
     }
@@ -489,8 +485,14 @@ int Server::run(const std::atomic<bool>* stop) {
       if (r == BrokerRecv::kOk) {
         handle(msg, &fds);
       } else {
+        // The UI keeps its connection for its whole lifetime, so a closed
+        // connection means the UI is gone (or gave up on us): its children
+        // are orphans. Exiting now also means websrv, which reads the whole
+        // ELF to start a broker, is asked at most once per UI run.
         drop_client(r == BrokerRecv::kClosed ? "closed" : std::strerror(errno));
-        alone_since = Clock::now();
+        ps5_log_printf("broker: client disconnected, terminating %zu children and exiting",
+                       child_count());
+        break;
       }
     }
   }

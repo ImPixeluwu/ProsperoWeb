@@ -388,12 +388,6 @@ TEST_SUITE("broker_e2e") {
     REQUIRE(client.request(json{{"op", "bogus"}}, nullptr, 0, &reply, 5000));
     CHECK_FALSE(broker_get_bool(reply, "ok", true));
 
-    // A reconnect (a restarted UI) is served by the same broker.
-    client.disconnect();
-    REQUIRE(client.connect_wait(5000, 10));
-    REQUIRE(client.request(json{{"op", "ping"}}, nullptr, 0, &reply, 5000));
-    CHECK(broker_get_bool(reply, "ok", false));
-
     stop.store(true);
     server.join();
     CHECK(server_rc == 0);
@@ -422,6 +416,46 @@ TEST_SUITE("broker_e2e") {
     const auto t0 = std::chrono::steady_clock::now();
     server.join();
     CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5));
+    broker_set_spawn_hook(nullptr);
+  }
+
+  TEST_CASE("the broker exits with its client and kills the children") {
+    TempDir dir;
+    BrokerServerOptions opt;
+    const std::string sock = dir.path + "/spawn.sock";
+    opt.socket_paths = {sock};
+    opt.idle_ms = 60000;  // only the disconnect may end it
+    opt.reap_interval_ms = 20;
+    broker_set_spawn_hook(fake_spawn);
+
+    int server_rc = -1;
+    std::thread server([&] { server_rc = broker_serve(opt, nullptr); });
+    int pid = -1;
+    {
+      BrokerClient client(sock, nullptr);
+      REQUIRE(client.connect_wait(5000, 10));
+      int out[2];
+      REQUIRE(pipe(out) == 0);
+      const json sleeper{{"op", "spawn"},
+                         {"elf", "/fake.elf"},
+                         {"argv", {"WebProcess", "sleep"}},
+                         {"env", {"A=1"}},
+                         {"nfds", 1}};
+      json reply;
+      REQUIRE(client.request(sleeper, &out[1], 1, &reply, 5000));
+      close(out[1]);
+      pid = static_cast<int>(broker_get_int(reply, "pid", -1));
+      REQUIRE(pid > 0);
+      CHECK(read_some(out[0]) == "hello WebProcess");
+      close(out[0]);
+    }  // the UI goes away
+    const auto t0 = std::chrono::steady_clock::now();
+    server.join();
+    CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5));
+    CHECK(server_rc == 0);
+    CHECK(kill(pid, 0) != 0);  // killed and reaped
+    struct stat st {};
+    CHECK(stat(sock.c_str(), &st) != 0);
     broker_set_spawn_hook(nullptr);
   }
 

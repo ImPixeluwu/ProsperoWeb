@@ -59,9 +59,14 @@ child fd 3, 4, … in order.
 Broker (`broker_server.{h,cpp}`, run by `ps5_spawn_broker_main()` in
 `spawn_glue.cpp`): a single-threaded accept/request loop plus a reaper
 thread that polls the tracked children and sends `exited`. One client at a
-time; a new connection replaces the old one (a restarted UI). It exits on
-`SIGTERM`, 10 s after the last client left with no child alive, or 60 s
-after the last client left with children still alive (it kills them). The
+time; a new connection replaces the old one. The UI keeps its connection
+for its whole lifetime (`g_client` in `spawn_glue.cpp` is never closed, only
+replaced after a failed request), so the broker lives exactly as long as
+that connection: when it closes, the broker logs `broker: client
+disconnected, terminating N children and exiting`, kills the children and
+exits. websrv, which reads the whole ELF to start a broker, is therefore
+asked at most once per UI run. It also exits on `SIGTERM`, and 10 s after
+start if no client ever connected. The
 actual spawn is a hook (`broker_set_spawn_hook`): `ps5_spawn_elfldr()` from
 `spawn.c` on the console, a `fork()` fake in `tests/ps5`.
 

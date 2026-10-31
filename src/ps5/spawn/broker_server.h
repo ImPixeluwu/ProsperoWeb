@@ -46,10 +46,10 @@ struct BrokerServerOptions {
   int tcp_port = -1;
   // If set, receives the bound TCP port (or -1) before clients are served.
   std::atomic<int>* bound_tcp_port = nullptr;
-  // Exit once no client is connected and no child is alive for this long.
+  // Exit if no client connects within this long after start. Once a client
+  // has connected, the broker exits as soon as that connection closes,
+  // killing the children.
   int idle_ms = 10000;
-  // With no client for this long, kill the remaining children and exit.
-  int orphan_ms = 60000;
   // How often the reaper polls the children.
   int reap_interval_ms = 500;
 };
