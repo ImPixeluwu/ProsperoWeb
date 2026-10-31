@@ -591,10 +591,10 @@ TEST_SUITE("shell.touchpad") {
     Fixture f;
     f.make();
     f.view(0).calls.clear();
-    touch(f, {{0, 0.4f, 0.7f}, {1, 0.6f, 0.7f}}, 0);
-    touch(f, {{0, 0.4f, 0.5f}, {1, 0.6f, 0.5f}}, 16);
+    touch(f, {{0, 0.4f, 0.5f}, {1, 0.6f, 0.5f}}, 0);
+    touch(f, {{0, 0.4f, 0.7f}, {1, 0.6f, 0.7f}}, 16);
     CHECK(f.view(0).called_prefix("scroll 0,"));
-    CHECK_FALSE(f.view(0).called_prefix("scroll 0,-"));  // fingers up: content up
+    CHECK_FALSE(f.view(0).called_prefix("scroll 0,-"));  // fingers down: page down
     touch(f, {}, 100);
     CHECK_FALSE(f.view(0).called_prefix("pointer_button "));
   }

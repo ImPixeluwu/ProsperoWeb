@@ -26,15 +26,22 @@ struct TouchContact {
 //    so a tap does not nudge the pointer;
 //  - a tap (one finger, up within kTapMaxMs, travel < kTapSlop, no press of
 //    the pad's button meanwhile) is a click;
-//  - two fingers scroll (kScrollGain px per pad width, natural direction:
-//    the content follows the fingers); the pointer stays put until every
-//    finger is lifted;
+//  - two fingers scroll (kScrollGain px per pad width). By default the
+//    direction is the classic mouse-wheel one: moving the fingers down
+//    scrolls the page down. set_natural_scroll(true) makes the content
+//    follow the fingers instead. The pointer stays put until every finger
+//    is lifted;
 //  - while the pad's button is held (set_pressed), motion has no slop, so a
 //    press-and-drag drags.
 // Distances along y are scaled by the pad's aspect ratio (height / width),
 // so equal finger travel moves the pointer equally in both directions.
 class TouchpadModel {
  public:
+  // false (default): fingers down scroll the page down; true: the content
+  // follows the fingers (touch-screen style).
+  void set_natural_scroll(bool natural) { natural_scroll_ = natural; }
+  bool natural_scroll() const { return natural_scroll_; }
+
   static constexpr float kPointerGain = 900.0f;      // px per pad width
   static constexpr float kMaxAcceleration = 3.0f;
   static constexpr float kAccelLowSpeed = 0.25f;     // pad widths per second
@@ -109,6 +116,7 @@ class TouchpadModel {
   bool pressed_during_ = false;
 
   Output out_;
+  bool natural_scroll_ = false;
 };
 
 }  // namespace prosperoweb::core

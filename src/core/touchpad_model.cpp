@@ -55,8 +55,9 @@ void TouchpadModel::finger_move(int id, float x, float y, std::uint64_t now_ms) 
     const Vec2 before = centroid();
     *f = {id, x, y, now_ms};
     const Vec2 after = centroid();
-    out_.scroll.x -= (after.x - before.x) * kScrollGain;
-    out_.scroll.y -= (after.y - before.y) * aspect_ * kScrollGain;
+    const float sign = natural_scroll_ ? -1.0f : 1.0f;
+    out_.scroll.x += sign * (after.x - before.x) * kScrollGain;
+    out_.scroll.y += sign * (after.y - before.y) * aspect_ * kScrollGain;
     return;
   }
   if (multi_) {

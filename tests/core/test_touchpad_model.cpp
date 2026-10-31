@@ -120,6 +120,7 @@ TEST_SUITE("touchpad_model") {
 
   TEST_CASE("two fingers scroll in the natural direction and leave the pointer") {
     TouchpadModel m;
+    m.set_natural_scroll(true);
     m.finger_down(0, 0.4f, 0.6f, 0);
     m.finger_down(1, 0.6f, 0.6f, 0);
     CHECK(m.multi_finger());
@@ -137,8 +138,9 @@ TEST_SUITE("touchpad_model") {
     CHECK(out.pointer.y == doctest::Approx(0.0f));
   }
 
-  TEST_CASE("a two-finger swipe to the right scrolls left") {
+  TEST_CASE("a two-finger swipe to the right scrolls left in natural mode") {
     TouchpadModel m;
+    m.set_natural_scroll(true);
     m.finger_down(0, 0.3f, 0.4f, 0);
     m.finger_down(1, 0.3f, 0.6f, 0);
     m.finger_move(0, 0.4f, 0.4f, 16);
@@ -230,5 +232,23 @@ TEST_SUITE("touchpad_model") {
     m.finger_down(0, 0.5f, 0.2f, 0);
     slide(m, 0, 0.5f, 0.2f, 0.0f, 0.2f, 10, 100, 0);
     CHECK(m.take().pointer.y == doctest::Approx(0.1f * TouchpadModel::kPointerGain).epsilon(0.01));
+  }
+
+  TEST_CASE("by default two fingers scroll like a mouse wheel") {
+    TouchpadModel m;
+    CHECK_FALSE(m.natural_scroll());
+    m.finger_down(0, 0.4f, 0.4f, 0);
+    m.finger_down(1, 0.6f, 0.4f, 0);
+    // Fingers move down by 0.2 of the pad height: the page scrolls down.
+    m.finger_move(0, 0.4f, 0.6f, 16);
+    m.finger_move(1, 0.6f, 0.6f, 16);
+    auto out = m.take();
+    CHECK(out.scroll.y == doctest::Approx(0.2f * kAspect * TouchpadModel::kScrollGain).epsilon(0.01));
+    // Fingers move right: the page scrolls right.
+    m.finger_move(0, 0.5f, 0.6f, 32);
+    m.finger_move(1, 0.7f, 0.6f, 32);
+    out = m.take();
+    CHECK(out.scroll.x == doctest::Approx(0.1f * TouchpadModel::kScrollGain).epsilon(0.01));
+    CHECK(out.pointer.x == doctest::Approx(0.0f));
   }
 }
