@@ -251,8 +251,23 @@ std::string websrv_broker_target(const std::string& elf, const std::string& cwd,
          "&daemon=1&args=" + url_encode(args) + "&env=" + url_encode(env);
 }
 
-int http_get(const std::string& host_port, const std::string& target, int timeout_ms,
-             std::string* error) {
+std::string elfldr_payload_line(const std::string& elf, const std::string& args) {
+  return "file:" + url_encode(elf) + "?args=" + url_encode(args) + "&pipe=0";
+}
+
+std::string elfldr_broker_args(const std::vector<std::string>& env) {
+  std::string args = "--role=spawn-broker";
+  for (const std::string& entry : env) {
+    args += " " + websrv_escape_token("--env=" + entry);
+  }
+  return args;
+}
+
+namespace {
+
+// A connected loopback TCP socket to host_port with send/receive timeouts,
+// or -1 (*error says why).
+int connect_ipv4(const std::string& host_port, int timeout_ms, std::string* error) {
   std::string host = host_port;
   int port = 80;
   const size_t colon = host_port.rfind(':');
@@ -264,7 +279,7 @@ int http_get(const std::string& host_port, const std::string& target, int timeou
   addr.sin_family = AF_INET;
   addr.sin_port = htons(static_cast<uint16_t>(port));
   if (port <= 0 || port > 65535 || inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
-    *error = "bad websrv address '" + host_port + "' (want IPv4:port)";
+    *error = "bad address '" + host_port + "' (want IPv4:port)";
     return -1;
   }
   const int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -280,24 +295,84 @@ int http_get(const std::string& host_port, const std::string& target, int timeou
     close(fd);
     return -1;
   }
-  const std::string req = "GET " + target + " HTTP/1.0\r\nHost: " + host_port +
-                          "\r\nConnection: close\r\n\r\n";
+  return fd;
+}
+
+bool send_all(int fd, const std::string& data, std::string* error) {
   size_t sent = 0;
-  while (sent < req.size()) {
+  while (sent < data.size()) {
 #ifdef MSG_NOSIGNAL
-    const ssize_t n = send(fd, req.data() + sent, req.size() - sent, MSG_NOSIGNAL);
+    const ssize_t n = send(fd, data.data() + sent, data.size() - sent, MSG_NOSIGNAL);
 #else
-    const ssize_t n = send(fd, req.data() + sent, req.size() - sent, 0);
+    const ssize_t n = send(fd, data.data() + sent, data.size() - sent, 0);
 #endif
     if (n < 0 && errno == EINTR) {
       continue;
     }
     if (n <= 0) {
       *error = std::string("send: ") + std::strerror(errno);
-      close(fd);
-      return -1;
+      return false;
     }
     sent += static_cast<size_t>(n);
+  }
+  return true;
+}
+
+}  // namespace
+
+int elfldr_send(const std::string& host_port, const std::string& line, int timeout_ms,
+                std::string* reply, std::string* error) {
+  reply->clear();
+  const int fd = connect_ipv4(host_port, timeout_ms, error);
+  if (fd < 0) {
+    return -1;
+  }
+  if (!send_all(fd, line + "\n", error)) {
+    close(fd);
+    return -1;
+  }
+  shutdown(fd, SHUT_WR);
+  char buf[512];
+  while (reply->size() < 4096) {
+    const ssize_t n = recv(fd, buf, sizeof(buf), 0);
+    if (n < 0 && errno == EINTR) {
+      continue;
+    }
+    if (n < 0) {
+      // A timeout after the payload started is not an error: elfldr keeps
+      // the connection only while it loads.
+      if (errno != EAGAIN && errno != EWOULDBLOCK) {
+        *error = std::string("recv: ") + std::strerror(errno);
+        close(fd);
+        return -1;
+      }
+      break;
+    }
+    if (n == 0) {
+      break;
+    }
+    reply->append(buf, static_cast<size_t>(n));
+  }
+  close(fd);
+  // elfldr's messages end in "\n\r\0"; keep the text only.
+  while (!reply->empty() && (reply->back() == '\0' || reply->back() == '\r' ||
+                             reply->back() == '\n')) {
+    reply->pop_back();
+  }
+  return reply->find("Error") != std::string::npos ? 1 : 0;
+}
+
+int http_get(const std::string& host_port, const std::string& target, int timeout_ms,
+             std::string* error) {
+  const int fd = connect_ipv4(host_port, timeout_ms, error);
+  if (fd < 0) {
+    return -1;
+  }
+  const std::string req = "GET " + target + " HTTP/1.0\r\nHost: " + host_port +
+                          "\r\nConnection: close\r\n\r\n";
+  if (!send_all(fd, req, error)) {
+    close(fd);
+    return -1;
   }
   // Only the status line matters; read until it is complete or EOF.
   std::string resp;

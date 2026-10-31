@@ -18,7 +18,7 @@ add_test(NAME ps5.spawn_util
          COMMAND prosperoweb_ps5_tests --test-suite=spawn_self_path,spawn_fd_table --no-version)
 add_test(NAME ps5.spawn_broker
          COMMAND prosperoweb_ps5_tests
-                 --test-suite=broker_proto,broker_endpoints,broker_fd_passing,broker_e2e,broker_tcp,broker_websrv --no-version)
+                 --test-suite=broker_proto,broker_endpoints,broker_fd_passing,broker_e2e,broker_tcp,broker_websrv,broker_elfldr,title_paths --no-version)
 add_test(NAME ps5.audio_server
          COMMAND prosperoweb_ps5_tests
                  --test-suite=audio_wire,audio_clock,audio_mixer,audio_ring,audio_e2e --no-version)

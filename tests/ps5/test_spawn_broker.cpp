@@ -26,6 +26,7 @@
 #include "broker_client.h"
 #include "broker_proto.h"
 #include "broker_server.h"
+#include "title_paths.h"
 
 using namespace prosperoweb::spawn;
 using nlohmann::json;
@@ -682,5 +683,108 @@ TEST_SUITE("broker_websrv") {
     CHECK(request.find("Host: " + host_port + "\r\n") != std::string::npos);
 
     CHECK(http_get("localhost:8080", "/", 1000, &error) == -1);  // IPv4 literals only
+  }
+}
+
+TEST_SUITE("broker_elfldr") {
+  TEST_CASE("the elfldr line matches socksrv.c's URI and argument parsing") {
+    CHECK(elfldr_payload_line("/data/homebrew/PRWB00001/prosperoweb.elf", "--role=spawn-broker") ==
+          "file:/data/homebrew/PRWB00001/prosperoweb.elf?args=--role%3Dspawn-broker&pipe=0");
+    CHECK(elfldr_broker_args({"PROSPEROWEB_SELF_PATH=/a b/x.elf", "PROSPEROWEB_SPAWN_PORT=17771"}) ==
+          "--role=spawn-broker --env=PROSPEROWEB_SELF_PATH=/a\\ b/x.elf "
+          "--env=PROSPEROWEB_SPAWN_PORT=17771");
+  }
+
+  TEST_CASE("elfldr_send sends one line, half-closes and reads elfldr's answer") {
+    for (const bool fail : {false, true}) {
+      const int lfd = socket(AF_INET, SOCK_STREAM, 0);
+      REQUIRE(lfd >= 0);
+      sockaddr_in addr{};
+      addr.sin_family = AF_INET;
+      addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+      REQUIRE(bind(lfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+      REQUIRE(listen(lfd, 1) == 0);
+      socklen_t len = sizeof(addr);
+      REQUIRE(getsockname(lfd, reinterpret_cast<sockaddr*>(&addr), &len) == 0);
+      const std::string host_port = "127.0.0.1:" + std::to_string(ntohs(addr.sin_port));
+
+      std::string received;
+      std::thread fake([&] {
+        const int c = accept(lfd, nullptr, nullptr);
+        char buf[512];
+        ssize_t n;
+        while ((n = read(c, buf, sizeof(buf))) > 0) {  // until our half-close
+          received.append(buf, static_cast<size_t>(n));
+        }
+        if (fail) {
+          const char msg[] = "[elfldr.elf] Error reading URI payload\n\r\0";
+          (void)!write(c, msg, sizeof(msg) - 1);
+        }
+        close(c);
+      });
+      std::string reply, error;
+      const int rc = elfldr_send(host_port, "file:/x.elf?args=&pipe=0", 5000, &reply, &error);
+      fake.join();
+      close(lfd);
+      CHECK(received == "file:/x.elf?args=&pipe=0\n");
+      if (fail) {
+        CHECK(rc == 1);
+        CHECK(reply == "[elfldr.elf] Error reading URI payload");
+      } else {
+        CHECK(rc == 0);
+        CHECK(reply.empty());
+      }
+    }
+    std::string reply, error;
+    CHECK(elfldr_send("127.0.0.1:1", "file:/x", 1000, &reply, &error) == -1);
+    CHECK(!error.empty());
+  }
+}
+
+TEST_SUITE("title_paths") {
+  TEST_CASE("the install folder under a ShadowMountPlus scan path serves both sides") {
+    const auto candidates = title_dir_candidates("PRWB00001", nullptr);
+    REQUIRE(!candidates.empty());
+    CHECK(candidates.front() == "/data/homebrew/PRWB00001");
+    CHECK(title_dir_candidates("PRWB00001", "/x/y/").front() == "/x/y");
+
+    const auto layout = resolve_title_layout(
+        "/app0", "PRWB00001", nullptr, [](const std::string& dir, const std::string& app0) {
+          CHECK(app0 == "/app0");
+          return dir == "/mnt/usb0/homebrew/PRWB00001";
+        });
+    CHECK(layout.ui_root == "/mnt/usb0/homebrew/PRWB00001");
+    CHECK(layout.child_root == layout.ui_root);
+  }
+
+  TEST_CASE("the override wins without a check; nothing found means the sandbox path") {
+    bool asked = false;
+    const auto forced = resolve_title_layout("/app0", "PRWB00001", "/data/x/",
+                                             [&](const std::string&, const std::string&) {
+                                               asked = true;
+                                               return false;
+                                             });
+    CHECK(!asked);
+    CHECK(forced.ui_root == "/data/x");
+    CHECK(forced.child_root == "/data/x");
+
+    const auto none = resolve_title_layout(
+        "/app0", "PRWB00001", "", [](const std::string&, const std::string&) { return false; });
+    CHECK(none.ui_root == "/app0");
+    CHECK(none.child_root == "/mnt/sandbox/PRWB00001_000/app0");
+  }
+
+  TEST_CASE("paths and file URLs are rebased on a path boundary only") {
+    CHECK(rebase_path("/app0/data/fonts", "/app0", "/s/app0") == "/s/app0/data/fonts");
+    CHECK(rebase_path("/app0", "/app0", "/s/app0") == "/s/app0");
+    CHECK(rebase_path("/app0x/a", "/app0", "/s") == "/app0x/a");
+    CHECK(rebase_path("/data/a", "/app0", "/s") == "/data/a");
+    CHECK(rebase_path("/app0/a", "/app0", "/app0") == "/app0/a");
+    const auto env = rebase_env({"FONTCONFIG_FILE=/app0/data/fonts/fonts.conf", "A=file:///app0/c",
+                                 "HOME=/data/prosperoweb", "NOVALUE"},
+                                "/app0", "/s/app0");
+    CHECK(env == std::vector<std::string>{"FONTCONFIG_FILE=/s/app0/data/fonts/fonts.conf",
+                                          "A=file:///s/app0/c", "HOME=/data/prosperoweb",
+                                          "NOVALUE"});
   }
 }

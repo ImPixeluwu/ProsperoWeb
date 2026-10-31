@@ -15,6 +15,7 @@ add_library(prosperoweb_spawn_broker STATIC
   broker_proto.cpp
   broker_server.cpp
   broker_client.cpp
+  title_paths.cpp
 )
 add_library(prosperoweb::spawn_broker ALIAS prosperoweb_spawn_broker)
 target_include_directories(prosperoweb_spawn_broker PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")

@@ -80,6 +80,29 @@ std::string websrv_escape_token(const std::string& token);
 std::string websrv_broker_target(const std::string& elf, const std::string& cwd,
                                  const std::string& args, const std::string& env);
 
+// The line that asks elfldr (ps5-payload-dev/elfldr at 2a8da002,
+// socksrv.c on_connection) to load a payload from the console's own file
+// system: "file:<elf>?args=<args>&pipe=0". elfldr reads the URI up to the
+// newline, loads <elf> (uri.c uri_get_content), splits the decoded args on
+// spaces with a backslash escaping a space (socksrv.c args_split) into
+// argv[1..] (argv[0] is the file name), and with pipe=0 does not hand the
+// connection to the payload as its stdout/stderr. elfldr passes no
+// environment of ours: the payload inherits elfldr's own.
+std::string elfldr_payload_line(const std::string& elf, const std::string& args);
+
+// The broker's argument string for elfldr: "--role=spawn-broker" and one
+// "--env=NAME=VALUE" per entry of env (each token escaped for args_split),
+// which main() exports before anything reads the environment.
+std::string elfldr_broker_args(const std::vector<std::string>& env);
+
+// Sends line (plus a newline) to elfldr at host_port ("a.b.c.d:port"),
+// half-closes the connection and reads until elfldr closes it. elfldr only
+// writes on failure ("[elfldr.elf] Error ..."). Returns 0 when the payload
+// was accepted (nothing or no error text came back), 1 when elfldr reported
+// an error (*reply holds it), -1 on a connection error (*error).
+int elfldr_send(const std::string& host_port, const std::string& line, int timeout_ms,
+                std::string* reply, std::string* error);
+
 // Plain HTTP/1.0 GET over TCP. host_port is "a.b.c.d:port" (an IPv4
 // literal; the port defaults to 80). Returns the HTTP status code, or -1
 // on a connection or protocol error (*error describes it).
