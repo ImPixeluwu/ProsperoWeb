@@ -140,6 +140,17 @@ Fix: the native link names `-lkernel` (`DT_NEEDED libkernel.sprx`); `check-eboot
 
 The clean-room `sce_module/libc.prx` does not export 21 of the 144 `libSceLibcInternal` imports (`__inet_aton __mb_cur_max __stderrp __stdinp __stdoutp closedir freeifaddrs getcwd getenv gethostname getifaddrs initstate makecontext opendir random readdir realpath setenv setstate tzname utime`); `check-eboot.py` lists them. That does not explain run 14 (`__cxa_atexit` is in its export manifest, as are `atexit` and `_init_env`, which resolved), so whether the title binds `libSceLibcInternal` imports to the system module or to `libc.prx` is still open; the start-up report answers it on the next run.
 
+## Third console run (run 16)
+
+`build-20261031-1932-native` booted: the start-up code repaired 13 import slots, all `sceVideodec2*`/`sceImeDialog*` (modules the UI loads itself), `main()` ran, and **the hardware decoder came up in the title**: sysmodule 207 loaded, the compute queue was created (4704 KiB) and every memory query answered (H.264 and HEVC, 1080p and 4K), where the payload context had stopped at the first call. SDL, the audio server and the splash came up, elfldr started the broker (3.1 s to answer), the broker spawned two WebProcesses and the NetworkProcess with rdup from the title's pid, and then nothing moved: the splash stayed at stage 5 of 6, the children used no CPU.
+
+Two findings:
+
+- The title may `stat` files under `/data/homebrew/PRWB00001` (the install-folder match worked) but not read them: `chrome.html ... Operation not permitted`. The UI now always reads `/app0`; only the helpers get the install folder (`title_paths.cpp`).
+- The IPC stall is not explained yet. The UI now runs a self-test once the broker answers (`src/ps5/spawn/ipc_selftest.cpp`): a `SOCK_SEQPACKET` socketpair end copied into the broker with rdup, data both ways, `SCM_RIGHTS` both ways carrying `shm_open(SHM_ANON)` memory that the receiver maps. Each child logs what its fd 3 is and whether unread data waits on it after 2, 10 and 30 s (`ipc: fd 3 ...`): "nothing waiting" means the UI never sent, "data waiting" means the child is stuck before reading.
+
+Also: `PROSPEROWEB_HWDEC`/`PROSPEROWEB_VIDEO_DECODE` from `config.json` are now read before the start-up probe (they were applied only after it).
+
 ## Not verified on hardware
 
 Everything above links, converts, signs and passes the import and syscall checks; none of it has run on a console yet. The open questions, most likely first:
