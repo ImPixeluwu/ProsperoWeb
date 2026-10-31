@@ -34,6 +34,7 @@
 #include "broker_proto.h"
 #include "broker_server.h"
 #include "cpuset_assign_ps5.h"
+#include "ipc_selftest.h"
 #include "spawn_backend.h"
 #include "title_paths.h"
 
@@ -263,6 +264,14 @@ bool ensure_broker(const std::string& self_path, bool may_start) {
   }
   ps5_log_printf("spawn: broker ready pid=%lld in %lldms", broker_get_int(reply, "pid", -1),
                  ms_since(t0));
+  // Once per UI: the IPC primitives across the title's sandbox
+  // (ipc_selftest.h). Always in the native title, opt-in elsewhere.
+  static bool selftest_done = false;
+  if (!selftest_done && (!env_or("PROSPEROWEB_TITLE_UI_ROOT", "").empty() ||
+                         env_or("PROSPEROWEB_IPC_SELFTEST", "") == "1")) {
+    selftest_done = true;
+    ipc_selftest_ui(*g_client);
+  }
   report_progress("broker");
   return true;
 }
@@ -520,5 +529,6 @@ extern "C" int ps5_spawn_broker_main(void) {
   }
   options.tcp_port = broker_tcp_port(std::getenv("PROSPEROWEB_SPAWN_PORT"));
   broker_set_spawn_hook(elfldr_hook);
+  broker_set_selftest_hook(ipc_selftest_broker);
   return broker_serve(options, &g_stop);
 }

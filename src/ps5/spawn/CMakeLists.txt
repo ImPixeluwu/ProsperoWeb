@@ -29,6 +29,7 @@ if(PS5)
   add_library(prosperoweb_spawn STATIC
     spawn.c
     spawn_glue.cpp
+    ipc_selftest.cpp
     cpuset_assign_ps5.cpp
     elfldr.c
     pt.c
@@ -44,7 +45,7 @@ if(PS5)
   # elfldr.c/pt.c are vendored C; do not force -Werror on third-party code.
   target_compile_options(prosperoweb_spawn PRIVATE -Wall)
   # Our own sources keep the strict warnings.
-  set_source_files_properties(spawn_glue.cpp cpuset_assign_ps5.cpp
+  set_source_files_properties(spawn_glue.cpp ipc_selftest.cpp cpuset_assign_ps5.cpp
     PROPERTIES COMPILE_OPTIONS "-Wextra;-Werror")
   target_link_libraries(prosperoweb_spawn
     PUBLIC prosperoweb::spawn_util prosperoweb::spawn_broker

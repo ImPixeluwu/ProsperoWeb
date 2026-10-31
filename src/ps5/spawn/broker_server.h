@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 namespace prosperoweb::spawn {
 
 struct BrokerSpawnRequest {
@@ -37,6 +39,11 @@ using BrokerSpawnHook = BrokerSpawnResult (*)(const BrokerSpawnRequest& request)
 // Sets the function that performs a spawn. Must be called before
 // broker_serve(); without a hook every spawn fails.
 void broker_set_spawn_hook(BrokerSpawnHook hook);
+
+// The handler of the "ipc-selftest" request (src/ps5/spawn/ipc_selftest.h):
+// returns the reply. Without one the request is answered with an error.
+using BrokerSelftestHook = nlohmann::json (*)(const nlohmann::json& request);
+void broker_set_selftest_hook(BrokerSelftestHook hook);
 
 struct BrokerServerOptions {
   // AF_UNIX paths tried in order; the first that binds is used.

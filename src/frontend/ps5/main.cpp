@@ -36,6 +36,7 @@
 #include "ps5_cpu_monitor.h"
 #include "ps5_log.h"
 #include "ps5_runtime_env.h"
+#include "ipc_selftest.h"
 
 #if PROSPEROWEB_NATIVE_TITLE
 #include "native/native_title.h"
@@ -258,6 +259,8 @@ int main(int argc, char** argv) {
     log_open(log_path);
     log_printf("main: pid=%d ppid=%d started", static_cast<int>(getpid()),
                static_cast<int>(getppid()));
+    // The IPC descriptor the UI handed over (ps5webkit/spawn.h: fd 3).
+    prosperoweb::spawn::ipc_describe_inherited_fd(3);
   }
 
   // Every role, before it starts a thread: the threads inherit the mask.

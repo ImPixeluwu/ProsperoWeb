@@ -34,6 +34,7 @@ constexpr int kKillTimeoutMs = 2000;
 constexpr int kPollMs = 200;
 
 std::atomic<BrokerSpawnHook> g_hook{nullptr};
+std::atomic<BrokerSelftestHook> g_selftest_hook{nullptr};
 
 long long ms_since(Clock::time_point t) {
   return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t).count();
@@ -375,6 +376,9 @@ void Server::handle(const json& msg, std::vector<int>* fds) {
     reply = do_terminate(msg);
   } else if (op == "ping") {
     reply = json{{"ok", true}, {"pid", static_cast<int>(getpid())}};
+  } else if (op == "ipc-selftest") {
+    const BrokerSelftestHook hook = g_selftest_hook.load();
+    reply = hook ? hook(msg) : error_reply("ipc-selftest", ENOSYS, "no self-test in this broker");
   } else {
     reply = error_reply("request", EINVAL, "unknown op '" + op + "'");
   }
@@ -518,6 +522,8 @@ int Server::run(const std::atomic<bool>* stop) {
 }  // namespace
 
 void broker_set_spawn_hook(BrokerSpawnHook hook) { g_hook.store(hook); }
+
+void broker_set_selftest_hook(BrokerSelftestHook hook) { g_selftest_hook.store(hook); }
 
 int broker_serve(const BrokerServerOptions& options, const std::atomic<bool>* stop) {
   Server server(options);
