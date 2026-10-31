@@ -5,9 +5,10 @@ add_executable(prosperobrowser_ps5_tests
   test_audio_server.cpp
   test_display.cpp
   test_video_overlay.cpp
+  test_cpu_mask.cpp
 )
 target_link_libraries(prosperobrowser_ps5_tests PRIVATE prosperobrowser::spawn_util
-  prosperobrowser::spawn_broker prosperobrowser::audio_server prosperobrowser::display prosperobrowser::video_server prosperobrowser_warnings)
+  prosperobrowser::spawn_broker prosperobrowser::audio_server prosperobrowser::display prosperobrowser::video_server prosperobrowser::cpu prosperobrowser_warnings)
 target_include_directories(prosperobrowser_ps5_tests SYSTEM PRIVATE "${PROSPEROBROWSER_THIRD_PARTY_DIR}")
 
 add_test(NAME ps5.spawn_util
@@ -24,3 +25,5 @@ add_test(NAME ps5.display
 add_test(NAME ps5.video_overlay
          COMMAND prosperobrowser_ps5_tests
                  --test-suite=video_wire,video_geometry,video_scale,video_compose,video_e2e --no-version)
+add_test(NAME ps5.cpu_mask
+         COMMAND prosperobrowser_ps5_tests --test-suite=cpu_mask --no-version)
