@@ -218,18 +218,43 @@ void WkWebView::s_needs_display(WKViewRef, WKRect rect, const void* ci) {
   }
 }
 
+// Element fullscreen handshake of the PlayStation port: enterFullScreen
+// (the shell hides the band and resizes this view to the whole window), then
+// beganEnterFullScreen, which must be implemented: without it WKView's client
+// wrapper reports failure and WebKit does not complete the transition. On
+// exit WebKit calls exitFullScreen (only while PlayStationWebView knows it is
+// fullscreen, patch 0011) and/or beganExitFullScreen; the shell hears once.
 void WkWebView::s_enter_fullscreen(WKViewRef, const void* ci) {
-  auto& cb = self_of(ci)->callbacks();
-  if (cb.enter_fullscreen) {
-    cb.enter_fullscreen();
+  auto* self = self_of(ci);
+  self->in_fullscreen_ = true;
+  if (self->cb_.enter_fullscreen) {
+    self->cb_.enter_fullscreen();
   }
+  log_printf("fullscreen: entered (content %dx%d)", self->width_, self->height_);
+}
+
+void WkWebView::s_began_enter_fullscreen(WKViewRef, WKRect, WKRect final_frame, const void* ci) {
+  log_printf("fullscreen: %s began entering (final frame %dx%d)", self_of(ci)->name_.c_str(),
+             static_cast<int>(final_frame.size.width), static_cast<int>(final_frame.size.height));
+}
+
+void WkWebView::notify_fullscreen_exited(const char* how) {
+  if (!in_fullscreen_) {
+    return;
+  }
+  in_fullscreen_ = false;
+  if (cb_.exit_fullscreen) {
+    cb_.exit_fullscreen();
+  }
+  log_printf("fullscreen: exited (%s, content %dx%d)", how, width_, height_);
 }
 
 void WkWebView::s_exit_fullscreen(WKViewRef, const void* ci) {
-  auto& cb = self_of(ci)->callbacks();
-  if (cb.exit_fullscreen) {
-    cb.exit_fullscreen();
-  }
+  self_of(ci)->notify_fullscreen_exited("exitFullScreen");
+}
+
+void WkWebView::s_began_exit_fullscreen(WKViewRef, WKRect, WKRect, const void* ci) {
+  self_of(ci)->notify_fullscreen_exited("beganExitFullScreen");
 }
 
 // --- construction -----------------------------------------------------------
@@ -279,6 +304,9 @@ WkWebView::WkWebView(WKContextRef context, WKWebsiteDataStoreRef data_store,
   view_client.setViewNeedsDisplay = &WkWebView::s_needs_display;
   view_client.enterFullScreen = &WkWebView::s_enter_fullscreen;
   view_client.exitFullScreen = &WkWebView::s_exit_fullscreen;
+  view_client.closeFullScreen = &WkWebView::s_exit_fullscreen;
+  view_client.beganEnterFullScreen = &WkWebView::s_began_enter_fullscreen;
+  view_client.beganExitFullScreen = &WkWebView::s_began_exit_fullscreen;
   WKViewSetViewClient(view_, &view_client.base);
 
   WKPageNavigationClientV0 nav_client{};

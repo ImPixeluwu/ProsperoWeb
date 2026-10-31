@@ -21,6 +21,11 @@ WebEventFactory computes clickCount from the time: with a constant 0,
 every press within 5 px of the previous one became a double/triple
 click (word/paragraph selection); without button bits, mousedown and
 pointerdown reported buttons == 0.
+
+PlayStationWebView::enterFullScreen() records the fullscreen state when
+the client accepts: nothing called willEnterFullScreen(), so
+m_isFullScreen stayed false, exitFullScreen() never reached the client
+and WKViewRequestExitFullScreen() did nothing.
 diff --git a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp b/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
 index 8a0972133..108753e52 100644
 --- a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
@@ -200,3 +205,33 @@ index 674924662..74ea890ea 100644
  #ifdef __cplusplus
  }
  #endif
+diff --git a/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp b/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp
+index f5ba02041..c3894f524 100644
+--- a/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp
++++ b/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp
+@@ -139,10 +139,25 @@ bool PlayStationWebView::isFullScreen()
+ 
+ void PlayStationWebView::enterFullScreen(CompletionHandler<void(bool)>&& completionHandler)
+ {
++#if defined(PS5_HOMEBREW)
++    // Nothing calls willEnterFullScreen(), so m_isFullScreen stayed false:
++    // exitFullScreen() never reached the client and requestExitFullScreen()
++    // (WKViewRequestExitFullScreen) did nothing. Record the state when the
++    // client accepts; beganExitFullScreen()/closeFullScreenManager() clear it.
++    if (m_client && !isFullScreen()) {
++        m_client->enterFullScreen(*this, [this, protectedThis = Ref { *this }, completionHandler = WTF::move(completionHandler)](bool entered) mutable {
++            if (entered)
++                m_isFullScreen = true;
++            completionHandler(entered);
++        });
++    } else
++        completionHandler(false);
++#else
+     if (m_client && !isFullScreen())
+         m_client->enterFullScreen(*this, WTF::move(completionHandler));
+     else
+         completionHandler(false);
++#endif
+ }
+ 
+ void PlayStationWebView::exitFullScreen(CompletionHandler<void()>&& completionHandler)

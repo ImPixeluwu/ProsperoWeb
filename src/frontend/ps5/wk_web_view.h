@@ -88,6 +88,8 @@ class WkWebView {
 
   // Geometry / visibility.
   void set_size(int width, int height);
+  int width() const { return width_; }
+  int height() const { return height_; }
   void set_visible(bool visible);
 
   // Trusted input (real engine events).
@@ -116,6 +118,9 @@ class WkWebView {
   static void s_needs_display(WKViewRef, WKRect, const void*);
   static void s_enter_fullscreen(WKViewRef, const void*);
   static void s_exit_fullscreen(WKViewRef, const void*);
+  static void s_began_enter_fullscreen(WKViewRef, WKRect, WKRect, const void*);
+  static void s_began_exit_fullscreen(WKViewRef, WKRect, WKRect, const void*);
+  void notify_fullscreen_exited(const char* how);
 
   Callbacks cb_;
   WKViewRef view_ = nullptr;
@@ -125,6 +130,7 @@ class WkWebView {
   DirtyRect dirty_;
   int width_ = 1920;
   int height_ = 1080;
+  bool in_fullscreen_ = false;
   // Diagnostics: the view's name in log.txt and one-shot "first" events.
   std::string name_;
   bool needs_display_logged_ = false;

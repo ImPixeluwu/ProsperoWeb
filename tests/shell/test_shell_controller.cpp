@@ -575,12 +575,20 @@ TEST_SUITE("shell.fullscreen") {
     f.frame();
     CHECK(f.chrome.last["fullscreen_state"] == "element");
     CHECK(f.chrome.last["chrome_visible"] == false);
+    // The page gets the whole window: no band offset, 1920x1080.
+    CHECK(f.shell->content_top() == 0);
+    CHECK(f.chrome.last["content"]["y"] == 0);
+    CHECK(f.view(0).width == 1920);
+    CHECK(f.view(0).height == 1080);
     f.press(Button::Circle);
     CHECK(f.view(0).called("request_exit_fullscreen"));
     CHECK_FALSE(f.view(0).called("go_back"));
     f.view(0).client().fullscreen_exited();
     f.frame();
     CHECK(f.chrome.last["fullscreen_state"] == "normal");
+    CHECK(f.chrome.last["chrome_visible"] == true);
+    CHECK(f.shell->content_top() == ShellController::kChromeBandHeight);
+    CHECK(f.view(0).height == 1080 - ShellController::kChromeBandHeight);
   }
 
   TEST_CASE("page leaving fullscreen by itself restores the previous state") {

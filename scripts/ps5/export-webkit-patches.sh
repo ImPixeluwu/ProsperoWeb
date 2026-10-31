@@ -24,7 +24,7 @@ TOPICS=(
     "0008-skia-freebsd-malloc-usable-size|Source/ThirdParty/skia/src/ports/SkMemory_malloc.cpp"
     "0009-webkit-static-injected-bundle|Source/WebKit/WebProcess/InjectedBundle/playstation/InjectedBundlePlayStation.cpp"
     "0010-webcore-timing-function-destructors|Source/WebCore/platform/animation/TimingFunction.h Source/WebCore/platform/animation/TimingFunction.cpp"
-    "0011-webkit-playstation-page-api|Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.h Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp"
+    "0011-webkit-playstation-page-api|Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.h Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp"
     "0012-webcore-playstation-adwaita-theme|Source/WTF/wtf/PlatformUse.h Source/WebCore/CMakeLists.txt Source/WebCore/rendering/playstation/RenderThemePlayStation.cpp Source/WebCore/platform/playstation/ThemePlayStation.cpp Source/WebCore/platform/playstation/ScrollbarThemePlayStation.cpp Source/WebCore/rendering/adwaita/RenderThemeAdwaita.cpp"
     # Generated from webkit-port/media/ffmpeg: edit there, then run
     # webkit-port/media/sync-to-tree.sh (which calls this script).
