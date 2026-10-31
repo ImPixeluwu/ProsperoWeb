@@ -14,9 +14,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include <unistd.h>
 
+#include "prosperobrowser/core/legacy_profile.h"
 #include "prosperobrowser/spawn/spawn.h"
 #include "ps5webkit/entry.h"
 #include "ps5_app.h"
@@ -75,10 +77,43 @@ void export_self_path(int argc, char** argv) {
   setenv("PROSPEROBROWSER_SELF_PATH", path.c_str(), /*overwrite=*/0);
 }
 
+// The project was called ps5browser before: carry its profile over once
+// (UI role, before config.json is read). Copies, never moves, so the old
+// build keeps working from /data/ps5browser.
+void migrate_legacy_profile_dir() {
+  using namespace prosperobrowser::frontend;
+  const auto result = prosperobrowser::core::migrate_legacy_profile(kLegacyDataDir, kPs5DataDir);
+  if (!result.ran) {
+    return;
+  }
+  log_printf("migrate: copied %d items from %s", result.copied, kLegacyDataDir);
+  for (const auto& failure : result.failed) {
+    log_printf("migrate: failed: %s", failure.c_str());
+  }
+}
+
+// Logs the PS5BROWSER_* variables adopted at startup, once per launch.
+void log_legacy_env(const std::vector<std::string>& adopted) {
+  using prosperobrowser::frontend::log_printf;
+  if (adopted.empty()) {
+    return;
+  }
+  std::string names;
+  for (const auto& name : adopted) {
+    names += (names.empty() ? "" : " ") + name;
+  }
+  log_printf("env: deprecated PS5BROWSER_* variables used (%s); rename them to "
+             "PROSPEROBROWSER_*, the old names stop working in the next release",
+             names.c_str());
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   using namespace prosperobrowser::frontend;
+  // Before anything reads the environment (the role, then every module).
+  // The children inherit the new names, so only the UI or broker logs this.
+  const std::vector<std::string> legacy_env = prosperobrowser::core::adopt_legacy_env();
   std::string role = resolve_role(argc, argv);
   const bool child = role == "WebProcess" || role == "NetworkProcess";
   const bool broker = role == kBrokerRole;
@@ -98,6 +133,10 @@ int main(int argc, char** argv) {
     log_open(log_path);
     log_printf("main: pid=%d ppid=%d argv0=%s", static_cast<int>(getpid()),
                static_cast<int>(getppid()), argc > 0 && argv[0] ? argv[0] : "(none)");
+    log_legacy_env(legacy_env);
+  }
+  if (!child && !broker) {
+    migrate_legacy_profile_dir();
   }
 
   // Before any role starts: WebProcess and NetworkProcess read fontconfig,

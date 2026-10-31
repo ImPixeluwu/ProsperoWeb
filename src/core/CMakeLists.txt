@@ -5,6 +5,7 @@ add_library(prosperobrowser_core STATIC
   fullscreen_controller.cpp
   gamepad_mapper.cpp
   history.cpp
+  legacy_profile.cpp
   in_memory_storage.cpp
   on_screen_keyboard.cpp
   pointer_model.cpp

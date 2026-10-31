@@ -11,7 +11,7 @@ installed under `/data/prosperobrowser/`:
 
 ```
 /data/prosperobrowser/
-  prosperobrowser.elf        the payload (UI + WebProcess + NetworkProcess, one ELF)
+  prosperobrowser.elf   the payload (UI + WebProcess + NetworkProcess, one ELF)
   chrome/
     chrome.html         the HTML browser chrome (from src/chrome-ui/)
     ...                 chrome assets (css/js/img)
@@ -32,6 +32,27 @@ installed under `/data/prosperobrowser/`:
   tmp/                  TMPDIR (created at startup)
   log.txt               shared log of all roles, fsync'ed per line (also stderr + klog)
 ```
+
+### Upgrading from ps5browser
+
+Releases before the rename installed to `/data/ps5browser/`. On the first
+start the UI copies (never moves) `tabs.json`, `history.json`,
+`bookmarks.json`, `config.json`, `storage/`, `localstorage/`, `indexeddb/`
+and `cache/` from `/data/ps5browser/` into `/data/prosperobrowser/`, each
+only if it is missing there, and logs `migrate: copied <n> items from
+/data/ps5browser`. In the copied `config.json`, paths and `file://` URLs
+under `/data/ps5browser` (such as `chrome_dir` from the old sample) are
+pointed at `/data/prosperobrowser`. It then writes `/data/prosperobrowser/.migrated-from-ps5browser`
+and never copies again; delete that file to repeat the copy. A failed
+item is logged (`migrate: failed: ...`) and no marker is written, so the
+next start retries. `/data/ps5browser/` is left as it was and can be
+deleted by hand once the new install works.
+
+For one release `PS5BROWSER_*` environment variables (and `config.json`
+`"env"` keys) are still accepted: each one is used as its
+`PROSPEROBROWSER_*` counterpart unless that is set too, and `log.txt` gets
+one `env: deprecated PS5BROWSER_* variables used (...)` line (or one
+`env <NAME>: deprecated name in config.json` line per key).
 
 `config.json` keys (all optional; defaults in `src/frontend/ps5/ps5_config.h`):
 

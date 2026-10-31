@@ -11,6 +11,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "prosperobrowser/core/legacy_profile.h"
 #include "ps5_log.h"
 
 namespace prosperobrowser::frontend {
@@ -46,7 +47,13 @@ void apply_config_env(const std::string& base_dir) {
   if (env == doc.end() || !env->is_object()) {
     return;
   }
-  for (const auto& [name, value] : env->items()) {
+  for (const auto& [key, value] : env->items()) {
+    // A config.json carried over from ps5browser may still use the old names.
+    std::string name = key;
+    if (const std::string renamed = core::renamed_env_name(key); !renamed.empty()) {
+      log_printf("env %s: deprecated name in config.json, use %s", key.c_str(), renamed.c_str());
+      name = renamed;
+    }
     std::string text_value;
     if (value.is_string()) {
       text_value = value.get<std::string>();

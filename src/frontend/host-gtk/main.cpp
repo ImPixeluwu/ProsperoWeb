@@ -8,6 +8,7 @@
 #include <string>
 
 #include "host_app.h"
+#include "prosperobrowser/core/legacy_profile.h"
 
 namespace {
 
@@ -39,6 +40,10 @@ bool parse_size(const char* s, int& w, int& h) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  for (const auto& name : prosperobrowser::core::adopt_legacy_env()) {
+    std::fprintf(stderr, "prosperobrowser-host: %s is deprecated, use %s\n", name.c_str(),
+                 prosperobrowser::core::renamed_env_name(name).c_str());
+  }
   prosperobrowser::host::Options opt;
   if (const char* lang = std::getenv("LANG"); lang && std::strncmp(lang, "ru", 2) == 0) {
     opt.language = "ru";

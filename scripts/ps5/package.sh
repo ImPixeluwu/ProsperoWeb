@@ -166,6 +166,16 @@ optionally klogsrv (port 3232) to read the debug output.
    (override with PROSPEROBROWSER_SELF_PATH), and reads its fonts, CA bundle
    and chrome from there.
 
+   Upgrading from ps5browser (installed in /data/ps5browser): remove the
+   old tile /data/homebrew/ps5browser/ so websrv lists only the new one,
+   and leave /data/ps5browser/ in place for the first start. The browser
+   then copies (does not move) tabs.json, history.json, bookmarks.json,
+   config.json, storage/, localstorage/, indexeddb/ and cache/ once into
+   ${INSTALL_DIR}/ and logs "migrate: copied <n> items from
+   /data/ps5browser"; /data/ps5browser paths in the copied config.json
+   are pointed at ${INSTALL_DIR}. PS5BROWSER_* variables (also in config.json "env")
+   still work for this release; rename them to PROSPEROBROWSER_*.
+
 2. Optional: copy config.json.sample to config.json and edit it.
 
 3. Launch ONLY through the websrv tile: open http://PS5_IP:8080/ (or the
