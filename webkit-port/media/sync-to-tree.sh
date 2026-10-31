@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # The ffmpeg media engine is edited in webkit-port/media/ffmpeg (source of
-# truth) and shipped to WebKit as patch 0900, which adds the files under
-# Source/WebCore/platform/graphics/ffmpeg/ and wires them up. The USE_FFMPEG
-# option itself lives in patch 0001 (OptionsPlayStation.cmake).
+# truth; the MSE engine in ffmpeg/mse) and shipped to WebKit as patch 0900,
+# which adds the files under Source/WebCore/platform/graphics/ffmpeg/ and
+# wires them up. The USE_FFMPEG and ENABLE_MEDIA_SOURCE options live in
+# patch 0001 (OptionsPlayStation.cmake).
 #
 #   webkit-port/media/sync-to-tree.sh [--sync]  copy ffmpeg/ and FFmpeg.cmake into the
 #                                               patched tree, then regenerate all patches
@@ -36,6 +37,70 @@ MODIFIED=(
 
 die() { printf 'sync-to-tree: error: %s\n' "$*" >&2; exit 1; }
 
+copy_sources() {
+    mkdir -p "$1/mse"
+    cp -- "${SRC_DIR}"/*.h "${SRC_DIR}"/*.cpp "$1/"
+    cp -- "${SRC_DIR}"/mse/*.h "${SRC_DIR}"/mse/*.cpp "$1/mse/"
+}
+
+# Wires the engines into WebCore/WebKit under the tree root $1. Each edit is
+# skipped when already present, so this both bootstraps a pristine tree and
+# upgrades a tree that has the progressive engine only (adding the MSE one).
+wire_engine() {
+    python3 -I - "$1" <<'PY'
+import sys, pathlib
+base = pathlib.Path(sys.argv[1])
+
+def edit(path, anchor, replacement, done=None):
+    p = base / path
+    text = p.read_text()
+    if (done or replacement) in text:
+        return
+    if text.count(anchor) != 1:
+        sys.exit(f"sync-to-tree: anchor not found exactly once in {path}: {anchor!r}")
+    p.write_text(text.replace(anchor, replacement))
+
+edit("Source/WebCore/PlatformPlayStation.cmake",
+     "if (USE_COORDINATED_GRAPHICS)\n    include(platform/CoordinatedGraphics.cmake)\nendif ()\n",
+     "if (USE_COORDINATED_GRAPHICS)\n    include(platform/CoordinatedGraphics.cmake)\nendif ()\n\n"
+     "if (USE_FFMPEG)\n    include(platform/FFmpeg.cmake)\nendif ()\n")
+
+mp = "Source/WebCore/platform/graphics/MediaPlayer.cpp"
+edit(mp, '#if USE(EXTERNAL_HOLEPUNCH)\n#include "MediaPlayerPrivateHolePunch.h"\n#endif\n',
+     '#if USE(EXTERNAL_HOLEPUNCH)\n#include "MediaPlayerPrivateHolePunch.h"\n#endif\n\n'
+     '#if USE(FFMPEG)\n#include "MediaPlayerPrivateFFmpeg.h"\n#endif\n')
+edit(mp, '#if USE(FFMPEG)\n#include "MediaPlayerPrivateFFmpeg.h"\n#endif\n',
+     '#if USE(FFMPEG)\n#include "MediaPlayerPrivateFFmpeg.h"\n#if ENABLE(MEDIA_SOURCE)\n#include "MediaPlayerPrivateFFmpegMSE.h"\n#endif\n#endif\n')
+edit(mp, '#if USE(EXTERNAL_HOLEPUNCH)\n    MediaPlayerPrivateHolePunch::registerMediaEngine(addMediaEngine);\n#endif\n',
+     '#if USE(EXTERNAL_HOLEPUNCH)\n    MediaPlayerPrivateHolePunch::registerMediaEngine(addMediaEngine);\n#endif\n\n'
+     '#if USE(FFMPEG)\n    MediaPlayerPrivateFFmpeg::registerMediaEngine(addMediaEngine);\n#endif\n')
+edit(mp, '#if USE(FFMPEG)\n    MediaPlayerPrivateFFmpeg::registerMediaEngine(addMediaEngine);\n#endif\n',
+     '#if USE(FFMPEG)\n    MediaPlayerPrivateFFmpeg::registerMediaEngine(addMediaEngine);\n#if ENABLE(MEDIA_SOURCE)\n'
+     '    MediaPlayerPrivateFFmpegMSE::registerMediaEngine(addMediaEngine);\n#endif\n#endif\n')
+
+mh = "Source/WebCore/platform/graphics/MediaPlayer.h"
+edit(mh, "    GStreamer,\n    Remote\n};", "    GStreamer,\n    Remote,\n    FFmpeg\n};")
+edit(mh, "    WirelessPlayback,\n    Remote\n};", "    WirelessPlayback,\n    Remote,\n    FFmpeg\n};", "    WirelessPlayback,\n    Remote,\n    FFmpeg")
+edit(mh, "    WirelessPlayback,\n    Remote,\n    FFmpeg\n};", "    WirelessPlayback,\n    Remote,\n    FFmpeg,\n    FFmpegMSE\n};")
+
+me = "Source/WebCore/platform/graphics/MediaPlayerEnums.h"
+edit(me, "    CocoaWebM,\n    WirelessPlayback,\n};", "    CocoaWebM,\n    WirelessPlayback,\n    FFmpeg,\n};", "    WirelessPlayback,\n    FFmpeg,")
+edit(me, "    WirelessPlayback,\n    FFmpeg,\n};", "    WirelessPlayback,\n    FFmpeg,\n    FFmpegMSE,\n};")
+
+ser = "Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in"
+edit(ser, "    CocoaWebM,\n    WirelessPlayback\n};", "    CocoaWebM,\n    WirelessPlayback,\n    FFmpeg\n};", "    WirelessPlayback,\n    FFmpeg")
+edit(ser, "    WirelessPlayback,\n    FFmpeg\n};", "    WirelessPlayback,\n    FFmpeg,\n    FFmpegMSE\n};")
+
+remote = "Source/WebKit/WebProcess/GPU/media/MediaPlayerPrivateRemote.cpp"
+edit(remote, "    case MediaPlayerMediaEngineIdentifier::WirelessPlayback:\n        return false;\n",
+     "    case MediaPlayerMediaEngineIdentifier::WirelessPlayback:\n"
+     "    case MediaPlayerMediaEngineIdentifier::FFmpeg:\n        return false;\n",
+     "    case MediaPlayerMediaEngineIdentifier::FFmpeg:\n")
+edit(remote, "    case MediaPlayerMediaEngineIdentifier::FFmpeg:\n        return false;\n",
+     "    case MediaPlayerMediaEngineIdentifier::FFmpeg:\n    case MediaPlayerMediaEngineIdentifier::FFmpegMSE:\n        return false;\n")
+PY
+}
+
 generate() {
     [[ -d "${WEBKIT_DIR}/Source" ]] || die "${WEBKIT_DIR} is not a WebKit checkout"
     if grep -q 'MediaPlayerPrivateFFmpeg' "${WEBKIT_DIR}/Source/WebCore/platform/graphics/MediaPlayer.cpp"; then
@@ -50,51 +115,9 @@ generate() {
         cp -- "${WEBKIT_DIR}/${f}" "${WORK}/b/${f}"
     done
 
-    python3 -I - "${WORK}/b" <<'PY'
-import sys, pathlib
-base = pathlib.Path(sys.argv[1])
+    wire_engine "${WORK}/b"
 
-def edit(path, anchor, replacement, count=1):
-    p = base / path
-    text = p.read_text()
-    if text.count(anchor) != count:
-        sys.exit(f"sync-to-tree: anchor not found exactly {count}x in {path}: {anchor!r}")
-    p.write_text(text.replace(anchor, replacement))
-
-edit("Source/WebCore/PlatformPlayStation.cmake",
-     "if (USE_COORDINATED_GRAPHICS)\n    include(platform/CoordinatedGraphics.cmake)\nendif ()\n",
-     "if (USE_COORDINATED_GRAPHICS)\n    include(platform/CoordinatedGraphics.cmake)\nendif ()\n\n"
-     "if (USE_FFMPEG)\n    include(platform/FFmpeg.cmake)\nendif ()\n")
-
-edit("Source/WebCore/platform/graphics/MediaPlayer.cpp",
-     '#if USE(EXTERNAL_HOLEPUNCH)\n#include "MediaPlayerPrivateHolePunch.h"\n#endif\n',
-     '#if USE(EXTERNAL_HOLEPUNCH)\n#include "MediaPlayerPrivateHolePunch.h"\n#endif\n\n'
-     '#if USE(FFMPEG)\n#include "MediaPlayerPrivateFFmpeg.h"\n#endif\n')
-edit("Source/WebCore/platform/graphics/MediaPlayer.cpp",
-     '#if USE(EXTERNAL_HOLEPUNCH)\n    MediaPlayerPrivateHolePunch::registerMediaEngine(addMediaEngine);\n#endif\n',
-     '#if USE(EXTERNAL_HOLEPUNCH)\n    MediaPlayerPrivateHolePunch::registerMediaEngine(addMediaEngine);\n#endif\n\n'
-     '#if USE(FFMPEG)\n    MediaPlayerPrivateFFmpeg::registerMediaEngine(addMediaEngine);\n#endif\n')
-
-edit("Source/WebCore/platform/graphics/MediaPlayer.h",
-     "    WirelessPlayback,\n    Remote\n};",
-     "    WirelessPlayback,\n    Remote,\n    FFmpeg\n};")
-
-edit("Source/WebCore/platform/graphics/MediaPlayerEnums.h",
-     "    CocoaWebM,\n    WirelessPlayback,\n};",
-     "    CocoaWebM,\n    WirelessPlayback,\n    FFmpeg,\n};")
-
-edit("Source/WebKit/Shared/WebCoreArgumentCoders.serialization.in",
-     "    CocoaWebM,\n    WirelessPlayback\n};",
-     "    CocoaWebM,\n    WirelessPlayback,\n    FFmpeg\n};")
-
-edit("Source/WebKit/WebProcess/GPU/media/MediaPlayerPrivateRemote.cpp",
-     "    case MediaPlayerMediaEngineIdentifier::WirelessPlayback:\n        return false;\n",
-     "    case MediaPlayerMediaEngineIdentifier::WirelessPlayback:\n"
-     "    case MediaPlayerMediaEngineIdentifier::FFmpeg:\n        return false;\n")
-PY
-
-    mkdir -p "${WORK}/b/Source/WebCore/platform/graphics/ffmpeg"
-    cp -- "${SRC_DIR}"/*.h "${SRC_DIR}"/*.cpp "${WORK}/b/Source/WebCore/platform/graphics/ffmpeg/"
+    copy_sources "${WORK}/b/Source/WebCore/platform/graphics/ffmpeg"
     cp -- "${CMAKE_TEMPLATE}" "${WORK}/b/Source/WebCore/platform/FFmpeg.cmake"
 
     mkdir -p "$(dirname "${PATCH}")"
@@ -107,10 +130,15 @@ payload SDK's static ffmpeg 7.0: progressive MP4/WebM/MP3/Ogg/FLAC/WAV
 and HLS through libavformat (media requests go through WebCore's
 PlatformMediaResourceLoader), libavcodec decoding, libswscale to BGRA
 painted via NativeImage, libswresample to an SDL2 (or silent) audio
-sink with an audio-master A/V clock. No MSE, EME or hardware decoding.
+sink with an audio-master A/V clock. Media Source Extensions through
+MediaPlayerPrivateFFmpegMSE (ffmpeg/mse/: fragmented MP4 and WebM source
+buffers parsed by libavformat, fed to the same decoders). No EME or
+hardware decoding.
 
 USE_FFMPEG (patch 0001) defaults to PS5_HOMEBREW and requires
-ENABLE_VIDEO. New MediaPlayerType/MediaEngineIdentifier value FFmpeg.
+ENABLE_VIDEO. New MediaPlayerType values FFmpeg and FFmpegMSE,
+MediaEngineIdentifier values FFmpeg and FFmpegMSE, MediaPlatformType
+value FFmpeg.
 
 Generated by webkit-port/media/sync-to-tree.sh from webkit-port/media/ffmpeg;
 edit the files there, not this patch.
@@ -133,8 +161,9 @@ sync_tree() {
     local dst="${WEBKIT_DIR}/Source/WebCore/platform/graphics/ffmpeg"
     grep -q 'MediaPlayerPrivateFFmpeg' "${WEBKIT_DIR}/Source/WebCore/platform/graphics/MediaPlayer.cpp" \
         || die "the tree does not contain the ffmpeg engine; run scripts/ps5/fetch-webkit.sh first"
-    cp -- "${SRC_DIR}"/*.h "${SRC_DIR}"/*.cpp "${dst}/"
+    copy_sources "${dst}"
     cp -- "${CMAKE_TEMPLATE}" "${WEBKIT_DIR}/Source/WebCore/platform/FFmpeg.cmake"
+    wire_engine "${WEBKIT_DIR}"
     "${ROOT}/scripts/ps5/export-webkit-patches.sh"
 }
 

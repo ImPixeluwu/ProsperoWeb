@@ -1,9 +1,12 @@
 # ffmpeg media engine (USE_FFMPEG): software playback of progressive media
-# and HLS through libavformat/libavcodec. The sources in
-# platform/graphics/ffmpeg are maintained in ps5-browser's
-# webkit-port/media/ffmpeg and copied here by webkit-port/media/sync-to-tree.sh.
+# and HLS through libavformat/libavcodec, and Media Source Extensions
+# (platform/graphics/ffmpeg/mse, compiled to nothing without
+# ENABLE_MEDIA_SOURCE). The sources in platform/graphics/ffmpeg are
+# maintained in ps5-browser's webkit-port/media/ffmpeg and copied here by
+# webkit-port/media/sync-to-tree.sh.
 list(APPEND WebCore_PRIVATE_INCLUDE_DIRECTORIES
     "${WEBCORE_DIR}/platform/graphics/ffmpeg"
+    "${WEBCORE_DIR}/platform/graphics/ffmpeg/mse"
 )
 
 list(APPEND WebCore_SOURCES
@@ -13,6 +16,10 @@ list(APPEND WebCore_SOURCES
     platform/graphics/ffmpeg/FFmpegResourceIO.cpp
     platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp
     platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp
+    platform/graphics/ffmpeg/mse/FFmpegAppendParser.cpp
+    platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.cpp
+    platform/graphics/ffmpeg/mse/MediaSourcePrivateFFmpeg.cpp
+    platform/graphics/ffmpeg/mse/SourceBufferPrivateFFmpeg.cpp
 )
 
 find_path(FFMPEG_INCLUDE_DIR NAMES libavformat/avformat.h)

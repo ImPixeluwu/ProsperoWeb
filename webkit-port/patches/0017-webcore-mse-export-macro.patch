@@ -1,0 +1,21 @@
+Subject: WebCore: no WEBCORE_EXPORT on a member of an exported class
+
+MediaSourcePrivate is a WEBCORE_EXPORT class, and its static
+computeBufferedRanges() is WEBCORE_EXPORT again. Where WEBCORE_EXPORT is
+__declspec(dllexport) (the PlayStation target) that is an error:
+"attribute 'dllexport' cannot be applied to member of 'dllexport'
+class". The member is exported with its class either way. Needed for
+ENABLE_MEDIA_SOURCE on the PS5 build.
+diff --git a/Source/WebCore/platform/graphics/MediaSourcePrivate.h b/Source/WebCore/platform/graphics/MediaSourcePrivate.h
+index 95a186c2b..5a4b5281e 100644
+--- a/Source/WebCore/platform/graphics/MediaSourcePrivate.h
++++ b/Source/WebCore/platform/graphics/MediaSourcePrivate.h
+@@ -108,7 +108,7 @@ public:
+     // MediaSource readyState is "ended". Used by both MediaSource (main) on
+     // readyState/dirty triggers and MediaSourcePrivate (dispatcher) when track
+     // ranges change so a single algorithm produces the value.
+-    WEBCORE_EXPORT static PlatformTimeRanges computeBufferedRanges(const Vector<PlatformTimeRanges>& activeRanges, bool ended);
++    static PlatformTimeRanges computeBufferedRanges(const Vector<PlatformTimeRanges>& activeRanges, bool ended);
+ 
+     MediaPlayer::ReadyState LEGACY_NODELETE mediaPlayerReadyState() const;
+     void setMediaPlayerReadyState(MediaPlayer::ReadyState);

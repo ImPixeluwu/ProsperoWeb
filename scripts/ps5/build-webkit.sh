@@ -19,6 +19,7 @@
 #   WEBKIT_BUILD_DIR  build directory                 (build-wk-ps5)
 #   JOBS              parallel compile jobs           (4)
 #   USE_FFMPEG        ffmpeg <video> engine (0900)    (ON)
+#   ENABLE_MEDIA_SOURCE MSE on the ffmpeg engine       (ON)
 #   ENABLE_JIT        baseline + DFG JIT compiled in  (ON; FTL stays off)
 #   ENABLE_WEBASSEMBLY WebAssembly (IPInt, no BBQ/OMG) (ON)
 #                     Both are compiled in but off at run time: the shell
@@ -89,7 +90,7 @@ configure() {
         -DENABLE_JIT="${ENABLE_JIT:-ON}" -DENABLE_DFG_JIT="${ENABLE_JIT:-ON}" -DENABLE_FTL_JIT=OFF \
         -DENABLE_WEBASSEMBLY="${ENABLE_WEBASSEMBLY:-ON}" \
         -DENABLE_VIDEO=ON \
-        -DENABLE_MEDIA_SOURCE=OFF \
+        -DENABLE_MEDIA_SOURCE="${ENABLE_MEDIA_SOURCE:-ON}" \
         -DUSE_FFMPEG="${USE_FFMPEG:-ON}" \
         -DENABLE_FULLSCREEN_API=ON \
         -DENABLE_GAMEPAD=ON \

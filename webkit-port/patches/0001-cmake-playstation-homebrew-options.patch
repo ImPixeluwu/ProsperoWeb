@@ -16,10 +16,11 @@ With -DPS5_HOMEBREW=ON (defines PS5_HOMEBREW=1 for C/C++) this patch:
  - skips the mmap wrapping and the sce_sys/ copy,
  - turns HAVE_PTHREAD_SETNAME_NP off (Sony-only one-argument variant).
  - defines USE_FFMPEG (default PS5_HOMEBREW, needs ENABLE_VIDEO) for the
-   ffmpeg media engine of patch 0900.
+   ffmpeg media engine of patch 0900, and defaults ENABLE_MEDIA_SOURCE
+   on for its MSE player.
 Without PS5_HOMEBREW the behaviour is unchanged.
 diff --git a/Source/cmake/OptionsPlayStation.cmake b/Source/cmake/OptionsPlayStation.cmake
-index f55771f99..584cec250 100644
+index f55771f99..78e627f48 100644
 --- a/Source/cmake/OptionsPlayStation.cmake
 +++ b/Source/cmake/OptionsPlayStation.cmake
 @@ -1,7 +1,18 @@
@@ -80,7 +81,7 @@ index f55771f99..584cec250 100644
  
  # Turn off JIT
  WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_JIT PRIVATE OFF)
-@@ -184,18 +205,34 @@ WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_ISO_MALLOC PRIVATE OFF)
+@@ -184,18 +205,36 @@ WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_ISO_MALLOC PRIVATE OFF)
  WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_FULLSCREEN_API PRIVATE ON)
  WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_PERIODIC_MEMORY_MONITOR PRIVATE ON)
  WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_REMOTE_INSPECTOR PRIVATE ON)
@@ -101,6 +102,8 @@ index f55771f99..584cec250 100644
 +    # window.webkit.messageHandlers: the shell's page bridge (WKUserContentController
 +    # script message handlers) instead of its polling fallback.
 +    WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_USER_MESSAGE_HANDLERS PRIVATE ON)
++    # Media Source Extensions through the ffmpeg engine (patch 0900).
++    WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MEDIA_SOURCE PRIVATE ON)
 +else ()
 +    WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_USER_MESSAGE_HANDLERS PRIVATE OFF)
 +endif ()
@@ -116,7 +119,7 @@ index f55771f99..584cec250 100644
  endif ()
  
  # Enable variation fonts when cairo >= 1.16, fontconfig >= 2.13.0, freetype >= 2.9.0 and harfbuzz >= 1.4.2
-@@ -226,7 +263,6 @@ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GEOLOCATION PRIVATE OFF)
+@@ -226,7 +265,6 @@ WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_GEOLOCATION PRIVATE OFF)
  WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_IMAGE_DIFF PRIVATE OFF)
  WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_MATHML PRIVATE OFF)
  WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_NOTIFICATIONS PRIVATE OFF)
@@ -124,7 +127,7 @@ index f55771f99..584cec250 100644
  WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_WEBGL PRIVATE OFF)
  WEBKIT_OPTION_DEFAULT_PORT_VALUE(ENABLE_XSLT PRIVATE OFF)
  WEBKIT_OPTION_DEFAULT_PORT_VALUE(USE_SKIA_ENCODERS PRIVATE OFF)
-@@ -254,7 +290,12 @@ set(CMAKE_CXX_STANDARD_LIBRARIES
+@@ -254,7 +292,12 @@ set(CMAKE_CXX_STANDARD_LIBRARIES
      "${CMAKE_CXX_STANDARD_LIBRARIES} ${C_STD_LIBRARY}"
  )
  
@@ -138,7 +141,7 @@ index f55771f99..584cec250 100644
  SET_AND_EXPOSE_TO_BUILD(HAVE_MAP_ALIGNED OFF)
  
  if (CMAKE_SYSTEM_NAME STREQUAL "PlayStation4")
-@@ -371,10 +412,20 @@ endif ()
+@@ -371,10 +414,20 @@ endif ()
  # for ranlib.
  set(PAL_LIBRARY_TYPE OBJECT)
  set(WebCore_LIBRARY_TYPE OBJECT)
@@ -162,7 +165,7 @@ index f55771f99..584cec250 100644
  
  # Enable multi process builds for Visual Studio
  if (NOT ${CMAKE_GENERATOR} MATCHES "Ninja")
-@@ -387,6 +438,9 @@ if (TARGET libdl::dl)
+@@ -387,6 +440,9 @@ if (TARGET libdl::dl)
      add_link_options("$<$<OR:$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>,$<STREQUAL:$<TARGET_PROPERTY:TYPE>,SHARED_LIBRARY>>:$<TARGET_PROPERTY:libdl::dl,INTERFACE_LINK_OPTIONS>>")
  endif ()
  
@@ -172,7 +175,7 @@ index f55771f99..584cec250 100644
  function(add_executable target)
      _add_executable(${ARGV})
      target_link_options(${target} PRIVATE "LINKER:--wrap=mmap")
-@@ -411,6 +465,9 @@ add_custom_target(playstation_tools_copy
+@@ -411,6 +467,9 @@ add_custom_target(playstation_tools_copy
          ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ebootparam.ini
  )
  set_target_properties(playstation_tools_copy PROPERTIES FOLDER "PlayStation")
