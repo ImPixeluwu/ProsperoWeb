@@ -5,6 +5,7 @@
 
 #if ENABLE(VIDEO) && USE(FFMPEG)
 
+#include "FFmpegLog.h"
 #include "Logging.h"
 #include <cstdlib>
 #include <cstring>
@@ -108,9 +109,14 @@ public:
     static std::unique_ptr<AudioSink> create(RenderCallback& render)
     {
         if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
-            WTFLogAlways("[ffmpeg-media] SDL audio init failed: %s", SDL_GetError());
+            ffmpegMediaLog("audio sink: SDL_InitSubSystem(AUDIO) failed: %s", SDL_GetError());
             return nullptr;
         }
+        const char* driver = SDL_GetCurrentAudioDriver();
+        int devices = SDL_GetNumAudioDevices(0);
+        const char* deviceName = devices > 0 ? SDL_GetAudioDeviceName(0, 0) : nullptr;
+        ffmpegMediaLog("audio sink: SDL driver %s, %d output devices, opening the default (%s)",
+            driver ? driver : "(none)", devices, deviceName ? deviceName : "unnamed");
         auto sink = std::unique_ptr<SDLAudioSink>(new SDLAudioSink(WTF::move(render)));
         SDL_AudioSpec desired { };
         desired.freq = sampleRate;
@@ -123,10 +129,15 @@ public:
         // No allowed changes: SDL converts to the device format itself.
         sink->m_device = SDL_OpenAudioDevice(nullptr, 0, &desired, &obtained, 0);
         if (!sink->m_device) {
-            WTFLogAlways("[ffmpeg-media] SDL_OpenAudioDevice failed: %s", SDL_GetError());
+            ffmpegMediaLog("audio sink: SDL_OpenAudioDevice(%d Hz, f32, %d ch, %d samples) failed: %s",
+                desired.freq, desired.channels, desired.samples, SDL_GetError());
+            // The sink's destructor balances SDL_InitSubSystem.
             render = WTF::move(sink->m_render);
             return nullptr;
         }
+        ffmpegMediaLog("audio sink: SDL device %u open: requested %d Hz f32 %d ch %d samples, obtained %d Hz format 0x%x %d ch %d samples",
+            static_cast<unsigned>(sink->m_device), desired.freq, desired.channels, desired.samples,
+            obtained.freq, static_cast<unsigned>(obtained.format), obtained.channels, obtained.samples);
         // The callback fills one buffer while the device plays the previous.
         sink->m_latency = 2.0 * obtained.samples / sampleRate;
         return sink;
@@ -185,8 +196,11 @@ std::unique_ptr<AudioSink> AudioSink::create(RenderCallback&& render)
     if (!nullSinkRequested()) {
         if (auto sink = SDLAudioSink::create(render))
             return sink;
-        WTFLogAlways("[ffmpeg-media] no audio output, playing silently");
-    }
+        ffmpegMediaLog("audio sink: falling back to the null sink (no sound, the clock keeps running)");
+    } else
+        ffmpegMediaLog("audio sink: PS5BROWSER_MEDIA_AUDIO=null, using the null sink");
+#else
+    ffmpegMediaLog("audio sink: built without SDL audio, using the null sink");
 #endif
     return createNull(WTF::move(render));
 }

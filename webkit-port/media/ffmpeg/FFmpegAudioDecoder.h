@@ -90,6 +90,7 @@ private:
 
     // Decoder thread only.
     unsigned m_serial { 0 };
+    unsigned m_decodeErrors { 0 };
     int m_swrInputRate { 0 };
     int m_swrInputFormat { -1 };
     AVChannelLayout m_swrInputLayout { };

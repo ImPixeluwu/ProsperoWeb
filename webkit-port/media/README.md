@@ -36,7 +36,7 @@ The main thread never blocks on a worker, except to join threads on teardown, an
 
 The demuxer keeps one `FFmpegPacketQueue` each for the selected video and audio stream. A seek increments the player's serial. The decoders learn the seek target for that serial, the demuxer seeks (`avformat_seek_file` to the keyframe at or before the target) and flushes both queues to the new serial, and every packet and frame carries its serial. Each decoder flushes its codec when it sees a new serial. Anything older is dropped: queued packets, decoded frames, ring-buffer audio. Decoders discard output before the target, so seeks are accurate. The seek promise resolves once a video frame of the new serial is shown (or video ended) and audio of the new serial is buffered (or audio ended). The player then calls `timeChanged()`.
 
-Demuxer read-ahead stops at 48 MiB in total, or when every enabled stream has at least 15 s and 25 packets queued (`FFmpegPlaybackPolicy.h`). Separately, each network stream suspends its request above 16 MiB of unread data and resumes it with a `Range` request below 4 MiB, also when the size is unknown. A server without `Range` support is suspended above 64 MiB and resumed by restarting the download and skipping to the position (`networkShouldSuspend` in `FFmpegPlaybackPolicy.h`).
+Demuxer read-ahead stops at 24 MiB in total, or when every enabled stream has at least 10 s and 25 packets queued (`FFmpegPlaybackPolicy.h`). Separately, each network stream suspends its request above 8 MiB of unread data and resumes it with a `Range` request below 2 MiB, also when the size is unknown. A server without `Range` support is suspended above 32 MiB and resumed by restarting the download and skipping to the position (`networkShouldSuspend` in `FFmpegPlaybackPolicy.h`).
 
 ### Clock
 
@@ -61,7 +61,7 @@ At rates other than 1 there is no time-stretching. The audio decoder discards sa
 
 ### Video output
 
-Frames are opaque BGRA from swscale. The colour matrix comes from the stream: BT.601, BT.709 or BT.2020, with full or limited range. Output is capped at 1920x1080, and the sample aspect ratio is applied. `paint()` and `nativeImageForCurrentTime()` wrap the current frame without copying, through `SkImages::RasterFromPixmap`. The `SkImage` holds a reference to the frame, and the decoder only reuses pool frames nobody else references. Rendering is software only: no `platformLayer()`, no accelerated compositing.
+Frames are opaque BGRA from swscale, in `av_malloc` blocks whose rows are padded to 64 bytes plus a 256-byte tail (`videoFrameStride`/`videoFrameBytes` in `FFmpegPlaybackPolicy.h`): libswscale's x86 output loops store 8 pixels per iteration, and a tightly packed buffer of a width that is not a multiple of 8 was overrun after its last row, into the allocator's metadata. The colour matrix comes from the stream: BT.601, BT.709 or BT.2020, with full or limited range. Output is capped at 1920x1080, and the sample aspect ratio is applied. `paint()` and `nativeImageForCurrentTime()` wrap the current frame without copying, through `SkImages::RasterFromPixmap`. The `SkImage` holds a reference to the frame, and the decoder only reuses pool frames nobody else references. Rendering is software only: no `platformLayer()`, no accelerated compositing.
 
 ## Support
 
@@ -72,14 +72,14 @@ Frames are opaque BGRA from swscale. The colour matrix comes from the stream: BT
 | Audio | AAC (`mp4a.40.*`), MP3, Opus, Vorbis, FLAC, AC-3, E-AC-3 |
 | AV1 | **not supported**: the SDK ffmpeg has no libdav1d/libaom, and `ff_av1_decoder` only drives hardware accelerators. `av01` answers "" unless a software AV1 decoder is linked; `findSoftwareDecoder()` checks at run time. |
 | `canPlayType` | "" for unknown containers, codecs this build cannot decode, or codecs that are impossible in the container; "maybe" with no `codecs` parameter or with an unrecognised codec string; "probably" when every codec is known and decodable |
-| HLS | through libavformat's `hls` demuxer: master playlists (a fixed variant: the highest bit rate at or below 1080p, **no adaptive switching**), VOD with seeking, live (duration +inf, not seekable), AES-128 segments (see the risks) |
+| HLS | through libavformat's `hls` demuxer: master playlists (a fixed variant: the highest bit rate at or below 1080p, **no adaptive switching**), VOD with seeking, live (duration +inf, not seekable), AES-128 segments (see the risks), `EXT-X-BYTERANGE` segments (the byte range becomes the request's `Range`). FairPlay (`SAMPLE-AES` with an `skd://` key, which is what Vimeo serves a Safari user agent) is refused with `MEDIA_ERR_SRC_NOT_SUPPORTED` instead of decoding garbage. |
 
 Not supported: MSE (`supportsType` rejects `MediaSource`; the decoders, queues, clock and policy only depend on packet queues, so a `SourceBufferPrivate` that demuxes appended fMP4/WebM into the same queues can reuse them), EME and DRM, WebAudio (`audioSourceProvider`; `ENABLE_WEB_AUDIO` is off on PlayStation), hardware decoding (the SDK has no video decoder stubs), subtitle and text tracks, `AudioTrack`/`VideoTrack` lists, `preservesPitch`, picture-in-picture, and multichannel output (everything is downmixed to stereo).
 
 ## Risks
 
 - **Audio from the WebProcess.** WebKit decodes in the WebProcess, a separate payload process spawned by the shell. It is unverified on hardware whether sceAudioOut, behind SDL's PS5 driver, can be opened from that process, and whether it can share the audio ports with the UI process. `AudioSink::create()` falls back to `NullAudioSink` when SDL fails, and so does a watchdog: an output that stops pulling samples for 2 s while audio is buffered. `PS5BROWSER_MEDIA_AUDIO=null` forces the null sink. In every case video still plays in sync, without sound. If the WebProcess cannot output audio at all, the fix is to forward PCM to the UI process over IPC.
-- **HTTP path.** Media goes through WebCore's loader, which handles cookies, the referrer, CORS (`didPassCORSAccessCheck` for canvas tainting), CSP, `blob:` and the shared NetworkProcess. Byte ranges map to `Range` requests. Servers that ignore `Range` still work but restart the download for every seek and for every resume after the 64 MiB read-ahead cap, which re-downloads everything before the position. Exceptions:
+- **HTTP path.** Media goes through WebCore's loader, which handles cookies, the referrer, CORS (`didPassCORSAccessCheck` for canvas tainting), CSP, `blob:` and the shared NetworkProcess. Byte ranges map to `Range` requests. Servers that ignore `Range` still work but restart the download for every seek and for every resume after the 32 MiB read-ahead cap, which re-downloads everything before the position. Exceptions:
   - HLS AES-128 segments are opened as `crypto+https://…`. They go through ffmpeg's own http/tls (OpenSSL from the SDK), which sends the engine's user agent and **no cookies**. The key URI itself goes through WebCore.
   - Relative URLs in a playlist resolve against the playlist's original URL, not its redirected URL.
   - libavformat's HTTP keep-alive is disabled for HLS (`http_persistent=0`).
@@ -89,7 +89,7 @@ Not supported: MSE (`supportsType` rejects `MediaSource`; the decoders, queues, 
   - 1080p60 H.264 at high bit rates is borderline, and HEVC/VP9 1080p60 likely is not. Expect frame dropping and the `skip_loop_filter` fallback.
   - On top of decoding, per frame: swscale to BGRA, the copy into the page's backing store, and the shared-memory frame transfer to the UI process.
   - Anything above 1080p is downscaled after decoding, so it pays the full decode cost. HLS variant selection avoids it.
-- **Memory.** Per player: about 48 MiB of queued packets, 16 MiB of network read-ahead per open stream (64 MiB for a server without `Range` support), up to 6 + 3 BGRA frames (8 MiB each at 1080p) and a 1 s audio ring.
+- **Memory.** Per player: at most 24 MiB of queued packets, 8 MiB of network read-ahead per open stream (32 MiB for a server without `Range` support), a pool of up to 5 BGRA frames (8 MiB each at 1080p; the queue holds 3 of them) and a 1 s audio ring. Video decoding uses slice threads only (`PS5BROWSER_MEDIA_FRAME_THREADS=1` turns frame threading back on, which keeps one extra picture per thread).
 - **Timestamps.** A live HLS discontinuity with a large forward timestamp jump inserts at most 2 s of silence. The audio and video timelines can then disagree until the next seek.
 - **Licensing.** The SDK's ffmpeg is linked with x264, so the combination is GPL. That matches ps5-browser's GPL-3.0-or-later, but the binary must be distributed under GPL terms.
 
@@ -121,6 +121,10 @@ What the patches change:
 ```
 
 That is libavformat, libavcodec, libswscale, libswresample and libavutil, plus bzip2, iconv, liblzma, x264 (GPL), zlib and OpenSSL. libass is not linked. SDL2 and its dependencies (`-lSDL2 -lSceSystemService -lSceUserService -lScePad -lSceAudioOut -lsamplerate -lSceVideoOut -lSceKeyboard -lSceImeDialog`) are part of the same group, for the audio sink. OpenSSL, zlib and iconv are the same SDK archives curl and libxml2 use; the link has no duplicate definitions.
+
+## Console log
+
+On the PS5 the engine writes `media: ...` lines to `/data/ps5browser/log.txt` through the shell's `ps5_log_line()` (declared weak in `FFmpegLog.h`, so other builds link without it): `supportsType` answers (each distinct query once), `load` with scheme and host, the demuxer's format, duration and every stream (the selected ones marked `[VIDEO]`/`[AUDIO]`), decoder and audio sink results (SDL driver, requested and obtained spec, or the failure and the null-sink fallback), the first video frame, `readyState`/`networkState` transitions, seeks (start, demuxer seek and flush, first frame after the seek, finish), `Range` requests and HTTP errors, `cancelLoad`, and a `stats:` line every 5 s while playing or seeking (decoded/dropped frames, queue depths, audio clock against the video pts).
 
 ## Tests
 

@@ -7,10 +7,12 @@
 
 #include "FFmpegAVClock.h"
 #include "FFmpegDemuxer.h"
+#include "FFmpegLog.h"
 #include "Logging.h"
 
 extern "C" {
 #include <libavutil/channel_layout.h>
+#include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
 }
 
@@ -45,9 +47,12 @@ RefPtr<FFmpegAudioDecoder> FFmpegAudioDecoder::create(const FFmpegStreamInfo& st
     context->thread_count = 1;
     int result = avcodec_open2(context.get(), codec, nullptr);
     if (result < 0) {
-        LOG(Media, "FFmpegAudioDecoder: cannot open %s: %s", codec->name, ffmpegErrorString(result).utf8().legacyCStringPointer());
+        ffmpegMediaLog("audio decoder %s: open failed: %s", codec->name, ffmpegErrorString(result).utf8().legacyCStringPointer());
         return nullptr;
     }
+    ffmpegMediaLog("audio decoder %s: %d Hz, %d ch, %s -> f32 %d Hz %d ch", codec->name, context->sample_rate,
+        context->ch_layout.nb_channels, av_get_sample_fmt_name(context->sample_fmt) ? av_get_sample_fmt_name(context->sample_fmt) : "?",
+        outputRate, outputChannels);
     return adoptRef(*new FFmpegAudioDecoder(stream, queue, WTF::move(context), outputRate, outputChannels));
 }
 
@@ -138,7 +143,8 @@ void FFmpegAudioDecoder::decodePacket(AVPacket* packet)
         result = avcodec_send_packet(m_codec.get(), packet);
     }
     if (result < 0 && result != AVERROR(EAGAIN) && result != AVERROR_EOF)
-        LOG(Media, "FFmpegAudioDecoder: send_packet: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
+        if (!(m_decodeErrors++ % 100))
+            ffmpegMediaLog("audio decoder: send_packet: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
     receiveFrames();
 }
 
@@ -149,7 +155,8 @@ void FFmpegAudioDecoder::receiveFrames()
         if (result == AVERROR(EAGAIN) || result == AVERROR_EOF)
             return;
         if (result < 0) {
-            LOG(Media, "FFmpegAudioDecoder: receive_frame: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
+            if (!(m_decodeErrors++ % 100))
+                ffmpegMediaLog("audio decoder: receive_frame: %s", ffmpegErrorString(result).utf8().legacyCStringPointer());
             return;
         }
         writeFrame(m_frame.get());
@@ -176,7 +183,7 @@ bool FFmpegAudioDecoder::ensureResampler(const AVFrame* frame)
     av_channel_layout_uninit(&output);
     av_channel_layout_uninit(&input);
     if (result < 0 || !m_swr || swr_init(m_swr) < 0) {
-        LOG(Media, "FFmpegAudioDecoder: cannot resample %d Hz format %d", frame->sample_rate, frame->format);
+        ffmpegMediaLog("audio decoder: cannot resample %d Hz format %d", frame->sample_rate, frame->format);
         swr_free(&m_swr);
         m_fatalError = true;
         return false;
