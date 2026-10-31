@@ -1,0 +1,308 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+  # release.yml builds the tag through this workflow.
+  workflow_call:
+    outputs:
+      product-name:
+        description: Product name used in artifact and release names
+        value: ${{ jobs.ps5.outputs.product-name }}
+      data-zip:
+        description: File name of the console data zip artifact
+        value: ${{ jobs.ps5.outputs.data-zip }}
+      native-zip:
+        description: File name of the native title zip artifact (empty if not built)
+        value: ${{ jobs.ps5.outputs.native-zip }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # A newer push supersedes a running build; tag builds always finish.
+  # Cancelled runs still save the ccache, so the work is not lost.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  # --- Naming: the one place to change for the ProsperoWeb rename. ---------
+  # Prefix of artifact and release asset names.
+  PRODUCT_NAME: ProsperoWeb
+  # dist/<APP_NAME>/, <APP_NAME>.elf and the CMake target.
+  APP_NAME: prosperobrowser
+  # Prefix of the CMake options (<PREFIX>_FRONTEND, <PREFIX>_BUILD_TESTS).
+  CMAKE_OPTION_PREFIX: PROSPEROBROWSER
+  # Title ID of scripts/ps5/native/make-title.sh (build-dist/<ID>.zip).
+  NATIVE_TITLE_ID: PRSB00001
+  # --- Toolchain --------------------------------------------------------------
+  PS5_SDK_VERSION: v0.41.1
+  PS5_SDK_SHA256: e811bc2e4676c5bb7f80a8fe928d2985dce599996a5ca6b54da3e72699287887
+  PS5_PAYLOAD_SDK: /opt/ps5-payload-sdk
+  NODE_VERSION: "22"
+  JOBS: "4"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  host:
+    name: Host build and tests
+    # Pull requests from this repository are already built by the push event.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js (chrome UI test)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --assume-yes --no-install-recommends \
+            cmake ninja-build pkg-config libgtk-4-dev libwebkitgtk-6.0-dev libsdl2-dev
+
+      - name: Configure (core, shell, tests)
+        run: cmake -S . -B build-host -G Ninja
+
+      - name: Build
+        run: scripts/ci/timed.sh "Host build" cmake --build build-host -j"${JOBS}"
+
+      - name: Test
+        run: |
+          # The chrome UI test is silently skipped without node; insist on it.
+          ctest --test-dir build-host -N | grep -q 'chrome_ui.render' \
+            || { echo "::error::chrome_ui.render is not registered (node not found by CMake)"; exit 1; }
+          scripts/ci/timed.sh "Host tests" ctest --test-dir build-host --output-on-failure -j"${JOBS}"
+
+      - name: Build the GTK host frontend (compile only)
+        run: |
+          cmake -S . -B build-gtk -G Ninja \
+            -D"${CMAKE_OPTION_PREFIX}_FRONTEND=host-gtk" -D"${CMAKE_OPTION_PREFIX}_BUILD_TESTS=OFF"
+          scripts/ci/timed.sh "GTK frontend build" cmake --build build-gtk -j"${JOBS}"
+
+  ps5:
+    name: PS5 build and package
+    needs: host
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    outputs:
+      product-name: ${{ steps.names.outputs.product-name }}
+      data-zip: ${{ steps.names.outputs.data-zip }}
+      native-zip: ${{ steps.native.outputs.native-zip }}
+    env:
+      CCACHE_MAXSIZE: 6G
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: "true"
+      # The compiler is a wrapper script whose mtime changes with every
+      # checkout; hash its content instead. The SDK version is in the key.
+      CCACHE_COMPILERCHECK: content
+      CCACHE_COMPILERTYPE: clang
+      # WebKit uses precompiled headers (clang, -fno-pch-timestamp).
+      CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime,include_file_ctime
+      CCACHE_PCH_EXTSUM: "true"
+      # build-webkit.sh passes this to cmake; -O2 -DNDEBUG -g0 stays as is.
+      WEBKIT_CMAKE_ARGS: -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      ARTIFACTS: ${{ github.workspace }}/build-dist/ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Free disk space
+        run: scripts/ci/timed.sh "Free disk" scripts/ci/free-disk.sh
+
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          scripts/ci/timed.sh "apt" sudo apt-get install --assume-yes --no-install-recommends \
+            clang-18 lld-18 llvm-18 cmake ninja-build ruby perl python3 gperf unifdef \
+            pkg-config autoconf automake libtool bison flex wget unzip python3-pyelftools \
+            python3-venv curl ccache zip file zlib1g-dev imagemagick librsvg2-bin
+          ccache --version | head -1
+
+      - name: Artifact names and cache keys
+        id: names
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == tag ]]; then
+            ver="${GITHUB_REF_NAME}"
+          else
+            ver="${GITHUB_REF_NAME//\//-}-${GITHUB_SHA::7}"
+          fi
+          commit="$(grep -oP 'WEBKIT_COMMIT:-\K[0-9a-f]{40}' scripts/ps5/fetch-webkit.sh)"
+          {
+            echo "product-name=${PRODUCT_NAME}"
+            echo "data-zip=${PRODUCT_NAME}-${ver}-data.zip"
+            echo "webkit-commit=${commit}"
+          } | tee -a "${GITHUB_OUTPUT}"
+
+      # --- PS5 payload SDK ------------------------------------------------------
+      - name: Restore the SDK tarball
+        id: sdk-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ps5-sdk
+          key: ps5-sdk-${{ env.PS5_SDK_VERSION }}-${{ env.PS5_SDK_SHA256 }}
+
+      - name: Install the SDK
+        run: scripts/ci/timed.sh "SDK install" scripts/ci/install-ps5-sdk.sh
+
+      - name: Save the SDK tarball
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ps5-sdk
+          key: ps5-sdk-${{ env.PS5_SDK_VERSION }}-${{ env.PS5_SDK_SHA256 }}
+
+      # --- Dependencies (ICU, HarfBuzz, FreeType, libwpe, ...) -----------------
+      - name: Restore downloads
+        id: dl-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: third_party/dl
+          key: ps5-dl-${{ hashFiles('scripts/ps5/build-deps.sh', 'scripts/ps5/fonts/fonts.lock') }}
+          restore-keys: ps5-dl-
+
+      - name: Restore the dependency prefix
+        id: deps-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: third_party/ps5-prefix
+          key: ps5-deps-${{ env.PS5_SDK_VERSION }}-${{ hashFiles('scripts/ps5/build-deps.sh', 'scripts/ps5/prospero-cross.ini', 'scripts/ps5/icu-data-filter.json', 'scripts/ps5/pkg-config/**', 'scripts/ps5/patches/**') }}
+
+      - name: Build dependencies
+        run: |
+          if [[ -f third_party/ps5-prefix/.done ]]; then
+            echo "dependency prefix restored from cache"
+            exit 0
+          fi
+          scripts/ci/timed.sh "Dependencies" scripts/ps5/build-deps.sh
+          # Source and build trees are not needed any more.
+          rm -rf build-deps
+
+      - name: Save the dependency prefix
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: third_party/ps5-prefix
+          key: ${{ steps.deps-cache.outputs.cache-primary-key }}
+
+      # --- WebKit ---------------------------------------------------------------
+      - name: Fetch WebKit and apply the patch set
+        run: scripts/ci/timed.sh "WebKit fetch" scripts/ps5/fetch-webkit.sh
+
+      - name: Restore ccache
+        id: ccache-restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ccache
+          key: ccache-ps5-${{ env.PS5_SDK_VERSION }}-${{ steps.names.outputs.webkit-commit }}-${{ hashFiles('webkit-port/**') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-ps5-${{ env.PS5_SDK_VERSION }}-${{ steps.names.outputs.webkit-commit }}-${{ hashFiles('webkit-port/**') }}-
+            ccache-ps5-${{ env.PS5_SDK_VERSION }}-${{ steps.names.outputs.webkit-commit }}-
+            ccache-ps5-
+
+      - name: Build WebKit
+        # Leaves time for saving the ccache when a cold build runs long: a
+        # re-run then continues from the cached objects.
+        timeout-minutes: 270
+        run: |
+          ccache --zero-stats >/dev/null
+          scripts/ci/timed.sh "WebKit build" scripts/ps5/build-webkit.sh all
+
+      - name: ccache statistics
+        if: always() && steps.ccache-restore.outcome == 'success'
+        run: ccache --show-stats --verbose || true
+
+      - name: Save ccache
+        if: always() && steps.ccache-restore.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ccache
+          key: ${{ steps.ccache-restore.outputs.cache-primary-key }}
+
+      - name: Drop WebKit object files if disk is tight
+        run: |
+          avail_kb="$(df --output=avail / | tail -1)"
+          if (( avail_kb < 8 * 1024 * 1024 )); then
+            echo "less than 8 GiB free; removing objects under build-wk-ps5/Source (libWebKitPS5.a is kept)"
+            find build-wk-ps5/Source -name '*.o' -delete
+          fi
+          df -h /
+
+      # --- Frontend and packaging ----------------------------------------------
+      - name: Build the PS5 frontend
+        run: |
+          cmake -S . -B build-ps5 \
+            -DCMAKE_TOOLCHAIN_FILE="${PS5_PAYLOAD_SDK}/toolchain/prospero.cmake" \
+            -D"${CMAKE_OPTION_PREFIX}_FRONTEND=ps5" -D"${CMAKE_OPTION_PREFIX}_BUILD_TESTS=OFF" \
+            -DCMAKE_BUILD_TYPE=Release
+          scripts/ci/timed.sh "Frontend link" cmake --build build-ps5 -j"${JOBS}" --target "${APP_NAME}"
+
+      - name: Package
+        env:
+          DATA_ZIP: ${{ steps.names.outputs.data-zip }}
+        run: |
+          scripts/ci/timed.sh "Package" scripts/ps5/package.sh
+          mkdir -p "${ARTIFACTS}"
+          # dist/ mirrors /data/ on the console: <app>/ and homebrew/<app>/.
+          (cd dist && "${GITHUB_WORKSPACE}/scripts/ci/timed.sh" "Data zip" \
+            zip -r -q "${ARTIFACTS}/${DATA_ZIP}" .)
+          ls -l "${ARTIFACTS}"
+
+      - name: Save downloads
+        if: always() && steps.dl-cache.outputs.cache-hit != 'true' && hashFiles('third_party/dl/**') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: third_party/dl
+          key: ${{ steps.dl-cache.outputs.cache-primary-key }}
+
+      - name: Upload the console data zip
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          # archive: false uploads the zip as is; the artifact is named after the file.
+          path: ${{ env.ARTIFACTS }}/${{ steps.names.outputs.data-zip }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Native title
+        id: native
+        if: hashFiles('scripts/ps5/native/make-title.sh') != ''
+        run: |
+          # The 3840x2160 background is rendered, not committed.
+          if [[ ! -f build-dist/assets/background-3840x2160.png ]]; then
+            scripts/ci/timed.sh "Render assets" scripts/assets/render.sh
+          fi
+          scripts/ci/timed.sh "Native title" scripts/ps5/native/make-title.sh
+          zip_name="${NATIVE_TITLE_ID}.zip"
+          [[ -f "build-dist/${zip_name}" ]] \
+            || { echo "::error::build-dist/${zip_name} not found; is NATIVE_TITLE_ID current?"; ls build-dist; exit 1; }
+          cp -- "build-dist/${zip_name}" "${ARTIFACTS}/${zip_name}"
+          echo "native-zip=${zip_name}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload the native title zip
+        if: steps.native.outputs.native-zip != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: ${{ env.ARTIFACTS }}/${{ steps.native.outputs.native-zip }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Disk usage
+        if: always()
+        run: |
+          df -h /
+          du -sh "${PS5_PAYLOAD_SDK}" third_party/webkit third_party/ps5-prefix build-wk-ps5 build-ps5 dist build-dist ~/.cache/ccache 2>/dev/null || true
