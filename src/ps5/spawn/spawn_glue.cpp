@@ -264,7 +264,7 @@ BrokerSpawnResult elfldr_hook(const BrokerSpawnRequest& req) {
   ps5_spawn_failure failure{};
   BrokerSpawnResult res;
   res.pid = ps5_spawn_elfldr(req.elf.c_str(), argv.data(), envp.data(), req.fds.data(),
-                             static_cast<int>(req.fds.size()), &failure);
+                             static_cast<int>(req.fds.size()), 0, &failure);
   if (res.pid <= 0) {
     res.pid = -1;
     res.stage = failure.stage ? failure.stage : "unknown stage";

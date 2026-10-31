@@ -21,6 +21,9 @@ along with this program; see the file COPYING. If not, see
        stdio descriptor onto 0/1/2, it keeps the deci_std* descriptors the
        rfork entry opened as 0/1/2 and injects a table of extra descriptors
        at child fd 3+i (the WebKit IPC socket lands at fd 3).
+     - each injected descriptor may come from another process (src_pid,
+       the UI when the spawn broker runs over TCP), and every rdup/dup2 is
+       logged with its errno.
      - elfldr_spawn() -> elfldr_spawn_fds(): same signature change; also
        sets the child's environment from an envp argument (the UI's environ,
        forwarded by the spawn broker; WebKit needs the PS5BROWSER_*
@@ -447,24 +450,43 @@ elfldr_raise_privileges(pid_t pid) {
 }
 
 
-/* Inject fds[i].parent_fd (a descriptor of our process) into the child so it
-   appears as fds[i].child_fd. The child already holds deci_std* at 0/1/2 from
-   the rfork entry, which we leave in place as stdio.
+/* Inject fds[i].parent_fd (a descriptor of process fds[i].src_pid, or of our
+   own process when src_pid is 0) into the child so it appears as
+   fds[i].child_fd. The child already holds deci_std* at 0/1/2 from the rfork
+   entry, which we leave in place as stdio.
+
+   The rdup syscall runs inside the stopped child (privileges raised by the
+   caller), copying the descriptor out of the source process. With the spawn
+   broker on TCP the source is the UI process, which cannot pass descriptors
+   over the socket (no SCM_RIGHTS): it keeps them open until the spawn
+   result arrives.
 
    pt_rdup allocates the lowest free descriptor in the child; immediately
    after rfork that is 3, 4, ... which matches child_fd = 3+i, so in the common
    single-fd case the duplicate already sits at the target and no further work
-   is needed. We still dup2+close for robustness when it does not. */
+   is needed. We still dup2+close for robustness when it does not.
+
+   On failure, stage and err name the failing step and its errno. */
 static int
-elfldr_inject_fds(pid_t pid, const struct ps5_spawn_fd_entry* fds, int nfds) {
+elfldr_inject_fds(pid_t pid, const struct ps5_spawn_fd_entry* fds, int nfds,
+		  const char** stage, int* err) {
   int tmp[PS5_SPAWN_MAX_FDS];
 
   for(int i=0; i<nfds; i++) {
-    tmp[i] = pt_rdup(pid, getpid(), fds[i].parent_fd);
+    pid_t src = fds[i].src_pid > 0 ? fds[i].src_pid : getpid();
+    tmp[i] = pt_rdup(pid, src, fds[i].parent_fd);
     if(tmp[i] < 0) {
-      LOG_PT_PERROR(pid, "pt_rdup");
+      *err = pt_errno(pid);
+      *stage = "rdup";
+      ps5_log_printf("spawn: rdup(src_pid=%d, fd=%d) FAILED: errno %d (%s)",
+		     (int)src, fds[i].parent_fd, *err, strerror(*err));
+      for(int j=0; j<i; j++) {
+	pt_close(pid, tmp[j]);
+      }
       return -1;
     }
+    ps5_log_printf("spawn: rdup(src_pid=%d, fd=%d) -> child fd %d",
+		   (int)src, fds[i].parent_fd, tmp[i]);
   }
 
   for(int i=0; i<nfds; i++) {
@@ -478,10 +500,14 @@ elfldr_inject_fds(pid_t pid, const struct ps5_spawn_fd_entry* fds, int nfds) {
 		 "(our duplicate landed at %d)\n", fds[i].child_fd, tmp[i]);
     }
     if(pt_dup2(pid, tmp[i], fds[i].child_fd) < 0) {
-      LOG_PT_PERROR(pid, "pt_dup2");
+      *err = pt_errno(pid);
+      *stage = "dup2";
+      ps5_log_printf("spawn: dup2(child fd %d -> %d) FAILED: errno %d (%s)",
+		     tmp[i], fds[i].child_fd, *err, strerror(*err));
       return -1;
     }
     pt_close(pid, tmp[i]);
+    ps5_log_printf("spawn: child fd %d moved to %d", tmp[i], fds[i].child_fd);
   }
 
   return 0;
@@ -490,7 +516,7 @@ elfldr_inject_fds(pid_t pid, const struct ps5_spawn_fd_entry* fds, int nfds) {
 
 int
 elfldr_exec_fds(pid_t pid, const struct ps5_spawn_fd_entry* fds, int nfds,
-		const uint8_t* elf) {
+		const uint8_t* elf, elfldr_spawn_report_t* report) {
   uint8_t caps[16];
   intptr_t jaildir;
   intptr_t rootdir;
@@ -520,7 +546,9 @@ elfldr_exec_fds(pid_t pid, const struct ps5_spawn_fd_entry* fds, int nfds,
     return -1;
   }
 
-  if(nfds > 0 && elfldr_inject_fds(pid, fds, nfds)) {
+  if(nfds > 0 &&
+     elfldr_inject_fds(pid, fds, nfds, &report->failed_stage,
+		       &report->failed_errno)) {
     error = -1;
   }
 
@@ -766,9 +794,12 @@ elfldr_spawn_fds(char* const argv[], char* const envp[],
   elfldr_set_procname(pid, argv[0]);
   elfldr_set_environ(pid, (char**)envp);
 
-  if(elfldr_exec_fds(pid, fds, nfds, elf)) {
+  if(elfldr_exec_fds(pid, fds, nfds, elf, report)) {
     kill(pid, SIGKILL);
     waitpid(pid, 0, 0);
+    if(report->failed_stage) {
+      return -1;  /* the descriptor injection named its stage */
+    }
     return elfldr_spawn_fail(report, "elfldr_exec_fds", 0);
   }
 

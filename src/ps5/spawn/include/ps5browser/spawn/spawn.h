@@ -61,18 +61,21 @@ int ps5_spawn_resolve_self_path(const char* argv0,
                                 const char* (*getenv_fn)(const char*),
                                 char* out_path, size_t out_len);
 
-// One entry of the child's extra fd table: the caller's descriptor and the
-// descriptor number it must appear as in the child.
+// One entry of the child's extra fd table: a descriptor of a source process
+// and the descriptor number it must appear as in the child. The loader
+// copies it into the child with rdup(src_pid, parent_fd).
 struct ps5_spawn_fd_entry {
-  int parent_fd;  // descriptor in the calling (UI) process
+  int parent_fd;  // descriptor number in the source process
   int child_fd;   // descriptor number in the spawned child (== 3 + index)
+  int src_pid;    // process that owns parent_fd; 0 = the spawning process
 };
 
 // Builds the child fd table from the fds[]/nfds the launcher passed: each
-// fds[i] maps to child fd 3+i. Validates nfds against PS5_SPAWN_MAX_FDS and
-// rejects negative descriptors. Writes up to out_max entries into out and
-// returns their count, or -1 on error.
-int ps5_spawn_build_fd_table(const int* fds, int nfds,
+// fds[i] (a descriptor of process src_pid, 0 = the caller) maps to child fd
+// 3+i. Validates nfds against PS5_SPAWN_MAX_FDS and rejects negative
+// descriptors and a negative src_pid. Writes up to out_max entries into out
+// and returns their count, or -1 on error.
+int ps5_spawn_build_fd_table(const int* fds, int nfds, int src_pid,
                              struct ps5_spawn_fd_entry* out, int out_max);
 
 #ifdef __cplusplus

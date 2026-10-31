@@ -54,9 +54,9 @@ int ps5_spawn_resolve_self_path(const char* argv0,
   return 0;
 }
 
-int ps5_spawn_build_fd_table(const int* fds, int nfds,
+int ps5_spawn_build_fd_table(const int* fds, int nfds, int src_pid,
                              struct ps5_spawn_fd_entry* out, int out_max) {
-  if (nfds < 0 || nfds > PS5_SPAWN_MAX_FDS) {
+  if (nfds < 0 || nfds > PS5_SPAWN_MAX_FDS || src_pid < 0) {
     return -1;
   }
   if (nfds > 0 && (!fds || !out)) {
@@ -72,6 +72,7 @@ int ps5_spawn_build_fd_table(const int* fds, int nfds,
     }
     out[i].parent_fd = fds[i];
     out[i].child_fd = 3 + i;
+    out[i].src_pid = src_pid;
   }
 
   return nfds;

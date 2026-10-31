@@ -288,14 +288,17 @@ static long now_ms(void) {
   return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-// "12->3 13->4" for the log.
+// "12->3 13->4" for the log; "93:12->3" for a descriptor of another process.
 static void describe_fds(const struct ps5_spawn_fd_entry* table, int n, char* buf,
                          size_t len) {
   size_t used = 0;
   buf[0] = '\0';
   for (int i = 0; i < n && used < len; i++) {
-    int w = snprintf(buf + used, len - used, "%s%d->%d", i ? " " : "",
-                     table[i].parent_fd, table[i].child_fd);
+    int w = table[i].src_pid > 0
+                ? snprintf(buf + used, len - used, "%s%d:%d->%d", i ? " " : "",
+                           table[i].src_pid, table[i].parent_fd, table[i].child_fd)
+                : snprintf(buf + used, len - used, "%s%d->%d", i ? " " : "",
+                           table[i].parent_fd, table[i].child_fd);
     if (w < 0) {
       break;
     }
@@ -332,21 +335,22 @@ static void log_spawn_result(const char* role, int pid, const char* fds,
 }
 
 int ps5_spawn_elfldr(const char* elf_path, char* const* argv, char* const* envp,
-                     const int* fds, int nfds, struct ps5_spawn_failure* failure) {
+                     const int* fds, int nfds, int src_pid,
+                     struct ps5_spawn_failure* failure) {
   failure->stage = NULL;
   failure->err = 0;
   failure->budget_errno = 0;
   const char* role = argv && argv[0] ? argv[0] : "(none)";
 
   struct ps5_spawn_fd_entry table[PS5_SPAWN_MAX_FDS];
-  int ntable = ps5_spawn_build_fd_table(fds, nfds, table, PS5_SPAWN_MAX_FDS);
+  int ntable = ps5_spawn_build_fd_table(fds, nfds, src_pid, table, PS5_SPAWN_MAX_FDS);
   if (ntable < 0) {
     ps5_log_printf("spawn: role=%s FAILED: invalid fd table (nfds=%d)", role, nfds);
     failure->stage = "fd table";
     failure->err = EINVAL;
     return -1;
   }
-  char fd_desc[96];
+  char fd_desc[160];
   describe_fds(table, ntable, fd_desc, sizeof(fd_desc));
 
   size_t image_size = 0;
@@ -408,7 +412,7 @@ int ps5_spawn_direct(const char* const* argv, const int* fds, int nfds) {
   int pid = -1;
   if (ok) {
     struct ps5_spawn_failure failure;
-    pid = ps5_spawn_elfldr(path, child_argv, environ, fds, nfds, &failure);
+    pid = ps5_spawn_elfldr(path, child_argv, environ, fds, nfds, 0, &failure);
   } else {
     ps5_log_printf("spawn: role=%s FAILED: out of memory", role);
   }

@@ -67,7 +67,7 @@ TEST_SUITE("spawn_fd_table") {
   TEST_CASE("maps each fd to child fd 3+i") {
     const int fds[] = {7, 9, 4};
     ps5_spawn_fd_entry out[PS5_SPAWN_MAX_FDS];
-    int n = ps5_spawn_build_fd_table(fds, 3, out, PS5_SPAWN_MAX_FDS);
+    int n = ps5_spawn_build_fd_table(fds, 3, 0, out, PS5_SPAWN_MAX_FDS);
     REQUIRE(n == 3);
     CHECK(out[0].parent_fd == 7);
     CHECK(out[0].child_fd == 3);
@@ -75,12 +75,24 @@ TEST_SUITE("spawn_fd_table") {
     CHECK(out[1].child_fd == 4);
     CHECK(out[2].parent_fd == 4);
     CHECK(out[2].child_fd == 5);
+    CHECK(out[0].src_pid == 0);  // the spawning process itself
+  }
+
+  TEST_CASE("carries the source process of the descriptors") {
+    const int fds[] = {13, 14};
+    ps5_spawn_fd_entry out[PS5_SPAWN_MAX_FDS];
+    REQUIRE(ps5_spawn_build_fd_table(fds, 2, 93, out, PS5_SPAWN_MAX_FDS) == 2);
+    CHECK(out[0].src_pid == 93);
+    CHECK(out[1].src_pid == 93);
+    CHECK(out[1].parent_fd == 14);
+    CHECK(out[1].child_fd == 4);
+    CHECK(ps5_spawn_build_fd_table(fds, 2, -1, out, PS5_SPAWN_MAX_FDS) == -1);
   }
 
   TEST_CASE("the common single-fd case lands at fd 3") {
     const int fds[] = {11};
     ps5_spawn_fd_entry out[PS5_SPAWN_MAX_FDS];
-    int n = ps5_spawn_build_fd_table(fds, 1, out, PS5_SPAWN_MAX_FDS);
+    int n = ps5_spawn_build_fd_table(fds, 1, 0, out, PS5_SPAWN_MAX_FDS);
     REQUIRE(n == 1);
     CHECK(out[0].parent_fd == 11);
     CHECK(out[0].child_fd == 3);
@@ -88,25 +100,25 @@ TEST_SUITE("spawn_fd_table") {
 
   TEST_CASE("zero fds is valid") {
     ps5_spawn_fd_entry out[PS5_SPAWN_MAX_FDS];
-    CHECK(ps5_spawn_build_fd_table(nullptr, 0, out, PS5_SPAWN_MAX_FDS) == 0);
+    CHECK(ps5_spawn_build_fd_table(nullptr, 0, 0, out, PS5_SPAWN_MAX_FDS) == 0);
   }
 
   TEST_CASE("rejects negative descriptors") {
     const int fds[] = {3, -1};
     ps5_spawn_fd_entry out[PS5_SPAWN_MAX_FDS];
-    CHECK(ps5_spawn_build_fd_table(fds, 2, out, PS5_SPAWN_MAX_FDS) == -1);
+    CHECK(ps5_spawn_build_fd_table(fds, 2, 0, out, PS5_SPAWN_MAX_FDS) == -1);
   }
 
   TEST_CASE("rejects more than the maximum") {
     const int fds[PS5_SPAWN_MAX_FDS + 1] = {};
     ps5_spawn_fd_entry out[PS5_SPAWN_MAX_FDS];
-    CHECK(ps5_spawn_build_fd_table(fds, PS5_SPAWN_MAX_FDS + 1, out,
+    CHECK(ps5_spawn_build_fd_table(fds, PS5_SPAWN_MAX_FDS + 1, 0, out,
                                    PS5_SPAWN_MAX_FDS) == -1);
   }
 
   TEST_CASE("rejects a table that does not fit") {
     const int fds[] = {1, 2, 3};
     ps5_spawn_fd_entry out[2];
-    CHECK(ps5_spawn_build_fd_table(fds, 3, out, 2) == -1);
+    CHECK(ps5_spawn_build_fd_table(fds, 3, 0, out, 2) == -1);
   }
 }

@@ -20,10 +20,12 @@ struct ps5_spawn_failure {
 };
 
 // Spawns elf_path (mapped once per path) with argv/envp, placing fds[i] at
-// child fd 3+i. Logs the outcome. Returns the pid, or -1 with *failure set.
-// The caller tracks and reaps the child.
+// child fd 3+i. fds are descriptors of process src_pid (0: the caller); the
+// loader copies them with rdup. Logs the outcome. Returns the pid, or -1
+// with *failure set. The caller tracks and reaps the child.
 int ps5_spawn_elfldr(const char* elf_path, char* const* argv, char* const* envp,
-                     const int* fds, int nfds, struct ps5_spawn_failure* failure);
+                     const int* fds, int nfds, int src_pid,
+                     struct ps5_spawn_failure* failure);
 
 // The in-process spawn mode: ps5_spawn_self()/ps5_terminate_process() as
 // they were before the broker (own environ, own reaper thread). Only safe
