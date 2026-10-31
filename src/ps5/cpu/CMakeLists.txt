@@ -3,6 +3,7 @@
 # Portable C++ (the syscalls stay in the frontend), so the host tests cover it.
 add_library(prosperobrowser_cpu STATIC
   cpu_mask.cpp
+  cpuset_assign.cpp
 )
 add_library(prosperobrowser::cpu ALIAS prosperobrowser_cpu)
 target_include_directories(prosperobrowser_cpu PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
