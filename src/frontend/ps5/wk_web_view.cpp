@@ -320,6 +320,7 @@ void WkWebView::s_needs_display(WKViewRef, WKRect rect, const void* ci) {
     log_printf("view %s: first setViewNeedsDisplay %d,%d %dx%d", self->name_.c_str(),
                d.x, d.y, d.width, d.height);
   }
+  self->needs_display_stats_.add(static_cast<std::uint64_t>(d.width) * d.height);
   // Several invalidations can arrive between two frames; keep their union.
   self->dirty_ = union_of(self->dirty_, d);
   if (self->cb_.needs_display) {
@@ -662,6 +663,12 @@ DirtyRect WkWebView::take_dirty() {
   DirtyRect d = dirty_;
   dirty_ = DirtyRect{};
   return d;
+}
+
+display::AreaStat WkWebView::take_needs_display_stats() {
+  display::AreaStat s = needs_display_stats_;
+  needs_display_stats_ = display::AreaStat{};
+  return s;
 }
 
 }  // namespace ps5browser::frontend

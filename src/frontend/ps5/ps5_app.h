@@ -12,6 +12,7 @@
 #include <SDL.h>
 
 #include "ps5browser/core/file_storage.h"
+#include "frame_stats.h"
 #include "ps5browser/shell/shell_controller.h"
 #include "ps5_audio_server.h"
 #include "ps5_chrome_ui.h"
@@ -40,6 +41,9 @@ class Ps5App {
   void paint_chrome();
   void composite_and_present();
   void draw_splash();
+  // Frame-pipeline statistics: one log line every kStatsWindowMs while
+  // anything is painted or presented.
+  void collect_and_log_stats(std::uint64_t now);
   std::vector<SDL_Rect> derive_chrome_rects();
   // Remote diagnostics (ps5_diagnostics.h).
   void poll_diagnostic_requests(std::uint64_t now);
@@ -93,6 +97,9 @@ class Ps5App {
   bool l2_down_ = false;
   bool r2_down_ = false;
   std::uint64_t last_frame_ticks_ = 0;
+  static constexpr std::uint64_t kStatsWindowMs = 5000;
+  display::FrameStats stats_;
+  std::uint64_t stats_start_ticks_ = 0;
   bool running_ = false;
   // One-shot startup diagnostics (log.txt).
   std::uint64_t frames_ = 0;

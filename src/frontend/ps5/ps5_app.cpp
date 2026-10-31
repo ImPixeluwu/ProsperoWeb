@@ -61,6 +61,16 @@ constexpr const char* kBaseDir = kPs5DataDir;
 std::string tmp_path(const std::string& name) { return std::string(kBaseDir) + "/tmp/" + name; }
 constexpr std::uint32_t kFrameMs = 16;  // ~60 Hz
 
+// Milliseconds since `start` (an SDL_GetPerformanceCounter() value).
+double ms_since(std::uint64_t start) {
+  static const double ms_per_tick = 1000.0 / static_cast<double>(SDL_GetPerformanceFrequency());
+  return static_cast<double>(SDL_GetPerformanceCounter() - start) * ms_per_tick;
+}
+
+std::uint64_t area_of(int w, int h) {
+  return w > 0 && h > 0 ? static_cast<std::uint64_t>(w) * static_cast<std::uint64_t>(h) : 0;
+}
+
 std::optional<core::Button> sdl_button_to_core(SDL_GameControllerButton b) {
   switch (b) {
     case SDL_CONTROLLER_BUTTON_A: return core::Button::Cross;
@@ -316,6 +326,7 @@ void Ps5App::frame() {
     log_line("frame: first frame");
   }
   frames_++;
+  stats_.frames++;
   float dt = static_cast<float>(now - last_frame_ticks_) / 1000.0f;
   last_frame_ticks_ = now;
 
@@ -336,6 +347,7 @@ void Ps5App::frame() {
   WkWebView::poll_all();
   controller_->tick(dt);
   composite_and_present();
+  collect_and_log_stats(now);
 
   if (controller_->quit_requested()) {
     controller_->shutdown();
@@ -595,8 +607,10 @@ void Ps5App::paint_chrome() {
     std::uint32_t* row = &chrome_buffer_[static_cast<size_t>(y) * width_];
     std::fill(row + x0, row + x1, 0u);
   }
+  const std::uint64_t t0 = SDL_GetPerformanceCounter();
   chrome_->web().paint(reinterpret_cast<unsigned char*>(chrome_buffer_.data()), width_,
                        height_, dirty);
+  stats_.chrome_paint.add(ms_since(t0), area_of(x1 - x0, y1 - y0));
 }
 
 void Ps5App::paint_content() {
@@ -623,7 +637,30 @@ void Ps5App::paint_content() {
   // offset ShellController::to_view() removes from pointer coordinates.
   auto* origin = reinterpret_cast<unsigned char*>(page_buffer_.data() +
                                                   static_cast<size_t>(top) * width_);
+  const std::uint64_t t0 = SDL_GetPerformanceCounter();
   view->web().paint(origin, width_, content_height, dirty);
+  stats_.page_paint.add(ms_since(t0), area_of(std::min(dirty.width, width_),
+                                               std::min(dirty.height, content_height)));
+}
+
+void Ps5App::collect_and_log_stats(std::uint64_t now) {
+  if (auto* view = static_cast<Ps5EngineView*>(controller_->active_view())) {
+    stats_.page_needs_display.merge(view->web().take_needs_display_stats());
+  }
+  stats_.chrome_needs_display.merge(chrome_->web().take_needs_display_stats());
+  if (stats_start_ticks_ == 0) {
+    stats_start_ticks_ = now;
+    return;
+  }
+  const std::uint64_t elapsed = now - stats_start_ticks_;
+  if (elapsed < kStatsWindowMs) {
+    return;
+  }
+  if (stats_.active()) {
+    log_line(stats_.format(static_cast<double>(elapsed) / 1000.0));
+  }
+  stats_ = display::FrameStats{};
+  stats_start_ticks_ = now;
 }
 
 void Ps5App::composite_and_present() {
@@ -660,6 +697,7 @@ void Ps5App::composite_and_present() {
   // 2. Compose into the ABGR8888 window surface: the page, with the
   //    premultiplied chrome blended over it inside the chrome rects. Neither
   //    cache is written here, so a closed overlay leaves no trace.
+  const std::uint64_t compose_t0 = SDL_GetPerformanceCounter();
   if (SDL_MUSTLOCK(surface)) {
     SDL_LockSurface(surface);
   }
@@ -702,6 +740,7 @@ void Ps5App::composite_and_present() {
       orow[x] = argb_to_abgr(page[x]);
     }
   }
+  stats_.compose.add(ms_since(compose_t0), area_of(width_, height_));
   // The composed frame, before the flip hands the buffer to the display.
   if (screenshot_pending_) {
     dump_screen(surface);
@@ -713,7 +752,10 @@ void Ps5App::composite_and_present() {
   if (!first_flip_logged_) {
     log_line("SDL_UpdateWindowSurface: first flip, calling");
   }
+  const std::uint64_t present_t0 = SDL_GetPerformanceCounter();
   const int rc = SDL_UpdateWindowSurface(window_);
+  stats_.present.add(ms_since(present_t0), area_of(width_, height_));
+  stats_.damage_rects++;
   if (!first_flip_logged_) {
     first_flip_logged_ = true;
     if (rc == 0) {

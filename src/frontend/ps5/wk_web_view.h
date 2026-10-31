@@ -19,6 +19,8 @@
 #include <WebKit/WKBase.h>
 #include <WebKit/WKGeometry.h>
 
+#include "frame_stats.h"
+
 namespace ps5browser::frontend {
 
 // A dirty rectangle in view-local pixels.
@@ -123,6 +125,10 @@ class WkWebView {
   // needs_display rect since the last call.
   DirtyRect take_dirty();
 
+  // Returns and clears the setViewNeedsDisplay count and area since the last
+  // call (the frame-pipeline statistics).
+  display::AreaStat take_needs_display_stats();
+
   // Script-message bridge, the fallback for a WebKit built without
   // ENABLE_USER_MESSAGE_HANDLERS (upstream PlayStation default; the PS5 build
   // turns it on), where window.webkit.messageHandlers does not exist. Every
@@ -155,6 +161,7 @@ class WkWebView {
   WKUserContentControllerRef content_controller_ = nullptr;
   WKPreferencesRef preferences_ = nullptr;
   DirtyRect dirty_;
+  display::AreaStat needs_display_stats_;
   int width_ = 1920;
   int height_ = 1080;
   bool in_fullscreen_ = false;
