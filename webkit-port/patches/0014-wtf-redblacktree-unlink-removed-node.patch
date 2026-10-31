@@ -1,0 +1,31 @@
+Subject: WTF: RedBlackTree::remove() drops the removed node links
+
+remove() left the removed node pointing at its former children. The
+links are CheckedPtrs: when such a child was freed first,
+WTF_OVERRIDE_DELETE_FOR_CHECKED_PTR zeroed and leaked it, and freeing
+the removed node later decremented the zeroed count and crashed in
+crashDueToCheckedPtrToDeadObject(). RunLoopGeneric keeps its timers in
+this tree, so destroying timers (here a WebProcessProxy and its
+ResponsivenessTimer after a WebProcess crash) killed the UI process.
+diff --git a/Source/WTF/wtf/RedBlackTree.h b/Source/WTF/wtf/RedBlackTree.h
+index 3a122a4d9..a198defd0 100644
+--- a/Source/WTF/wtf/RedBlackTree.h
++++ b/Source/WTF/wtf/RedBlackTree.h
+@@ -286,6 +286,17 @@ public:
+         } else if (y->color() == Black)
+             removeFixup(x, xParent);
+ 
++#if defined(PS5_HOMEBREW)
++        // Drop the removed node's links. Its CheckedPtrs to its former
++        // children otherwise outlive the removal: when such a child is freed
++        // first, WTF_OVERRIDE_DELETE_FOR_CHECKED_PTR zeroes and leaks it, and
++        // destroying z later decrements the zeroed count, which crashes
++        // (crashDueToCheckedPtrToDeadObject). RunLoopGeneric's timer tree hit
++        // this when a WebProcessProxy and its ResponsivenessTimer went away.
++        z->setLeft(nullptr);
++        z->setRight(nullptr);
++        z->setParent(nullptr);
++#endif
+         return z;
+     }
+     
