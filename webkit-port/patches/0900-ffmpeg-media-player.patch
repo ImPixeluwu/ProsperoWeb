@@ -3753,10 +3753,10 @@ index 000000000..51fb9045b
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegSupportTable.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegSupportTable.h
 new file mode 100644
-index 000000000..0e8336e85
+index 000000000..582e97dc8
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegSupportTable.h
-@@ -0,0 +1,431 @@
+@@ -0,0 +1,457 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// MIME type / RFC 6381 codec support table of the ffmpeg media engine.
@@ -3766,6 +3766,7 @@ index 000000000..0e8336e85
 +
 +#pragma once
 +
++#include <algorithm>
 +#include <array>
 +#include <cstddef>
 +#include <string>
@@ -3780,6 +3781,8 @@ index 000000000..0e8336e85
 +// Decoders available at run time. Defaults match the PS5 SDK ffmpeg 7.0.1
 +// build: native h264/hevc/vp8/vp9/aac/opus/vorbis/mp3/flac/ac3/eac3, but no
 +// software AV1 decoder (no libdav1d/libaom; ff_av1_decoder is hwaccel-only).
++// The engine reports VP8/VP9 as unavailable unless PS5BROWSER_MEDIA_VP9=1:
++// software VP9 is much slower than H.264, and players then pick H.264.
 +struct DecoderAvailability {
 +    bool h264 { true };
 +    bool hevc { true };
@@ -4093,31 +4096,52 @@ index 000000000..0e8336e85
 +// Limits for the extended isTypeSupported() parameters that YouTube (and
 +// other Cobalt-style players) use to probe the decoder: anything beyond them
 +// is "", so a player never picks a stream this build cannot decode in time.
-+inline constexpr double maxVideoWidth = 4096;
-+inline constexpr double maxVideoHeight = 4096;
++// Video defaults to 1080p (software decoding on the console); the longer
++// side may be either dimension, so portrait 1080x1920 fits too.
++// PS5BROWSER_MEDIA_MAX_VIDEO=3840x2160 raises it (parseVideoLimits()).
++struct VideoLimits {
++    double maxLongSide { 1920 };
++    double maxShortSide { 1088 };
++};
 +inline constexpr double maxFrameRate = 120;
 +inline constexpr double maxAudioChannels = 8;
++
++// "WIDTHxHEIGHT" (either order); false when malformed.
++inline bool parseVideoLimits(std::string_view text, VideoLimits& limits)
++{
++    size_t x = text.find_first_of("xX");
++    double a = 0;
++    double b = 0;
++    if (x == std::string_view::npos || !parseDecimal(text.substr(0, x), a) || !parseDecimal(text.substr(x + 1), b) || a < 16 || b < 16)
++        return false;
++    limits.maxLongSide = std::max(a, b);
++    limits.maxShortSide = std::min(a, b);
++    return true;
++}
 +
 +// Checks the non-codecs parameters of a content type. IsSupported means "no
 +// objection" (the codecs decide), NotSupported means some parameter asks for
 +// something this engine cannot do:
-+//  - width/height above 4096, framerate above 120, channels above 8, or a
-+//    value that is not a number;
++//  - width/height beyond `limits` (1080p by default), framerate above 120,
++//    channels above 8, or a value that is not a number;
 +//  - eotf other than bt709 (smpte2084 and arib-std-b67 are HDR transfer
 +//    functions; there is no HDR output);
 +//  - decode-to-texture other than true/false, experimental other than
 +//    allowed/true/false, tunnelmode other than false (no tunneled playback);
 +//  - cryptoblockformat with any value (no EME).
 +// Unknown parameters are ignored.
-+inline Support evaluateContentTypeParameters(const std::vector<ContentTypeParameter>& parameters)
++inline Support evaluateContentTypeParameters(const std::vector<ContentTypeParameter>& parameters, const VideoLimits& limits = { })
 +{
++    double width = 0;
++    double height = 0;
 +    for (auto& parameter : parameters) {
 +        auto& name = parameter.name;
 +        auto value = lowercase(trim(parameter.value));
 +        double number = 0;
 +        if (name == "width" || name == "height") {
-+            if (!parseDecimal(value, number) || number > (name == "width" ? maxVideoWidth : maxVideoHeight))
++            if (!parseDecimal(value, number) || number > limits.maxLongSide)
 +                return Support::NotSupported;
++            (name == "width" ? width : height) = number;
 +        } else if (name == "framerate") {
 +            if (!parseDecimal(value, number) || number > maxFrameRate)
 +                return Support::NotSupported;
@@ -4142,6 +4166,8 @@ index 000000000..0e8336e85
 +        } else if (name == "cryptoblockformat")
 +            return Support::NotSupported;
 +    }
++    if (width > 0 && height > 0 && std::min(width, height) > limits.maxShortSide)
++        return Support::NotSupported;
 +    return Support::IsSupported;
 +}
 +
@@ -4157,7 +4183,7 @@ index 000000000..0e8336e85
 +// MediaSource.isTypeSupported() / addSourceBuffer() answer for a full content
 +// type string. No container (MediaPlayer choosing an engine for a MediaSource
 +// before any type is known) is "maybe", so this engine gets selected.
-+inline Support evaluateMediaSource(std::string_view rawContentType, const DecoderAvailability& decoders)
++inline Support evaluateMediaSource(std::string_view rawContentType, const DecoderAvailability& decoders, const VideoLimits& limits = { })
 +{
 +    std::string mimeType;
 +    auto parameters = parseContentTypeParameters(rawContentType, &mimeType);
@@ -4183,7 +4209,7 @@ index 000000000..0e8336e85
 +            return Support::NotSupported;
 +    }
 +    auto codecSupport = evaluate(mimeType, codecs, decoders);
-+    return combineSupport(codecSupport, evaluateContentTypeParameters(parameters));
++    return combineSupport(codecSupport, evaluateContentTypeParameters(parameters, limits));
 +}
 +
 +} // namespace FFmpegMedia
@@ -4381,10 +4407,10 @@ index 000000000..4b6fe252f
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp
 new file mode 100644
-index 000000000..81881a3b6
+index 000000000..a600cec17
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp
-@@ -0,0 +1,390 @@
+@@ -0,0 +1,442 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -4402,6 +4428,7 @@ index 000000000..81881a3b6
 +#include <libavutil/imgutils.h>
 +#include <libavutil/pixdesc.h>
 +#include <libswscale/swscale.h>
++#include <wtf/MonotonicTime.h>
 +}
 +
 +namespace WebCore {
@@ -4417,24 +4444,43 @@ index 000000000..81881a3b6
 +// Output is capped at 1080p; anything bigger is downscaled by swscale.
 +constexpr int maxOutputWidth = 1920;
 +constexpr int maxOutputHeight = 1080;
-+// Decoder threads. The WebProcess shares the Zen 2 cores with the UI
-+// process and the audio decoder; 4 leaves headroom. Slice threading only:
-+// frame threading keeps a picture per thread in flight (more memory, more
-+// latency), and its worker threads ("av:h264:df*") are where the console
-+// crashes of run 4/5 surfaced. One Zen 2 core decodes 1080p30 H.264 in
-+// real time; PS5BROWSER_MEDIA_FRAME_THREADS=1 turns frame threading back on.
-+constexpr int decoderThreads = 4;
++// Decoder threads: 6 of the Zen 2's 8 cores, leaving 2 for the UI process,
++// networking and the audio decoder (PS5BROWSER_MEDIA_THREADS=1..16).
++// Frame and slice threading: frame threading is what scales H.264 and VP9
++// across cores. The console crashes of run 4/5 that first pointed at the
++// frame threads ("av:h264:df*") were the swscale overrun fixed in
++// FFmpegPlaybackPolicy.h, not frame threading;
++// PS5BROWSER_MEDIA_FRAME_THREADS=0 goes back to slice threads only.
++constexpr int defaultDecoderThreads = 6;
 +
-+bool frameThreadsRequested()
++int decoderThreads()
++{
++    if (const char* value = getenv("PS5BROWSER_MEDIA_THREADS")) {
++        int count = atoi(value);
++        if (count >= 1 && count <= 16)
++            return count;
++    }
++    return defaultDecoderThreads;
++}
++
++bool frameThreadsEnabled()
 +{
 +    const char* value = getenv("PS5BROWSER_MEDIA_FRAME_THREADS");
-+    return value && !strcmp(value, "1");
++    return !value || strcmp(value, "0");
++}
++
++int64_t nowMicroseconds()
++{
++    return static_cast<int64_t>(MonotonicTime::now().secondsSinceEpoch().microseconds());
 +}
 +// A frame this far behind the clock is dropped before conversion; one in
 +// lateFrameKeepInterval late frames is still shown so the picture moves.
 +constexpr double lateThreshold = 0.08;
 +constexpr unsigned lateFrameKeepInterval = 8;
++// Falling behind: first skip deblocking of non-reference frames, then of
++// all frames.
 +constexpr unsigned lateFramesBeforeSkippingLoopFilter = 4;
++constexpr unsigned lateFramesBeforeSkippingAllLoopFilter = 12;
 +
 +int swsColorspace(const AVFrame* frame)
 +{
@@ -4466,8 +4512,8 @@ index 000000000..81881a3b6
 +    if (!context || avcodec_parameters_to_context(context.get(), stream.parameters.get()) < 0)
 +        return nullptr;
 +    context->pkt_timebase = stream.timeBase;
-+    context->thread_count = decoderThreads;
-+    context->thread_type = frameThreadsRequested() ? (FF_THREAD_FRAME | FF_THREAD_SLICE) : FF_THREAD_SLICE;
++    context->thread_count = decoderThreads();
++    context->thread_type = frameThreadsEnabled() ? (FF_THREAD_FRAME | FF_THREAD_SLICE) : FF_THREAD_SLICE;
 +    int result = avcodec_open2(context.get(), codec, nullptr);
 +    if (result < 0) {
 +        ffmpegMediaLog("video decoder %s: open failed: %s", codec->name, ffmpegErrorString(result).utf8().legacyCStringPointer());
@@ -4590,6 +4636,8 @@ index 000000000..81881a3b6
 +        m_waitingForKeyframe = false;
 +    }
 +
++    int64_t start = nowMicroseconds();
++    m_pendingConvertMicros = 0;
 +    int result = avcodec_send_packet(m_codec.get(), packet);
 +    if (result == AVERROR(EAGAIN)) {
 +        receiveFrames();
@@ -4601,7 +4649,28 @@ index 000000000..81881a3b6
 +            ffmpegMediaLog("video decoder: send_packet: %s (%u errors)", ffmpegErrorString(result).utf8().legacyCStringPointer(), m_sendErrors);
 +    }
 +    receiveFrames();
++    // Wall time in libavcodec (with frame threads: waiting for the
++    // threads), without the conversions done in between.
++    m_decodeMicros += std::max<int64_t>(0, nowMicroseconds() - start - m_pendingConvertMicros);
 +    return !m_stopping;
++}
++
++FFmpegVideoDecoder::Timing FFmpegVideoDecoder::takeTiming()
++{
++    unsigned decoded = m_decodedFrames;
++    unsigned converted = m_convertedFrames;
++    int64_t decodeMicros = m_decodeMicros;
++    int64_t convertMicros = m_convertMicros;
++    Timing timing;
++    if (decoded > m_timingDecoded)
++        timing.decodeMilliseconds = (decodeMicros - m_timingDecodeMicros) / 1000.0 / (decoded - m_timingDecoded);
++    if (converted > m_timingConverted)
++        timing.convertMilliseconds = (convertMicros - m_timingConvertMicros) / 1000.0 / (converted - m_timingConverted);
++    m_timingDecoded = decoded;
++    m_timingConverted = converted;
++    m_timingDecodeMicros = decodeMicros;
++    m_timingConvertMicros = convertMicros;
++    return timing;
 +}
 +
 +void FFmpegVideoDecoder::receiveFrames()
@@ -4673,9 +4742,11 @@ index 000000000..81881a3b6
 +        if (m_lateFrames >= lateFramesBeforeSkippingLoopFilter && !m_skippingLoopFilter) {
 +            // Deblocking is a large share of H.264 decode time; skipping it
 +            // costs some quality but lets a slow CPU catch up.
-+            m_codec->skip_loop_filter = AVDISCARD_ALL;
++            m_codec->skip_loop_filter = AVDISCARD_NONREF;
 +            m_skippingLoopFilter = true;
 +        }
++        if (m_lateFrames >= lateFramesBeforeSkippingAllLoopFilter && m_codec->skip_loop_filter != AVDISCARD_ALL)
++            m_codec->skip_loop_filter = AVDISCARD_ALL;
 +        if (m_lateFrames % lateFrameKeepInterval) {
 +            ++m_droppedFrames;
 +            return;
@@ -4696,8 +4767,11 @@ index 000000000..81881a3b6
 +        ++m_droppedFrames;
 +        return;
 +    }
++    // Same size: only the YUV to BGRA conversion, no filtering needed.
++    int64_t convertStart = nowMicroseconds();
++    int swsFlags = (width == frame->width && height == frame->height) ? SWS_POINT : SWS_FAST_BILINEAR;
 +    m_sws = sws_getCachedContext(m_sws, frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
-+        width, height, AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr, nullptr, nullptr);
++        width, height, AV_PIX_FMT_BGRA, swsFlags, nullptr, nullptr, nullptr);
 +    if (!m_sws) {
 +        ffmpegMediaLog("video decoder: no swscale path from %s", av_get_pix_fmt_name(static_cast<AVPixelFormat>(frame->format)));
 +        m_fatalError = true;
@@ -4709,6 +4783,10 @@ index 000000000..81881a3b6
 +    uint8_t* destination[4] = { output->data(), nullptr, nullptr, nullptr };
 +    int destinationStride[4] = { static_cast<int>(output->stride()), 0, 0, 0 };
 +    sws_scale(m_sws, frame->data, frame->linesize, 0, frame->height, destination, destinationStride);
++    int64_t convertMicros = nowMicroseconds() - convertStart;
++    m_convertMicros += convertMicros;
++    m_pendingConvertMicros += convertMicros;
++    ++m_convertedFrames;
 +    output->pts = pts;
 +    output->duration = duration;
 +    output->serial = m_serial;
@@ -4777,10 +4855,10 @@ index 000000000..81881a3b6
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.h
 new file mode 100644
-index 000000000..05620019b
+index 000000000..669e290a6
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.h
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,173 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Software video decoding for the ffmpeg media engine: a worker thread pulls
@@ -4885,6 +4963,15 @@ index 000000000..05620019b
 +    // Current playback position, used to drop late frames before conversion.
 +    void setClockHint(double time) { m_clockHint = time; }
 +
++    // Average milliseconds per frame since the previous call (main thread):
++    // time in libavcodec per decoded frame, swscale per converted frame.
++    struct Timing {
++        double decodeMilliseconds { 0 };
++        double convertMilliseconds { 0 };
++    };
++    Timing takeTiming();
++    int threadCount() const { return m_codec->thread_count; }
++
 +    unsigned decodedFrames() const { return m_decodedFrames; }
 +    unsigned droppedFrames() const { return m_droppedFrames; }
 +    int outputWidth() const { return m_outputWidth; }
@@ -4914,6 +5001,14 @@ index 000000000..05620019b
 +    std::atomic<double> m_clockHint { 0 };
 +    std::atomic<unsigned> m_decodedFrames { 0 };
 +    std::atomic<unsigned> m_droppedFrames { 0 };
++    std::atomic<unsigned> m_convertedFrames { 0 };
++    std::atomic<int64_t> m_decodeMicros { 0 };
++    std::atomic<int64_t> m_convertMicros { 0 };
++    // takeTiming() snapshot (main thread).
++    unsigned m_timingDecoded { 0 };
++    unsigned m_timingConverted { 0 };
++    int64_t m_timingDecodeMicros { 0 };
++    int64_t m_timingConvertMicros { 0 };
 +    std::atomic<int> m_outputWidth { 0 };
 +    std::atomic<int> m_outputHeight { 0 };
 +
@@ -4922,6 +5017,7 @@ index 000000000..05620019b
 +    bool m_waitingForKeyframe { false };
 +    bool m_skippingLoopFilter { false };
 +    unsigned m_lateFrames { 0 };
++    int64_t m_pendingConvertMicros { 0 };
 +    unsigned m_sendErrors { 0 };
 +    Vector<Ref<FFmpegVideoFrame>> m_pool;
 +
@@ -4938,10 +5034,10 @@ index 000000000..05620019b
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp
 new file mode 100644
-index 000000000..738f08a2e
+index 000000000..c6dfc55d8
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp
-@@ -0,0 +1,975 @@
+@@ -0,0 +1,993 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -4963,6 +5059,8 @@ index 000000000..738f08a2e
 +#include <skia/core/SkColorSpace.h>
 +#include <skia/core/SkImage.h>
 +#include <skia/core/SkPixmap.h>
++#include <cstdlib>
++#include <cstring>
 +#include <mutex>
 +#include <wtf/HashSet.h>
 +#include <wtf/Lock.h>
@@ -5127,8 +5225,12 @@ index 000000000..738f08a2e
 +        FFmpegMedia::DecoderAvailability available;
 +        available.h264 = findSoftwareDecoder(AV_CODEC_ID_H264);
 +        available.hevc = findSoftwareDecoder(AV_CODEC_ID_HEVC);
-+        available.vp8 = findSoftwareDecoder(AV_CODEC_ID_VP8);
-+        available.vp9 = findSoftwareDecoder(AV_CODEC_ID_VP9);
++        // Software VP9 costs far more CPU than H.264 at the same size;
++        // answering "" makes YouTube & co. serve H.264 instead.
++        const char* vp9 = getenv("PS5BROWSER_MEDIA_VP9");
++        bool allowVP9 = vp9 && !strcmp(vp9, "1");
++        available.vp8 = allowVP9 && findSoftwareDecoder(AV_CODEC_ID_VP8);
++        available.vp9 = allowVP9 && findSoftwareDecoder(AV_CODEC_ID_VP9);
 +        available.av1 = findSoftwareDecoder(AV_CODEC_ID_AV1);
 +        available.aac = findSoftwareDecoder(AV_CODEC_ID_AAC);
 +        available.mp3 = findSoftwareDecoder(AV_CODEC_ID_MP3);
@@ -5137,9 +5239,22 @@ index 000000000..738f08a2e
 +        available.flac = findSoftwareDecoder(AV_CODEC_ID_FLAC);
 +        available.ac3 = findSoftwareDecoder(AV_CODEC_ID_AC3);
 +        available.eac3 = findSoftwareDecoder(AV_CODEC_ID_EAC3);
++        ffmpegMediaLog("codecs: VP8/VP9 %s (PS5BROWSER_MEDIA_VP9), AV1 %s", available.vp9 ? "on" : "off", available.av1 ? "on" : "off");
 +        return available;
 +    }();
 +    return decoders.get();
++}
++
++const FFmpegMedia::VideoLimits& MediaPlayerPrivateFFmpeg::videoLimits()
++{
++    static NeverDestroyed<FFmpegMedia::VideoLimits> limits = [] {
++        FFmpegMedia::VideoLimits value;
++        if (const char* text = getenv("PS5BROWSER_MEDIA_MAX_VIDEO"); text && !FFmpegMedia::parseVideoLimits(text, value))
++            value = { };
++        ffmpegMediaLog("codecs: video limit %.0fx%.0f (PS5BROWSER_MEDIA_MAX_VIDEO)", value.maxLongSide, value.maxShortSide);
++        return value;
++    }();
++    return limits.get();
 +}
 +
 +void MediaPlayerPrivateFFmpeg::getSupportedTypes(HashSet<String>& types)
@@ -5150,11 +5265,10 @@ index 000000000..738f08a2e
 +
 +MediaPlayer::SupportsType MediaPlayerPrivateFFmpeg::supportsType(const MediaEngineSupportParameters& parameters)
 +{
-+    // MSE and MediaStream are not implemented by this engine.
-+    if (parameters.platformType != PlatformMediaDecodingType::FileOrHLS) {
-+        logSupportsType(parameters, MediaPlayer::SupportsType::IsNotSupported);
++    // MediaSource is MediaPlayerPrivateFFmpegMSE's (which logs those
++    // queries), MediaStream is not implemented.
++    if (parameters.platformType != PlatformMediaDecodingType::FileOrHLS)
 +        return MediaPlayer::SupportsType::IsNotSupported;
-+    }
 +
 +    auto container = parameters.type.containerType();
 +    if (container.isEmpty())
@@ -5166,7 +5280,7 @@ index 000000000..738f08a2e
 +    auto containerString = container.utf8().toStdString();
 +    auto result = MediaPlayer::SupportsType::IsNotSupported;
 +    // Extended parameters (width, framerate, eotf, ...): see FFmpegSupportTable.h.
-+    auto parameterSupport = FFmpegMedia::evaluateContentTypeParameters(FFmpegMedia::parseContentTypeParameters(parameters.type.raw().utf8().toStdString()));
++    auto parameterSupport = FFmpegMedia::evaluateContentTypeParameters(FFmpegMedia::parseContentTypeParameters(parameters.type.raw().utf8().toStdString()), videoLimits());
 +    switch (FFmpegMedia::combineSupport(FFmpegMedia::evaluate(containerString, codecs, decoderAvailability()), parameterSupport)) {
 +    case FFmpegMedia::Support::IsSupported:
 +        result = MediaPlayer::SupportsType::IsSupported;
@@ -5919,10 +6033,10 @@ index 000000000..738f08a2e
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.h b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.h
 new file mode 100644
-index 000000000..f4681c6b8
+index 000000000..d1cbfad15
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.h
-@@ -0,0 +1,194 @@
+@@ -0,0 +1,197 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// MediaPlayerPrivate backed by ffmpeg (libavformat/libavcodec/libswscale/
@@ -5981,7 +6095,10 @@ index 000000000..f4681c6b8
 +    static MediaPlayer::SupportsType supportsType(const MediaEngineSupportParameters&);
 +
 +    // Shared with the MSE player (MediaPlayerPrivateFFmpegMSE).
++    // VP8/VP9 count as unavailable unless PS5BROWSER_MEDIA_VP9=1.
 +    static const FFmpegMedia::DecoderAvailability& decoderAvailability();
++    // 1080p unless PS5BROWSER_MEDIA_MAX_VIDEO=WxH.
++    static const FFmpegMedia::VideoLimits& videoLimits();
 +    static void logSupportsType(const MediaEngineSupportParameters&, MediaPlayer::SupportsType);
 +    // Wraps the frame's pixels without copying; the image keeps the frame alive.
 +    static RefPtr<NativeImage> createNativeImage(FFmpegVideoFrame&);
@@ -7172,10 +7289,10 @@ index 000000000..914f951ce
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/mse/FFmpegMSEPolicy.h b/Source/WebCore/platform/graphics/ffmpeg/mse/FFmpegMSEPolicy.h
 new file mode 100644
-index 000000000..03d15b110
+index 000000000..1f213d65d
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/mse/FFmpegMSEPolicy.h
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,164 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Engine-independent policy of the ffmpeg MSE player (no WebCore, WTF or
@@ -7300,14 +7417,52 @@ index 000000000..03d15b110
 +    return buffered.bufferedAhead(position) < threshold;
 +}
 +
++// MARK: - Seeks
++
++// A seek goes through three phases: waiting for the page to append data at
++// the target (MediaSourcePrivate::waitForTarget), waiting for the
++// re-enqueued samples to be decoded, done. The page decides what to fetch
++// from currentTime (the target while seeking) and buffered.
++enum class MSESeekPhase { WaitingForData, WaitingForFrames, Done };
++
++struct MSESeekInputs {
++    bool dataAvailable { false }; // waitForTarget resolved and samples re-enqueued
++    bool videoReady { true }; // a frame of the new serial shown, or no/hidden/broken video
++    bool audioReady { true }; // audio of the new serial decoded, or no/broken audio
++    double secondsSinceReenqueue { 0 };
++};
++
++inline constexpr double mseSeekFrameTimeout = 3.0;
++
++inline MSESeekPhase mseSeekPhase(const MSESeekInputs& in)
++{
++    if (!in.dataAvailable)
++        return MSESeekPhase::WaitingForData;
++    if ((in.videoReady && in.audioReady) || in.secondsSinceReenqueue > mseSeekFrameTimeout)
++        return MSESeekPhase::Done;
++    return MSESeekPhase::WaitingForFrames;
++}
++
++// Console log while diagnosing seeks and stalls: every append of the first
++// eight, then every 20th, but all of them for 30 s after a seek and while
++// the position is not buffered.
++inline bool mseShouldLogAppend(unsigned appendNumber, double secondsSinceSeek, bool positionBuffered)
++{
++    if (appendNumber <= 8 || !(appendNumber % 20))
++        return true;
++    if (secondsSinceSeek >= 0 && secondsSinceSeek < 30)
++        return true;
++    return !positionBuffered;
++}
++
 +} // namespace FFmpegMedia
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.cpp b/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.cpp
 new file mode 100644
-index 000000000..d26ff2a6f
+index 000000000..eec335e04
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.cpp
-@@ -0,0 +1,1037 @@
+@@ -0,0 +1,1077 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -7335,6 +7490,8 @@ index 000000000..d26ff2a6f
 +#include <wtf/MonotonicTime.h>
 +#include <wtf/NativePromise.h>
 +#include <wtf/TZoneMallocInlines.h>
++#include <wtf/text/StringBuilder.h>
++#include <wtf/text/StringConcatenateNumbers.h>
 +
 +namespace WebCore {
 +
@@ -7453,7 +7610,7 @@ index 000000000..d26ff2a6f
 +    if (parameters.platformType != PlatformMediaDecodingType::MediaSource)
 +        return MediaPlayer::SupportsType::IsNotSupported;
 +    auto result = MediaPlayer::SupportsType::IsNotSupported;
-+    switch (FFmpegMedia::evaluateMediaSource(parameters.type.raw().utf8().toStdString(), MediaPlayerPrivateFFmpeg::decoderAvailability())) {
++    switch (FFmpegMedia::evaluateMediaSource(parameters.type.raw().utf8().toStdString(), MediaPlayerPrivateFFmpeg::decoderAvailability(), MediaPlayerPrivateFFmpeg::videoLimits())) {
 +    case FFmpegMedia::Support::IsSupported:
 +        result = MediaPlayer::SupportsType::IsSupported;
 +        break;
@@ -7949,6 +8106,11 @@ index 000000000..d26ff2a6f
 +    ffmpegMediaLog("mse: seek to %.3f (from %.3f)", time, currentTime().toDouble());
 +    unsigned generation = ++m_seekGeneration;
 +    m_seekStartedAt = now;
++    m_seekAnnouncedAt = now;
++    for (auto& sourceBuffer : mediaSource->sourceBuffers()) {
++        if (sourceBuffer->platformType() == MediaPlatformType::FFmpeg)
++            static_cast<SourceBufferPrivateFFmpeg&>(sourceBuffer.get()).noteSeek();
++    }
 +    m_loggedFirstFrameSerial = 0;
 +    m_seeking = true;
 +    m_seekReenqueued = false;
@@ -7957,8 +8119,10 @@ index 000000000..d26ff2a6f
 +    flushPipeline(m_video, time);
 +    flushPipeline(m_audio, time);
 +    m_clock.reset(time, now);
++    m_lastSeekWaitLog = now;
++    // readyState follows in the tick: notifying the element synchronously
++    // would re-enter HTMLMediaElement::seekTask.
 +    updatePlaybackRunning();
-+    updateReadyState();
 +
 +    m_seekPromise.emplace(PlatformMediaError::Cancelled);
 +    Ref<MediaTimePromise> promise = m_seekPromise->promise();
@@ -7988,6 +8152,8 @@ index 000000000..d26ff2a6f
 +                return;
 +            protectedThis->m_seekReenqueued = true;
 +            protectedThis->m_seekStartedAt = monotonicNow();
++            ffmpegMediaLog("mse: seek samples re-enqueued (queues v %zu a %zu)", protectedThis->m_video.queue ? protectedThis->m_video.queue->level().packets : 0,
++                protectedThis->m_audio.queue ? protectedThis->m_audio.queue->level().packets : 0);
 +            protectedThis->scheduleTick(0_s);
 +        });
 +    });
@@ -7996,15 +8162,43 @@ index 000000000..d26ff2a6f
 +
 +void MediaPlayerPrivateFFmpegMSE::finishSeekIfReady(double now)
 +{
-+    if (!m_seeking || !m_seekReenqueued)
++    if (!m_seeking)
 +        return;
 +    RefPtr video = m_videoDecoder;
 +    RefPtr audio = m_audioDecoder;
-+    bool videoReady = !video || !m_pageVisible || video->hasFatalError()
++    FFmpegMedia::MSESeekInputs inputs;
++    inputs.dataAvailable = m_seekReenqueued;
++    inputs.videoReady = !video || !m_pageVisible || video->hasFatalError()
 +        || (m_currentFrame && m_currentFrame->serial == m_video.serial) || video->reachedEnd(m_video.serial);
-+    bool audioReady = !audio || audio->hasFatalError() || audio->hasData(m_audio.serial) || audio->drained(m_audio.serial);
-+    bool timedOut = now - m_seekStartedAt > seekCompletionTimeout;
-+    if ((!videoReady || !audioReady) && !timedOut)
++    inputs.audioReady = !audio || audio->hasFatalError() || audio->hasData(m_audio.serial) || audio->drained(m_audio.serial);
++    inputs.secondsSinceReenqueue = now - m_seekStartedAt;
++    auto phase = FFmpegMedia::mseSeekPhase(inputs);
++    if (phase == FFmpegMedia::MSESeekPhase::WaitingForData) {
++        // The page has not appended data at the target yet: say what the
++        // MediaSource holds, so a stuck seek shows who is waiting for whom.
++        if (now - m_lastSeekWaitLog >= statsIntervalSeconds) {
++            m_lastSeekWaitLog = now;
++            StringBuilder ranges;
++            if (RefPtr mediaSource = m_mediaSourcePrivate) {
++                auto buffered = mediaSource->buffered();
++                for (unsigned i = 0; i < buffered.length() && i < 6; ++i)
++                    ranges.append(i ? " "_s : ""_s, FormattedNumber::fixedPrecision(buffered.start(i).toDouble(), 6), '-', FormattedNumber::fixedPrecision(buffered.end(i).toDouble(), 6));
++                for (auto& sourceBuffer : mediaSource->sourceBuffers()) {
++                    if (sourceBuffer->platformType() == MediaPlatformType::FFmpeg) {
++                        auto& buffer = static_cast<SourceBufferPrivateFFmpeg&>(sourceBuffer.get());
++                        ranges.append(" | #"_s, buffer.identifier(), ": "_s, buffer.appendsSinceSeek(), " appends since the seek"_s);
++                    }
++                }
++            }
++            ffmpegMediaLog("mse: seek to %.3f still waiting for data after %.0f s; buffered %s", m_seekTime, now - m_seekAnnouncedAt,
++                ranges.isEmpty() ? "none" : ranges.toString().utf8().legacyCStringPointer());
++        }
++        return;
++    }
++    bool timedOut = !inputs.videoReady || !inputs.audioReady;
++    bool videoReady = inputs.videoReady;
++    bool audioReady = inputs.audioReady;
++    if (phase != FFmpegMedia::MSESeekPhase::Done)
 +        return;
 +
 +    ffmpegMediaLog("mse: seek finished at %.3f in %.0f ms after re-enqueue%s", m_seekTime, (now - m_seekStartedAt) * 1000,
@@ -8253,10 +8447,11 @@ index 000000000..d26ff2a6f
 +    if (audio && m_audioSink)
 +        audioClock = audio->clockTime(m_audioSink->latency());
 +    double ahead = mediaSource ? toRangeSet(mediaSource->buffered()).bufferedAhead(position) : 0;
-+    ffmpegMediaLog("mse stats: t=%.2f%s %s | video %u decoded %u dropped (+%u presenter) %zu queued, pts %.2f | queues v %zu/%.1fs a %zu/%.1fs | audio %s clock %.2f ring %.2fs | buffered ahead %.1fs, %llu KiB appended",
++    auto timing = video ? video->takeTiming() : FFmpegVideoDecoder::Timing { };
++    ffmpegMediaLog("mse stats: t=%.2f%s %s | video %u decoded %u dropped (+%u presenter) %zu queued, pts %.2f, decode %.1f ms convert %.1f ms per frame (%d threads) | queues v %zu/%.1fs a %zu/%.1fs | audio %s clock %.2f ring %.2fs | buffered ahead %.1fs, %llu KiB appended",
 +        position, m_seeking ? " SEEKING" : "", readyStateName(m_readyState),
 +        video ? video->decodedFrames() : 0, video ? video->droppedFrames() : 0, m_presenterDropped, video ? video->queuedFrames() : 0,
-+        m_currentFrame ? m_currentFrame->pts : -1.0,
++        m_currentFrame ? m_currentFrame->pts : -1.0, timing.decodeMilliseconds, timing.convertMilliseconds, video ? video->threadCount() : 0,
 +        videoLevel.packets, videoLevel.seconds, audioLevel.packets, audioLevel.seconds,
 +        m_audioSink ? m_audioSink->name() : "none", audioClock ? *audioClock : -1.0, audio ? audio->bufferedSeconds() : 0.0,
 +        ahead, static_cast<unsigned long long>(m_bytesAppended >> 10));
@@ -8347,10 +8542,10 @@ index 000000000..d26ff2a6f
 +#endif // ENABLE(VIDEO) && USE(FFMPEG) && ENABLE(MEDIA_SOURCE)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.h b/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.h
 new file mode 100644
-index 000000000..658264f51
+index 000000000..f39fb6078
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.h
-@@ -0,0 +1,217 @@
+@@ -0,0 +1,219 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Media Source Extensions player of the ffmpeg media engine. Samples come
@@ -8561,6 +8756,8 @@ index 000000000..658264f51
 +    bool m_stalled { false };
 +    // Console log bookkeeping.
 +    double m_seekStartedAt { 0 };
++    double m_seekAnnouncedAt { 0 };
++    double m_lastSeekWaitLog { 0 };
 +    double m_lastStatsAt { 0 };
 +    unsigned m_loggedFirstFrameSerial { 0 };
 +};
@@ -8933,10 +9130,10 @@ index 000000000..131eafd00
 +#endif // ENABLE(VIDEO) && USE(FFMPEG) && ENABLE(MEDIA_SOURCE)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/mse/SourceBufferPrivateFFmpeg.cpp b/Source/WebCore/platform/graphics/ffmpeg/mse/SourceBufferPrivateFFmpeg.cpp
 new file mode 100644
-index 000000000..d7f7b58b8
+index 000000000..28e91ecdf
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/mse/SourceBufferPrivateFFmpeg.cpp
-@@ -0,0 +1,288 @@
+@@ -0,0 +1,301 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -8954,6 +9151,7 @@ index 000000000..d7f7b58b8
 +#include "MediaSourcePrivateFFmpeg.h"
 +#include "SharedBuffer.h"
 +#include "SourceBufferPrivateClient.h"
++#include <wtf/MonotonicTime.h>
 +#include <wtf/NativePromise.h>
 +#include <wtf/text/StringBuilder.h>
 +
@@ -9103,9 +9301,13 @@ index 000000000..d7f7b58b8
 +    }
 +
 +    unsigned samples = m_parser.lastAppendSamples();
-+    // Each append once while starting, then every 20th (YouTube appends a
-+    // few times per second).
-+    if (m_appends <= 8 || !(m_appends % 20) || !samples) {
++    double sinceSeek = m_seekAt < 0 ? -1 : MonotonicTime::now().secondsSinceEpoch().seconds() - m_seekAt;
++    bool positionBuffered = true;
++    if (RefPtr mediaSource = m_mediaSource.get()) {
++        auto position = mediaSource->currentTime();
++        positionBuffered = mediaSource->buffered().contain(position);
++    }
++    if (FFmpegMedia::mseShouldLogAppend(m_appends, sinceSeek, positionBuffered) || !samples) {
 +        if (samples)
 +            ffmpegMediaLog("mse: #%u append %zu bytes -> %u samples (%.3f-%.3f), buffer %llu KiB of %zu KiB, %llu KiB appended in %u appends",
 +                m_identifier, bytes.size(), samples, m_appendFirst, m_appendLast, static_cast<unsigned long long>(contentSize >> 10),
@@ -9114,6 +9316,12 @@ index 000000000..d7f7b58b8
 +            ffmpegMediaLog("mse: #%u append %zu bytes -> no samples (%zu bytes pending)", m_identifier, bytes.size(), m_parser.pendingBytes());
 +    }
 +    return MediaPromise::createAndResolve();
++}
++
++void SourceBufferPrivateFFmpeg::noteSeek()
++{
++    m_appendsAtSeek = m_appends;
++    m_seekAt = MonotonicTime::now().secondsSinceEpoch().seconds();
 +}
 +
 +void SourceBufferPrivateFFmpeg::resetParserStateInternal()
@@ -9185,6 +9393,8 @@ index 000000000..d7f7b58b8
 +
 +void SourceBufferPrivateFFmpeg::flush(TrackID trackID)
 +{
++    if (m_seekAt >= 0 && MonotonicTime::now().secondsSinceEpoch().seconds() - m_seekAt < 30)
++        ffmpegMediaLog("mse: #%u flush track %llu", m_identifier, static_cast<unsigned long long>(trackID));
 +    if (RefPtr player = this->player())
 +        player->flushTrack(*this, trackID);
 +}
@@ -9227,10 +9437,10 @@ index 000000000..d7f7b58b8
 +#endif // ENABLE(VIDEO) && USE(FFMPEG) && ENABLE(MEDIA_SOURCE)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/mse/SourceBufferPrivateFFmpeg.h b/Source/WebCore/platform/graphics/ffmpeg/mse/SourceBufferPrivateFFmpeg.h
 new file mode 100644
-index 000000000..d200f997f
+index 000000000..001ac3b98
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/mse/SourceBufferPrivateFFmpeg.h
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,100 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// SourceBufferPrivate of the ffmpeg media engine. appendBuffer() bytes go to
@@ -9270,6 +9480,9 @@ index 000000000..d200f997f
 +    RefPtr<FFmpegMSETrackFormat> formatForTrack(TrackID) const;
 +
 +    unsigned identifier() const { return m_identifier; }
++    // Console diagnostics of seeks.
++    void noteSeek();
++    unsigned appendsSinceSeek() const { return m_appends - m_appendsAtSeek; }
 +    size_t platformMaximumBufferSize() const final;
 +    bool canSwitchToType(const ContentType&) final;
 +    void removedFromMediaSource() final;
@@ -9310,6 +9523,8 @@ index 000000000..d200f997f
 +    // Console log bookkeeping.
 +    uint64_t m_bytesAppended { 0 };
 +    unsigned m_appends { 0 };
++    unsigned m_appendsAtSeek { 0 };
++    double m_seekAt { -1 };
 +    uint64_t m_lastContentSize { 0 };
 +    double m_appendFirst { 0 };
 +    double m_appendLast { 0 };
