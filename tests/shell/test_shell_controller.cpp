@@ -101,6 +101,27 @@ TEST_SUITE("shell.session") {
     CHECK_FALSE(f.view(0).visible);
   }
 
+  TEST_CASE("tabs and history are saved a few seconds after a change") {
+    Fixture f;
+    f.make();
+    f.frame(10.0f);  // the start-up session is saved as well
+    f.shell->navigate("example.org");
+    f.finish_load(f.view(0), "https://example.org/", "Example");
+    f.frame(1.0f);
+    {
+      core::TabManager tabs;
+      REQUIRE(core::Session(f.storage).load_tabs(tabs));
+      CHECK(tabs.tabs()[0].url == kHome);  // not yet: debounced
+    }
+    f.frame(ShellController::kSessionSaveDelaySeconds);
+    core::TabManager tabs;
+    core::History history;
+    REQUIRE(core::Session(f.storage).load_tabs(tabs));
+    REQUIRE(core::Session(f.storage).load_history(history));
+    CHECK(tabs.tabs()[0].url == "https://example.org/");
+    CHECK(history.size() == 1);
+  }
+
   TEST_CASE("shutdown saves tabs, history and bookmarks") {
     Fixture f;
     f.make();

@@ -43,6 +43,9 @@ class ShellController {
   // How long after a Cross click a text_input_focused(true) opens the OSK.
   static constexpr float kClickFocusWindowSeconds = 1.0f;
   static constexpr std::size_t kMenuHistoryItems = 30;
+  // Tabs and history are saved at most this long after they change, so a
+  // console app kill (PS button, crash) loses little; shutdown() saves too.
+  static constexpr float kSessionSaveDelaySeconds = 5.0f;
 
   struct Config {
     int width = 1920;
@@ -68,7 +71,8 @@ class ShellController {
   // Restores the saved session (only the active tab is loaded right away,
   // the others load when first activated) or opens the home page.
   void start();
-  // Saves tabs, history and bookmarks.
+  // Saves tabs, history and bookmarks (tabs and history are also saved
+  // from tick(), kSessionSaveDelaySeconds after a change).
   void shutdown();
 
   // Gamepad input.
@@ -224,6 +228,8 @@ class ShellController {
   std::int64_t now() const;
   core::Language language() const;
   void mark_dirty() { dirty_ = true; }
+  void mark_session_dirty() { session_dirty_ = true; }
+  void save_session_if_due(float dt_seconds);
 
   EngineFactory& factory_;
   ChromeUi& chrome_;
@@ -265,6 +271,8 @@ class ShellController {
   bool text_input_focused_ = false;
   bool quit_requested_ = false;
   bool dirty_ = true;
+  bool session_dirty_ = false;
+  float since_session_change_ = 0.0f;
 };
 
 }  // namespace ps5browser::shell

@@ -142,7 +142,24 @@ void ShellController::start() {
   render_now();
 }
 
-void ShellController::shutdown() { session_.save_all(tabs_, history_, bookmarks_); }
+void ShellController::shutdown() {
+  session_.save_all(tabs_, history_, bookmarks_);
+  session_dirty_ = false;
+}
+
+void ShellController::save_session_if_due(float dt_seconds) {
+  if (!session_dirty_) {
+    return;
+  }
+  since_session_change_ += dt_seconds;
+  if (since_session_change_ < kSessionSaveDelaySeconds) {
+    return;
+  }
+  session_.save_tabs(tabs_);
+  session_.save_history(history_);
+  session_dirty_ = false;
+  since_session_change_ = 0.0f;
+}
 
 std::int64_t ShellController::now() const {
   return config_.now ? config_.now() : static_cast<std::int64_t>(std::time(nullptr));
@@ -207,6 +224,7 @@ std::optional<std::uint64_t> ShellController::open_tab(const std::string& url, b
     load_in_tab(*id, url);
   }
   mark_dirty();
+  mark_session_dirty();
   return id;
 }
 
@@ -233,6 +251,7 @@ void ShellController::close_tab(std::uint64_t id) {
     visible_tab_.reset();
   }
   tabs_.close(id);
+  mark_session_dirty();
   if (tabs_.empty()) {
     open_tab(config_.home_url, true);
   } else {
@@ -268,6 +287,7 @@ void ShellController::after_tab_switch() {
   sync_visibility();
   apply_geometry();
   mark_dirty();
+  mark_session_dirty();
 }
 
 void ShellController::sync_visibility() {
@@ -326,6 +346,7 @@ void ShellController::load_in_tab_now(std::uint64_t id, const std::string& url) 
   tabs_.update_url(id, url);
   entry.view->load(url);
   mark_dirty();
+  mark_session_dirty();
 }
 
 // ---------------------------------------------------------------------------
@@ -334,12 +355,14 @@ void ShellController::load_in_tab_now(std::uint64_t id, const std::string& url) 
 void ShellController::on_url_changed(std::uint64_t id, const std::string& url) {
   if (tabs_.update_url(id, url)) {
     mark_dirty();
+    mark_session_dirty();
   }
 }
 
 void ShellController::on_title_changed(std::uint64_t id, const std::string& title) {
   if (tabs_.update_title(id, title)) {
     mark_dirty();
+    mark_session_dirty();
   }
 }
 
@@ -355,6 +378,7 @@ void ShellController::on_load_finished(std::uint64_t id) {
     history_.add(tab->url, tab->title, now());
   }
   mark_dirty();
+  mark_session_dirty();
 }
 
 void ShellController::on_load_failed(std::uint64_t id, const std::string& url,
@@ -514,6 +538,8 @@ void ShellController::tick(float dt_seconds) {
       scroll_active(dx, dy);
     }
   }
+
+  save_session_if_due(dt_seconds);
 
   if (dirty_) {
     render_now();
