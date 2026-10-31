@@ -16,8 +16,11 @@ installed under `/data/ps5browser/`:
     chrome.html         the HTML browser chrome (from src/chrome-ui/)
     ...                 chrome assets (css/js/img)
   cacert.pem            CA bundle for TLS (curl SSL handle on PS5)
-  fonts/                fontconfig fonts
-  config.json           home url, user agent, language (see below)
+  fonts/                DejaVu TTFs + fonts.conf (FONTCONFIG_FILE)
+  config.json           home url, user agent, language (see below);
+                        shipped as config.json.sample
+  LICENSES/             GPL-3.0 (the ELF), MPL-2.0 notice (cacert.pem), DejaVu
+  README-install.txt
   tabs.json             persisted session (written by core::Session)
   history.json          persisted history
   bookmarks.json        persisted bookmarks
@@ -38,6 +41,44 @@ installed under `/data/ps5browser/`:
   "height":     1080
 }
 ```
+
+`scripts/ps5/package.sh` assembles this directory as `dist/ps5browser/`,
+plus `dist/homebrew/ps5browser/` (`homebrew.js` + `sce_sys/icon0.png`) for
+`/data/homebrew/ps5browser/`: websrv lists every `/data/homebrew/<name>/`
+with a `homebrew.js` (preferred) or `eboot.elf` and uses
+`sce_sys/icon0.png` as the tile. The `homebrew.js` launches
+`/data/ps5browser/ps5browser.elf` in place (`cwd` `/data/ps5browser`), so
+the large ELF is not duplicated. websrv needs no `param.json` for homebrew
+entries. Without websrv, elfldr loads it directly:
+`echo file:/data/ps5browser/ps5browser.elf | nc -q0 PS5 9021` (elfldr
+reads a raw ELF, a URI line or an HTTP GET `?uri=`, not a POST body).
+
+Environment set by the UI process before WebKit initialisation
+(`src/frontend/ps5/ps5_runtime_env.cpp`, existing values win):
+
+| Variable | Value | Read by |
+|---|---|---|
+| `FONTCONFIG_FILE` | `/data/ps5browser/fonts/fonts.conf` | fontconfig (WebProcess) |
+| `FONTCONFIG_PATH` | `/data/ps5browser/fonts` | fontconfig |
+| `PS5BROWSER_CA_BUNDLE` | `/data/ps5browser/cacert.pem` | curl SSL handle (NetworkProcess, patch 0004) |
+| `SYSTEM_LANGUAGE` | `en-US` / `ru-RU` from `config.json` `language` | WTF `platformUserPreferredLanguages` (patch 0006) |
+
+`elfldr_spawn_fds` copies the parent's `environ` into each child
+(`elfldr_set_environ`, the shsrv pattern), so the auxiliary processes see
+the same values. `fonts.conf` maps the generic families (`sans-serif`,
+`serif`, `monospace`, `system-ui`, ...) and common web fonts to DejaVu; no
+CJK font is shipped (Noto Sans CJK is ~100 MB per weight).
+
+Sizes of the current build (Release, `--gc-sections`, ffmpeg engine on):
+`ps5browser.elf` 169 MB as linked, **162 MB shipped** (`llvm-strip
+--strip-debug`, symbol table kept for backtraces), 129 MB with
+`--strip-all` (not shipped: elfldr and the spawner only need program
+headers, section headers and `SHT_RELA`, so `--strip-all` should also load;
+untested). About 87 MB `.text`, 19 MB `.rodata`, 22 MB `.bss`, no `PT_TLS`.
+`NEEDED`: `libkernel_web`, `libSceLibcInternal`, `libSceNet` plus, through
+SDL2, `libSceSystemService`, `libSceUserService`, `libScePad`,
+`libSceAudioOut`, `libSceVideoOut`, `libSceKeyboard`, `libSceImeDialog`
+(all `.sprx` system modules). The whole package is about 175 MB.
 
 The ELF path used when re-spawning the auxiliary processes is resolved by
 `ps5_spawn_resolve_self_path()`: `PS5BROWSER_SELF_PATH` env →
@@ -159,6 +200,17 @@ Phase 1 uses the non-accelerated raster path (no EGL/GLES at runtime):
   the CPU.
 
 ## Known risks
+
+- **Spawn memory**: `ps5_spawn_self` caches the whole ELF image (162 MB) in
+  the UI process, and the loader mallocs a mirror of the mapped image
+  (~130 MB) per spawn while copying it into the child. Shipping
+  `--strip-all` saves 33 MB of the cached copy; mapping the file instead of
+  reading it would save the rest.
+- **Relocations**: the loader applies `R_X86_64_RELATIVE` only (~311k).
+  The ELF also has 334 `GLOB_DAT`, 27 `R_X86_64_64` and one `JUMP_SLOT`
+  relocation, left to the SDK crt at startup, the same as for every
+  payload elfldr loads; a WebKit-sized binary has not been loaded this way
+  before.
 
 - **Memory**: three WebKit processes plus Skia backing stores at 1920×1080 on a
   fixed homebrew budget (`sys_budget_set(0)`); OOM is plausible. Consider

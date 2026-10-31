@@ -13,7 +13,19 @@ A homebrew web browser for the PlayStation 5. It is built on a port of upstream 
 
 ## Build
 
-TBD for the PS5 payload.
+PS5 payload, with the [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk) in `/opt/ps5-payload-sdk` (about 6 GB of disk: WebKit checkout 1.3 GB, build tree 3.2 GB, dependencies 0.7 GB):
+
+```sh
+scripts/ps5/build-deps.sh          # third_party/ps5-prefix: ICU, HarfBuzz, libwpe, ...
+scripts/ps5/fetch-webkit.sh        # third_party/webkit at the pinned commit + webkit-port/patches
+scripts/ps5/build-webkit.sh all    # build-wk-ps5/: libWebKitPS5.a + ps5webkit-link.cmake
+cmake -S . -B build-ps5 -DCMAKE_TOOLCHAIN_FILE=/opt/ps5-payload-sdk/toolchain/prospero.cmake \
+      -DPS5BROWSER_FRONTEND=ps5 -DPS5BROWSER_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build build-ps5 -j4 --target ps5browser
+scripts/ps5/package.sh             # dist/ps5browser/ + dist/homebrew/ps5browser/
+```
+
+Installation and launch: `dist/ps5browser/README-install.txt`; runtime layout and process model: [docs/ps5-runtime.md](docs/ps5-runtime.md); the WebKit port: [webkit-port/README.md](webkit-port/README.md).
 
 ## Host build
 
