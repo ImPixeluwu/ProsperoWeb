@@ -744,10 +744,20 @@ bool cache_memory_answers(video::HwdecProbe& probe) {
   return true;
 }
 
-// The probe body: the decoder's system module and library, its functions,
-// the shared compute queue, memory answers.
+// The probe body: libraries, functions, the shared compute queue, memory
+// answers. The order follows the references (ps5_hwdec.h): the GPU
+// libraries in the process before the decoder's (all four have libSceAgc
+// and libSceAgcDriver among the title's own imports), the decoder's system
+// module, then the queue in 16 KiB-aligned CPU+GPU direct memory of type 12.
 bool probe_body(video::HwdecProbe& probe) {
   State& s = state();
+  if (!env_off("PROSPEROWEB_HWDEC_AGC", "0")) {
+    for (const char* name : {"libSceAgcDriver.sprx", "libSceAgc.sprx"}) {
+      load_library(probe, name);  // a failure is logged; the decoder may still work
+    }
+  } else {
+    log_line("hwdec: GPU libraries not preloaded (PROSPEROWEB_HWDEC_AGC=0)");
+  }
   void* sysmodule = load_library(probe, "libSceSysmodule.sprx");
   auto load_module = sysmodule ? reinterpret_cast<int (*)(std::uint16_t)>(
                                      dlsym(sysmodule, "sceSysmoduleLoadModule"))
