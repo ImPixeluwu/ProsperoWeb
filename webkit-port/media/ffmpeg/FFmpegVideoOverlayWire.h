@@ -7,7 +7,7 @@
 // mode the video element paints a transparent hole instead, and the frames
 // travel to the UI process here; the UI composes them under the page.
 //
-// Control channel: loopback TCP (PS5BROWSER_VIDEO_PORT, default 17773), one
+// Control channel: loopback TCP (PROSPEROBROWSER_VIDEO_PORT, default 17773), one
 // connection per player. Pixels go through shared memory when both processes
 // can map the same object (a named POSIX shm object, else a file under the
 // data directory mapped MAP_SHARED), otherwise inline over the socket.

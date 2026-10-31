@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "ps5browser/core/on_screen_keyboard.h"
+#include "prosperobrowser/core/on_screen_keyboard.h"
 
 #include <algorithm>
 #include <initializer_list>
@@ -7,7 +7,7 @@
 
 #include "text_utils.h"
 
-namespace ps5browser::core {
+namespace prosperobrowser::core {
 
 namespace {
 
@@ -282,4 +282,4 @@ void OnScreenKeyboard::cancel() {
   shift_ = false;
 }
 
-}  // namespace ps5browser::core
+}  // namespace prosperobrowser::core

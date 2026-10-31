@@ -2,7 +2,7 @@
 //
 // Multi-call entry point. The browser ships as one static ELF; the role is
 // selected by argv[0] (set by ps5_spawn_self in the launcher), then by a
-// --role=<name> argument, then by the PS5BROWSER_ROLE environment variable:
+// --role=<name> argument, then by the PROSPEROBROWSER_ROLE environment variable:
 //
 //   "WebProcess"     -> ps5_webkit_web_process_main    (WebKit static lib)
 //   "NetworkProcess" -> ps5_webkit_network_process_main (WebKit static lib)
@@ -17,7 +17,7 @@
 
 #include <unistd.h>
 
-#include "ps5browser/spawn/spawn.h"
+#include "prosperobrowser/spawn/spawn.h"
 #include "ps5webkit/entry.h"
 #include "ps5_app.h"
 #include "ps5_cpu_monitor.h"
@@ -37,7 +37,7 @@ const char* basename_of(const char* path) {
 
 constexpr const char* kBrokerRole = "spawn-broker";
 
-// Resolves the process role from argv[0], then --role=, then PS5BROWSER_ROLE.
+// Resolves the process role from argv[0], then --role=, then PROSPEROBROWSER_ROLE.
 std::string resolve_role(int argc, char** argv) {
   if (argc > 0 && argv[0]) {
     std::string role = basename_of(argv[0]);
@@ -50,7 +50,7 @@ std::string resolve_role(int argc, char** argv) {
       return argv[i] + 7;
     }
   }
-  if (const char* env = std::getenv("PS5BROWSER_ROLE")) {
+  if (const char* env = std::getenv("PROSPEROBROWSER_ROLE")) {
     return env;
   }
   return "UI";
@@ -59,8 +59,8 @@ std::string resolve_role(int argc, char** argv) {
 // The UI's own ELF is what the spawner re-executes for WebProcess and
 // NetworkProcess. When the loader passed an absolute *.elf path as argv[0],
 // export it, so the children run exactly the binary the UI was started from
-// (not a stale copy at the default install path). PS5BROWSER_SELF_PATH set
-// by the user wins; otherwise the spawner uses /data/ps5browser/ps5browser.elf.
+// (not a stale copy at the default install path). PROSPEROBROWSER_SELF_PATH set
+// by the user wins; otherwise the spawner uses /data/prosperobrowser/prosperobrowser.elf.
 void export_self_path(int argc, char** argv) {
   if (argc < 1 || !argv[0] || argv[0][0] != '/') {
     return;
@@ -72,13 +72,13 @@ void export_self_path(int argc, char** argv) {
       access(path.c_str(), R_OK) != 0) {
     return;
   }
-  setenv("PS5BROWSER_SELF_PATH", path.c_str(), /*overwrite=*/0);
+  setenv("PROSPEROBROWSER_SELF_PATH", path.c_str(), /*overwrite=*/0);
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  using namespace ps5browser::frontend;
+  using namespace prosperobrowser::frontend;
   std::string role = resolve_role(argc, argv);
   const bool child = role == "WebProcess" || role == "NetworkProcess";
   const bool broker = role == kBrokerRole;

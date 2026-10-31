@@ -31,8 +31,8 @@ public:
     // data is available).
     using RenderCallback = Function<void(std::span<float> interleaved)>;
 
-    // PS5BROWSER_MEDIA_AUDIO selects the first sink tried: "remote" (the
-    // default when PS5BROWSER_AUDIO_PORT is set, and on PlayStation), "sdl"
+    // PROSPEROBROWSER_MEDIA_AUDIO selects the first sink tried: "remote" (the
+    // default when PROSPEROBROWSER_AUDIO_PORT is set, and on PlayStation), "sdl"
     // or "null". Failures fall through remote -> sdl -> null.
     static std::unique_ptr<AudioSink> create(RenderCallback&&);
     static std::unique_ptr<AudioSink> createNull(RenderCallback&&);

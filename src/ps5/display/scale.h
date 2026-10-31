@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace ps5browser::display {
+namespace prosperobrowser::display {
 
 enum class ScaleFilter { Nearest, Bilinear };
 
@@ -33,4 +33,4 @@ void scale_image(const ImageView& src, std::uint32_t* dst, int dst_w, int dst_h,
 void scale_image_reference(const ImageView& src, std::uint32_t* dst, int dst_w, int dst_h,
                            int dst_stride);
 
-}  // namespace ps5browser::display
+}  // namespace prosperobrowser::display

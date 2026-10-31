@@ -16,7 +16,7 @@
 
 #include "broker_proto.h"
 
-namespace ps5browser::spawn {
+namespace prosperobrowser::spawn {
 
 class BrokerClient {
  public:
@@ -86,4 +86,4 @@ std::string websrv_broker_target(const std::string& elf, const std::string& cwd,
 int http_get(const std::string& host_port, const std::string& target, int timeout_ms,
              std::string* error);
 
-}  // namespace ps5browser::spawn
+}  // namespace prosperobrowser::spawn

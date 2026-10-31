@@ -3,7 +3,7 @@
 
 #include <cstdio>
 
-namespace ps5browser::display {
+namespace prosperobrowser::display {
 
 namespace {
 
@@ -36,4 +36,4 @@ std::string FrameStats::format(double seconds) const {
   return buf;
 }
 
-}  // namespace ps5browser::display
+}  // namespace prosperobrowser::display

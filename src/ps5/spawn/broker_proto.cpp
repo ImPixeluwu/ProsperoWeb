@@ -12,7 +12,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-namespace ps5browser::spawn {
+namespace prosperobrowser::spawn {
 
 namespace {
 
@@ -280,4 +280,4 @@ BrokerSrcFds broker_get_src_fds(const nlohmann::json& msg, std::vector<int>* out
   return BrokerSrcFds::kPresent;
 }
 
-}  // namespace ps5browser::spawn
+}  // namespace prosperobrowser::spawn

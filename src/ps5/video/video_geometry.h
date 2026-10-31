@@ -10,7 +10,7 @@
 
 #include "damage_region.h"
 
-namespace ps5browser::video {
+namespace prosperobrowser::video {
 
 // The part of the window the page occupies.
 inline display::Rect content_area(int content_top, int width, int height) {
@@ -33,4 +33,4 @@ inline display::Region damage_to_window(const std::vector<display::Rect>& rects,
   return region;
 }
 
-}  // namespace ps5browser::video
+}  // namespace prosperobrowser::video

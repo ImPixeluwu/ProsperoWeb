@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-namespace ps5browser::core {
+namespace prosperobrowser::core {
 
 // User scripts the frontend injects into web content. Both are meant to run
 // at document start in every frame.
 
-// Reports EME usage to the browser through the "ps5browser" script message
+// Reports EME usage to the browser through the "prosperobrowser" script message
 // handler as {type: 'eme', keySystem, origin}, then lets the original API
 // run. requestMediaKeySystemAccess() for any key system other than
 // org.w3.clearkey still calls the original implementation, but its promise
@@ -15,11 +15,11 @@ namespace ps5browser::core {
 // that does not exist.
 constexpr const char* kEmeDetectorScript = R"JS((function () {
   'use strict';
-  if (window.__ps5browserEmeHooked) {
+  if (window.__prosperobrowserEmeHooked) {
     return;
   }
   try {
-    Object.defineProperty(window, '__ps5browserEmeHooked', { value: true });
+    Object.defineProperty(window, '__prosperobrowserEmeHooked', { value: true });
   } catch (e) {
     return;
   }
@@ -27,8 +27,8 @@ constexpr const char* kEmeDetectorScript = R"JS((function () {
   function report(keySystem) {
     try {
       var handlers = window.webkit && window.webkit.messageHandlers;
-      if (handlers && handlers.ps5browser) {
-        handlers.ps5browser.postMessage({
+      if (handlers && handlers.prosperobrowser) {
+        handlers.prosperobrowser.postMessage({
           type: 'eme',
           keySystem: String(keySystem),
           origin: String(window.location.origin)
@@ -92,7 +92,7 @@ constexpr const char* kEmeDetectorScript = R"JS((function () {
 })();
 )JS";
 
-// Reports focus changes of editable elements through the "ps5browser" script
+// Reports focus changes of editable elements through the "prosperobrowser" script
 // message handler as {type: 'focus', editable}, so the shell can offer text
 // entry (EngineViewClient::text_input_focused). Frontends route these
 // messages to text_input_focused() instead of script_message().
@@ -124,7 +124,7 @@ constexpr const char* kFocusReporterScript = R"JS((function () {
   }
   function send(msg) {
     try {
-      window.webkit.messageHandlers.ps5browser.postMessage(msg);
+      window.webkit.messageHandlers.prosperobrowser.postMessage(msg);
     } catch (e) {
     }
   }
@@ -154,4 +154,4 @@ constexpr const char* kGamepadKeyBridgeScript = R"JS((function () {
 })();
 )JS";
 
-}  // namespace ps5browser::core
+}  // namespace prosperobrowser::core

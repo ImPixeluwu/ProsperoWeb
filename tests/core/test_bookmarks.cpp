@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <doctest/doctest.h>
 
-#include "ps5browser/core/bookmarks.h"
+#include "prosperobrowser/core/bookmarks.h"
 
-using ps5browser::core::Bookmarks;
+using prosperobrowser::core::Bookmarks;
 
 TEST_SUITE("bookmarks") {
   TEST_CASE("add, dedupe, remove") {

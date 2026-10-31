@@ -9,16 +9,16 @@
 
 #include <string>
 
-namespace ps5browser::frontend {
+namespace prosperobrowser::frontend {
 
 // Install and persistence root on the console.
-inline constexpr const char* kPs5DataDir = "/data/ps5browser";
+inline constexpr const char* kPs5DataDir = "/data/prosperobrowser";
 
 // Maps a config.json language ("en", "ru", or already a tag like "de-DE")
 // to the BCP 47 tag WebKit expects in SYSTEM_LANGUAGE.
 std::string system_language_tag(const std::string& language);
 
-// Sets FONTCONFIG_FILE, FONTCONFIG_PATH, PS5BROWSER_CA_BUNDLE,
+// Sets FONTCONFIG_FILE, FONTCONFIG_PATH, PROSPEROBROWSER_CA_BUNDLE,
 // SYSTEM_LANGUAGE (en-US), TMPDIR and HOME for files under base_dir, unless
 // already set, then exports base_dir/config.json "env" (overriding), then
 // defaults JSC_useJIT and JSC_useWasm to false, and creates the temp
@@ -28,4 +28,4 @@ void setup_runtime_env(const std::string& base_dir);
 // UI role: SYSTEM_LANGUAGE from config.json (overrides the default above).
 void apply_language_env(const std::string& language);
 
-}  // namespace ps5browser::frontend
+}  // namespace prosperobrowser::frontend

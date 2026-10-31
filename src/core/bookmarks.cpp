@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "ps5browser/core/bookmarks.h"
+#include "prosperobrowser/core/bookmarks.h"
 
 #include <algorithm>
 
-namespace ps5browser::core {
+namespace prosperobrowser::core {
 
 bool Bookmarks::add(const std::string& url, const std::string& title, std::int64_t now) {
   if (contains(url)) {
@@ -53,4 +53,4 @@ bool Bookmarks::from_json(const nlohmann::json& j) {
   return true;
 }
 
-}  // namespace ps5browser::core
+}  // namespace prosperobrowser::core

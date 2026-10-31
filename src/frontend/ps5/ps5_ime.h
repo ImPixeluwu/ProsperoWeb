@@ -10,9 +10,9 @@
 #include <string>
 #include <vector>
 
-#include "ps5browser/shell/text_input.h"
+#include "prosperobrowser/shell/text_input.h"
 
-namespace ps5browser::frontend {
+namespace prosperobrowser::frontend {
 
 // One sceImeDialog session at a time: open(), poll() every frame until it
 // reports Done / Cancelled / Error (the dialog is terminated then), or term().
@@ -81,9 +81,9 @@ class Ps5ImeTextInput final : public shell::TextInputProvider {
   Completion done_;
 };
 
-// "system" (the default) or "builtin": the PS5BROWSER_OSK environment
+// "system" (the default) or "builtin": the PROSPEROBROWSER_OSK environment
 // variable when set, else config_value (config.json "osk"). Unknown values
 // select "system".
 bool use_system_ime(const std::string& config_value);
 
-}  // namespace ps5browser::frontend
+}  // namespace prosperobrowser::frontend

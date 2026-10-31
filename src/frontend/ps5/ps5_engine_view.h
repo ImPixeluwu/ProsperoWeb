@@ -9,10 +9,10 @@
 
 #include <WebKit/WKBase.h>
 
-#include "ps5browser/shell/engine_view.h"
+#include "prosperobrowser/shell/engine_view.h"
 #include "wk_web_view.h"
 
-namespace ps5browser::frontend {
+namespace prosperobrowser::frontend {
 
 // One web-content view (one per tab).
 class Ps5EngineView final : public shell::EngineView {
@@ -53,7 +53,7 @@ class Ps5EngineView final : public shell::EngineView {
 // Creates web-content views sharing one WKContext and website data store.
 class Ps5EngineFactory final : public shell::EngineFactory {
  public:
-  // base_dir is the persistence root (/data/ps5browser). user_scripts are
+  // base_dir is the persistence root (/data/prosperobrowser). user_scripts are
   // injected into every content view (EME detector, focus reporter, gamepad
   // bridge).
   Ps5EngineFactory(const std::string& base_dir,
@@ -74,4 +74,4 @@ class Ps5EngineFactory final : public shell::EngineFactory {
   std::string user_agent_;
 };
 
-}  // namespace ps5browser::frontend
+}  // namespace prosperobrowser::frontend

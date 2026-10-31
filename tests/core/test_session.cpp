@@ -7,11 +7,11 @@
 #include <cstdio>
 #include <string>
 
-#include "ps5browser/core/file_storage.h"
-#include "ps5browser/core/in_memory_storage.h"
-#include "ps5browser/core/session.h"
+#include "prosperobrowser/core/file_storage.h"
+#include "prosperobrowser/core/in_memory_storage.h"
+#include "prosperobrowser/core/session.h"
 
-using namespace ps5browser::core;
+using namespace prosperobrowser::core;
 
 namespace {
 
@@ -68,7 +68,7 @@ TEST_SUITE("session") {
   }
 
   TEST_CASE("file storage roundtrip in a temp dir") {
-    char tmpl[] = "/tmp/ps5browser-test-XXXXXX";
+    char tmpl[] = "/tmp/prosperobrowser-test-XXXXXX";
     REQUIRE(::mkdtemp(tmpl) != nullptr);
     const std::string dir = std::string(tmpl) + "/nested/state";
     {

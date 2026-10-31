@@ -130,7 +130,7 @@ TEST_SUITE("media_mse_support") {
     // Absurd sizes and rates are refused, so the player believes the answers.
     CHECK(mse("video/webm; codecs=\"vp9\"; width=99999") == Support::NotSupported);
     CHECK(mse("video/mp4; codecs=\"avc1.4d401e\"; height=99999") == Support::NotSupported);
-    // 1080p by default (landscape or portrait); PS5BROWSER_MEDIA_MAX_VIDEO raises it.
+    // 1080p by default (landscape or portrait); PROSPEROBROWSER_MEDIA_MAX_VIDEO raises it.
     CHECK(mse("video/webm; codecs=\"vp9\"; width=1920; height=1080") == Support::IsSupported);
     CHECK(mse("video/mp4; codecs=\"avc1.640028\"; width=1080; height=1920") == Support::IsSupported);
     CHECK(mse("video/webm; codecs=\"vp9\"; width=3840; height=2160") == Support::NotSupported);

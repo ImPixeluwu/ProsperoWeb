@@ -4,9 +4,9 @@
 #include <string>
 #include <string_view>
 
-#include "ps5browser/core/on_screen_keyboard.h"
+#include "prosperobrowser/core/on_screen_keyboard.h"
 
-using Osk = ps5browser::core::OnScreenKeyboard;
+using Osk = prosperobrowser::core::OnScreenKeyboard;
 
 namespace {
 

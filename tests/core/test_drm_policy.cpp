@@ -3,10 +3,10 @@
 
 #include <string>
 
-#include "ps5browser/core/drm_policy.h"
-#include "ps5browser/core/page_scripts.h"
+#include "prosperobrowser/core/drm_policy.h"
+#include "prosperobrowser/core/page_scripts.h"
 
-using namespace ps5browser::core;
+using namespace prosperobrowser::core;
 
 TEST_SUITE("drm_policy") {
   TEST_CASE("known DRM-only hosts including subdomains") {

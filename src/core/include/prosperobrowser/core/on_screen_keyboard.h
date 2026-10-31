@@ -8,7 +8,7 @@
 #include <string_view>
 #include <vector>
 
-namespace ps5browser::core {
+namespace prosperobrowser::core {
 
 // Gamepad-driven on-screen keyboard. Holds the key grid, the focused key
 // (cursor) and the text being edited with a caret; the frontend only draws
@@ -118,4 +118,4 @@ class OnScreenKeyboard {
   std::string initial_;
 };
 
-}  // namespace ps5browser::core
+}  // namespace prosperobrowser::core

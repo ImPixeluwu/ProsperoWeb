@@ -15,7 +15,7 @@
 #include "ps5_log.h"
 #include "wk_helpers.h"
 
-namespace ps5browser::frontend {
+namespace prosperobrowser::frontend {
 
 namespace {
 
@@ -135,7 +135,7 @@ Ps5EngineView::Ps5EngineView(shell::EngineViewClient& client, WKContextRef conte
     }
   };
 
-  web_ = std::make_unique<WkWebView>(context, data_store, "ps5browser", user_scripts,
+  web_ = std::make_unique<WkWebView>(context, data_store, "prosperobrowser", user_scripts,
                                      /*fullscreen_enabled=*/true, std::move(cb));
   web_->set_size(1920, 1080);
   if (!user_agent.empty()) {
@@ -233,4 +233,4 @@ std::unique_ptr<shell::EngineView> Ps5EngineFactory::create(
                                          user_agent_);
 }
 
-}  // namespace ps5browser::frontend
+}  // namespace prosperobrowser::frontend

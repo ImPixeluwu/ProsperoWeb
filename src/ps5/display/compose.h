@@ -17,7 +17,7 @@
 
 #include "damage_region.h"
 
-namespace ps5browser::display {
+namespace prosperobrowser::display {
 
 // ARGB32 -> ABGR8888 (and back): swaps R and B.
 inline std::uint32_t swap_rb(std::uint32_t p) {
@@ -94,4 +94,4 @@ void compose_rect(const Layers& layers, const std::vector<Rect>& chrome_rects, c
                   std::uint32_t* dst, int dst_stride,
                   const std::vector<VideoLayer>& videos = {});
 
-}  // namespace ps5browser::display
+}  // namespace prosperobrowser::display

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "ps5browser/core/bookmarks.h"
-#include "ps5browser/core/history.h"
-#include "ps5browser/core/storage.h"
-#include "ps5browser/core/tab_manager.h"
+#include "prosperobrowser/core/bookmarks.h"
+#include "prosperobrowser/core/history.h"
+#include "prosperobrowser/core/storage.h"
+#include "prosperobrowser/core/tab_manager.h"
 
-namespace ps5browser::core {
+namespace prosperobrowser::core {
 
 // Loads and saves browser state through a Storage under the keys
 // kTabsKey, kHistoryKey and kBookmarksKey. Does not own anything.
@@ -40,4 +40,4 @@ class Session {
   Storage& storage_;
 };
 
-}  // namespace ps5browser::core
+}  // namespace prosperobrowser::core

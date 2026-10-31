@@ -3,10 +3,10 @@
 
 #include <cmath>
 
-#include "ps5browser/core/pointer_model.h"
+#include "prosperobrowser/core/pointer_model.h"
 
-using ps5browser::core::PointerModel;
-using ps5browser::core::Vec2;
+using prosperobrowser::core::PointerModel;
+using prosperobrowser::core::Vec2;
 
 TEST_SUITE("pointer_model") {
   TEST_CASE("starts centred") {

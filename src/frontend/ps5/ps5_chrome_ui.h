@@ -10,10 +10,10 @@
 #include <WebKit/WKBase.h>
 #include <nlohmann/json.hpp>
 
-#include "ps5browser/shell/chrome_ui.h"
+#include "prosperobrowser/shell/chrome_ui.h"
 #include "wk_web_view.h"
 
-namespace ps5browser::frontend {
+namespace prosperobrowser::frontend {
 
 class Ps5ChromeUi final : public shell::ChromeUi {
  public:
@@ -44,4 +44,4 @@ class Ps5ChromeUi final : public shell::ChromeUi {
   bool first_event_logged_ = false;
 };
 
-}  // namespace ps5browser::frontend
+}  // namespace prosperobrowser::frontend

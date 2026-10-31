@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "ps5browser/core/gamepad_mapper.h"
+#include "prosperobrowser/core/gamepad_mapper.h"
 
-namespace ps5browser::core {
+namespace prosperobrowser::core {
 
 Action GamepadMapper::map(Button button, bool pressed, Mode mode) const {
   if (!pressed || button == Button::PS) {
@@ -90,4 +90,4 @@ Action GamepadMapper::map_osk(Button button) {
   return Action::None;
 }
 
-}  // namespace ps5browser::core
+}  // namespace prosperobrowser::core

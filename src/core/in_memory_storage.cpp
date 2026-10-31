@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "ps5browser/core/in_memory_storage.h"
+#include "prosperobrowser/core/in_memory_storage.h"
 
-namespace ps5browser::core {
+namespace prosperobrowser::core {
 
 std::optional<std::string> InMemoryStorage::read(const std::string& key) {
   const auto it = data_.find(key);
@@ -19,4 +19,4 @@ bool InMemoryStorage::write(const std::string& key, const std::string& value) {
   return true;
 }
 
-}  // namespace ps5browser::core
+}  // namespace prosperobrowser::core

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "ps5browser/core/pointer_model.h"
+#include "prosperobrowser/core/pointer_model.h"
 
 #include <algorithm>
 #include <cmath>
 
-namespace ps5browser::core {
+namespace prosperobrowser::core {
 
 PointerModel::PointerModel(float viewport_width, float viewport_height)
     : width_(std::max(1.0f, viewport_width)),
@@ -54,4 +54,4 @@ Vec2 PointerModel::scroll(float stick_x, float stick_y, float dt_seconds) {
   return {v.x * k * dt_seconds, v.y * k * dt_seconds};
 }
 
-}  // namespace ps5browser::core
+}  // namespace prosperobrowser::core

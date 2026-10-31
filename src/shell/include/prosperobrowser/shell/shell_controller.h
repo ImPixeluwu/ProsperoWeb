@@ -11,23 +11,23 @@
 
 #include <nlohmann/json.hpp>
 
-#include "ps5browser/core/bookmarks.h"
-#include "ps5browser/core/drm_policy.h"
-#include "ps5browser/core/fullscreen_controller.h"
-#include "ps5browser/core/gamepad.h"
-#include "ps5browser/core/gamepad_mapper.h"
-#include "ps5browser/core/history.h"
-#include "ps5browser/core/on_screen_keyboard.h"
-#include "ps5browser/core/pointer_model.h"
-#include "ps5browser/core/repeat_timer.h"
-#include "ps5browser/core/session.h"
-#include "ps5browser/core/storage.h"
-#include "ps5browser/core/tab_manager.h"
-#include "ps5browser/shell/chrome_ui.h"
-#include "ps5browser/shell/engine_view.h"
-#include "ps5browser/shell/text_input.h"
+#include "prosperobrowser/core/bookmarks.h"
+#include "prosperobrowser/core/drm_policy.h"
+#include "prosperobrowser/core/fullscreen_controller.h"
+#include "prosperobrowser/core/gamepad.h"
+#include "prosperobrowser/core/gamepad_mapper.h"
+#include "prosperobrowser/core/history.h"
+#include "prosperobrowser/core/on_screen_keyboard.h"
+#include "prosperobrowser/core/pointer_model.h"
+#include "prosperobrowser/core/repeat_timer.h"
+#include "prosperobrowser/core/session.h"
+#include "prosperobrowser/core/storage.h"
+#include "prosperobrowser/core/tab_manager.h"
+#include "prosperobrowser/shell/chrome_ui.h"
+#include "prosperobrowser/shell/engine_view.h"
+#include "prosperobrowser/shell/text_input.h"
 
-namespace ps5browser::shell {
+namespace prosperobrowser::shell {
 
 // Engine-independent browser logic: tabs, navigation, gamepad handling,
 // on-screen keyboard, fullscreen, menu, DRM notices and session persistence.
@@ -320,4 +320,4 @@ class ShellController {
   float since_session_change_ = 0.0f;
 };
 
-}  // namespace ps5browser::shell
+}  // namespace prosperobrowser::shell

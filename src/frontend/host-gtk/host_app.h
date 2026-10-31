@@ -11,13 +11,13 @@
 #include <gtk/gtk.h>
 #include <webkit/webkit.h>
 
-#include "ps5browser/core/gamepad.h"
-#include "ps5browser/core/storage.h"
-#include "ps5browser/shell/chrome_ui.h"
-#include "ps5browser/shell/engine_view.h"
-#include "ps5browser/shell/shell_controller.h"
+#include "prosperobrowser/core/gamepad.h"
+#include "prosperobrowser/core/storage.h"
+#include "prosperobrowser/shell/chrome_ui.h"
+#include "prosperobrowser/shell/engine_view.h"
+#include "prosperobrowser/shell/shell_controller.h"
 
-namespace ps5browser::host {
+namespace prosperobrowser::host {
 
 class GtkEngineView;
 class Gamepad;
@@ -25,7 +25,7 @@ class Gamepad;
 struct Options {
   int width = 1920;
   int height = 1080;
-  std::string profile_dir;   // empty: $XDG_DATA_HOME/ps5browser
+  std::string profile_dir;   // empty: $XDG_DATA_HOME/prosperobrowser
   std::string url;           // opened in the active tab after start
   std::string screenshot;    // PNG path; empty: no screenshot
   int after_ms = 3000;
@@ -110,4 +110,4 @@ class HostApp final : public shell::ChromeUi, public shell::EngineFactory {
   bool quitting_ = false;
 };
 
-}  // namespace ps5browser::host
+}  // namespace prosperobrowser::host

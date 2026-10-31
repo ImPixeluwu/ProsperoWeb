@@ -4,9 +4,9 @@
 #include <functional>
 #include <memory>
 
-#include "ps5browser/core/gamepad.h"
+#include "prosperobrowser/core/gamepad.h"
 
-namespace ps5browser::host {
+namespace prosperobrowser::host {
 
 // Physical game controller (SDL2 GameController when built with SDL2,
 // otherwise a stub that never reports a device).
@@ -30,4 +30,4 @@ class Gamepad {
   float sticks_[4] = {0, 0, 0, 0};
 };
 
-}  // namespace ps5browser::host
+}  // namespace prosperobrowser::host

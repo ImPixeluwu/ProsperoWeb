@@ -2,7 +2,7 @@
 //
 // Console diagnostics of the ffmpeg media engine. On the PS5 the shell
 // executable defines ps5_log_line() (src/frontend/ps5/ps5_log.cpp), which
-// prefixes "[ms role]" and appends to /data/ps5browser/log.txt; WebCore only
+// prefixes "[ms role]" and appends to /data/prosperobrowser/log.txt; WebCore only
 // sees a weak declaration, so builds without that symbol (the smoke test,
 // other embedders) still link and log nothing. Lines start with "media:".
 // Thread-safe: ps5_log_line is.

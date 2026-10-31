@@ -15,7 +15,7 @@
 #include "damage_region.h"
 #include "frame_stats.h"
 
-using namespace ps5browser::display;
+using namespace prosperobrowser::display;
 
 namespace {
 

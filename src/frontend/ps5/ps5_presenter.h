@@ -23,7 +23,7 @@
 // requests a frame too (WkWebView::set_damage_hook), so a WebProcess update
 // is painted without waiting for the next tick.
 //
-// PS5BROWSER_PRESENT_THREAD=0 presents synchronously on the caller's thread
+// PROSPEROBROWSER_PRESENT_THREAD=0 presents synchronously on the caller's thread
 // (the old behaviour); pacing still comes from the thread.
 #pragma once
 
@@ -39,7 +39,7 @@
 
 #include "frame_stats.h"
 
-namespace ps5browser::frontend {
+namespace prosperobrowser::frontend {
 
 class Ps5Presenter {
  public:
@@ -85,4 +85,4 @@ class Ps5Presenter {
   std::thread thread_;
 };
 
-}  // namespace ps5browser::frontend
+}  // namespace prosperobrowser::frontend

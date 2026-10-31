@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <string>
 
-namespace ps5browser::core {
+namespace prosperobrowser::core {
 
 struct Tab {
   std::uint64_t id = 0;
@@ -15,4 +15,4 @@ struct Tab {
   bool can_go_forward = false;
 };
 
-}  // namespace ps5browser::core
+}  // namespace prosperobrowser::core

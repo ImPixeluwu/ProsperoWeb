@@ -9,7 +9,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace ps5browser::core {
+namespace prosperobrowser::core {
 
 struct HistoryEntry {
   std::string url;
@@ -53,4 +53,4 @@ class History {
   std::vector<HistoryEntry> entries_;
 };
 
-}  // namespace ps5browser::core
+}  // namespace prosperobrowser::core

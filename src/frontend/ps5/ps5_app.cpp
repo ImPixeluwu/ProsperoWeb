@@ -12,19 +12,19 @@
 #include <WebKit/WKRunLoop.h>
 
 #include "compose.h"
-#include "ps5browser/core/gamepad.h"
-#include "ps5browser/core/page_scripts.h"
+#include "prosperobrowser/core/gamepad.h"
+#include "prosperobrowser/core/page_scripts.h"
 #include "ps5_diagnostics.h"
 #include "ps5_log.h"
 #include "ps5_runtime_env.h"
 
-namespace ps5browser::frontend {
+namespace prosperobrowser::frontend {
 
 namespace {
 
 // Console diagnostics: reports the first DOM pointer events of each document
 // (type, target, detail, buttons, isTrusted, defaultPrevented) through the
-// "ps5browser" handler as {type: 'input_trace'}; Ps5EngineView logs them.
+// "prosperobrowser" handler as {type: 'input_trace'}; Ps5EngineView logs them.
 // Shows whether a press/release pair became a click and what got focus.
 constexpr const char* kInputTraceScript = R"JS((function () {
   'use strict';
@@ -43,7 +43,7 @@ constexpr const char* kInputTraceScript = R"JS((function () {
       var target = ev.target;
       setTimeout(function () {
         try {
-          window.webkit.messageHandlers.ps5browser.postMessage({
+          window.webkit.messageHandlers.prosperobrowser.postMessage({
             type: 'input_trace', ev: t, target: desc(target),
             x: ev.clientX === undefined ? -1 : ev.clientX, y: ev.clientY === undefined ? -1 : ev.clientY,
             detail: ev.detail === undefined ? -1 : ev.detail, buttons: ev.buttons === undefined ? -1 : ev.buttons,
@@ -148,7 +148,7 @@ Ps5App::~Ps5App() {
 
 int Ps5App::run() {
   log_open(std::string(kBaseDir) + "/log.txt");  // no-op: main() opened it
-  log_line("ps5browser UI starting");
+  log_line("ProsperoBrowser UI starting");
 
   log_line("SDL_Init: calling");
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
@@ -161,7 +161,7 @@ int Ps5App::run() {
   // Before the WebProcess is spawned, so its media can connect at once.
   audio_server_ = Ps5AudioServer::start();
   video_overlay_ = Ps5VideoOverlay::start([this] { request_frame(); });
-  if (const char* test = std::getenv("PS5BROWSER_AUDIO_TEST");
+  if (const char* test = std::getenv("PROSPEROBROWSER_AUDIO_TEST");
       audio_server_ && test && !std::strcmp(test, "1")) {
     audio_server_->play_test_tone();
   }
@@ -172,7 +172,7 @@ int Ps5App::run() {
   height_ = config_.height;
 
   log_printf("SDL_CreateWindow: calling %dx%d", width_, height_);
-  window_ = SDL_CreateWindow("ps5browser", SDL_WINDOWPOS_UNDEFINED,
+  window_ = SDL_CreateWindow("ProsperoBrowser", SDL_WINDOWPOS_UNDEFINED,
                              SDL_WINDOWPOS_UNDEFINED, width_, height_, 0);
   if (!window_) {
     log_printf("SDL_CreateWindow failed: %s", SDL_GetError());
@@ -237,7 +237,7 @@ int Ps5App::run() {
     cfg.text_input = ime_input_.get();
     log_line("text input: system keyboard dialog (built-in OSK as fallback)");
   } else {
-    log_line("text input: built-in OSK (PS5BROWSER_OSK / config osk = builtin)");
+    log_line("text input: built-in OSK (PROSPEROBROWSER_OSK / config osk = builtin)");
   }
   controller_ = std::make_unique<shell::ShellController>(*factory_, *chrome_, *storage_,
                                                          cfg);
@@ -248,11 +248,11 @@ int Ps5App::run() {
   running_ = true;
   last_frame_ticks_ = SDL_GetTicks64();
   {
-    const char* env = std::getenv("PS5BROWSER_PRESENT_THREAD");
+    const char* env = std::getenv("PROSPEROBROWSER_PRESENT_THREAD");
     const bool threaded = !(env && !std::strcmp(env, "0"));
     presenter_ = std::make_unique<Ps5Presenter>(window_, threaded, [this] { request_frame(); });
     log_printf("present: %s, frames paced by flips and a %u ms tick",
-               threaded ? "presenter thread" : "main thread (PS5BROWSER_PRESENT_THREAD=0)",
+               threaded ? "presenter thread" : "main thread (PROSPEROBROWSER_PRESENT_THREAD=0)",
                Ps5Presenter::kTickMs);
   }
   WkWebView::set_damage_hook(
@@ -261,7 +261,7 @@ int Ps5App::run() {
   log_line("WKRunLoopRunMain: entering");
   WKRunLoopRunMain();
 
-  log_line("ps5browser UI stopped");
+  log_line("ProsperoBrowser UI stopped");
   log_close();
   return 0;
 }
@@ -288,10 +288,10 @@ void Ps5App::draw_splash() {
   log_printf("splash: filled and flipped (%llu ms)",
              static_cast<unsigned long long>(SDL_GetTicks64() - t0));
 
-  const char* hold = std::getenv("PS5BROWSER_SPLASH_HOLD_MS");
+  const char* hold = std::getenv("PROSPEROBROWSER_SPLASH_HOLD_MS");
   const long hold_ms = hold ? std::strtol(hold, nullptr, 10) : 0;
   if (hold_ms > 0) {
-    log_printf("splash: holding %ld ms (PS5BROWSER_SPLASH_HOLD_MS)", hold_ms);
+    log_printf("splash: holding %ld ms (PROSPEROBROWSER_SPLASH_HOLD_MS)", hold_ms);
     SDL_Delay(static_cast<std::uint32_t>(hold_ms));
     log_line("splash: hold done");
   }
@@ -805,4 +805,4 @@ void Ps5App::composite_and_present() {
   presenter_->submit(std::move(present_rects));
 }
 
-}  // namespace ps5browser::frontend
+}  // namespace prosperobrowser::frontend

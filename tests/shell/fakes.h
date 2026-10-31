@@ -9,11 +9,11 @@
 
 #include <nlohmann/json.hpp>
 
-#include "ps5browser/shell/chrome_ui.h"
-#include "ps5browser/shell/engine_view.h"
-#include "ps5browser/shell/text_input.h"
+#include "prosperobrowser/shell/chrome_ui.h"
+#include "prosperobrowser/shell/engine_view.h"
+#include "prosperobrowser/shell/text_input.h"
 
-namespace ps5browser::shell::test {
+namespace prosperobrowser::shell::test {
 
 // Records every call as a short string, e.g. "load https://a.example".
 class FakeEngineView final : public EngineView {
@@ -141,4 +141,4 @@ class FakeTextInputProvider final : public TextInputProvider {
   Completion done_;
 };
 
-}  // namespace ps5browser::shell::test
+}  // namespace prosperobrowser::shell::test

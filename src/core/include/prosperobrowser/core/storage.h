@@ -5,7 +5,7 @@
 #include <string>
 #include <string_view>
 
-namespace ps5browser::core {
+namespace prosperobrowser::core {
 
 // Key/value persistence used by Session. Keys are short identifiers
 // ([A-Za-z0-9_-]+); values are opaque strings (JSON documents in practice).
@@ -20,4 +20,4 @@ class Storage {
   static bool is_valid_key(std::string_view key);
 };
 
-}  // namespace ps5browser::core
+}  // namespace prosperobrowser::core

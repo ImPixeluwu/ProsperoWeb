@@ -3,7 +3,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace ps5browser::shell {
+namespace prosperobrowser::shell {
 
 // The browser chrome (tab strip, address bar, overlays). The frontend renders
 // it as HTML (src/chrome-ui/chrome.html, window.ps5chrome.render(state)) and
@@ -37,4 +37,4 @@ class ChromeUi {
   virtual void click(int /*x*/, int /*y*/) {}
 };
 
-}  // namespace ps5browser::shell
+}  // namespace prosperobrowser::shell

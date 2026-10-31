@@ -9,9 +9,9 @@
 
 #include <nlohmann/json.hpp>
 
-#include "ps5browser/core/tab.h"
+#include "prosperobrowser/core/tab.h"
 
-namespace ps5browser::core {
+namespace prosperobrowser::core {
 
 // Ordered list of tabs with a single active tab.
 //
@@ -64,4 +64,4 @@ class TabManager {
   std::uint64_t next_id_ = 1;
 };
 
-}  // namespace ps5browser::core
+}  // namespace prosperobrowser::core

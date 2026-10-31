@@ -38,7 +38,7 @@ extern "C" {
 //  - The caller keeps ownership of fds[] and closes its copies after the call
 //    returns, so the child must hold independent duplicates by then.
 //  - The child gets an environment suitable for WebKit (at least the
-//    PS5BROWSER_* variables the UI process has set, if the spawner supports
+//    PROSPEROBROWSER_* variables the UI process has set, if the spawner supports
 //    passing an environment).
 int ps5_spawn_self(const char* const* argv, const int* fds, int nfds);
 

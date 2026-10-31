@@ -2,11 +2,11 @@ Subject: WebCore: load TLS roots from a PEM bundle for PS5_HOMEBREW
 
 CurlSSLHandlePlayStation.cpp takes root certificates and cipher lists
 from Sony's CertificateStore. For homebrew, point curl at a CA bundle
-file instead: $PS5BROWSER_CA_BUNDLE if set, else the compile-time
-PS5BROWSER_CA_BUNDLE (default /data/ps5browser/cacert.pem). Cipher
+file instead: $PROSPEROBROWSER_CA_BUNDLE if set, else the compile-time
+PROSPEROBROWSER_CA_BUNDLE (default /data/prosperobrowser/cacert.pem). Cipher
 suites and curves stay at OpenSSL/curl defaults.
 diff --git a/Source/WebCore/platform/network/playstation/CurlSSLHandlePlayStation.cpp b/Source/WebCore/platform/network/playstation/CurlSSLHandlePlayStation.cpp
-index 0f0160090..47b623f26 100644
+index 0f0160090..ea0781343 100644
 --- a/Source/WebCore/platform/network/playstation/CurlSSLHandlePlayStation.cpp
 +++ b/Source/WebCore/platform/network/playstation/CurlSSLHandlePlayStation.cpp
 @@ -26,10 +26,31 @@
@@ -19,9 +19,9 @@ index 0f0160090..47b623f26 100644
 +
 +// Sony's CertificateStore is not available to homebrew. Use a PEM bundle
 +// (e.g. curl's cacert.pem) shipped with the application instead. The path can
-+// be overridden at runtime with the PS5BROWSER_CA_BUNDLE environment variable.
-+#ifndef PS5BROWSER_CA_BUNDLE
-+#define PS5BROWSER_CA_BUNDLE "/data/ps5browser/cacert.pem"
++// be overridden at runtime with the PROSPEROBROWSER_CA_BUNDLE environment variable.
++#ifndef PROSPEROBROWSER_CA_BUNDLE
++#define PROSPEROBROWSER_CA_BUNDLE "/data/prosperobrowser/cacert.pem"
 +#endif
 +#else
  #include <CertificateStore/CertificateStore.h>
@@ -32,9 +32,9 @@ index 0f0160090..47b623f26 100644
 +#if defined(PS5_HOMEBREW)
 +void CurlSSLHandle::platformInitialize()
 +{
-+    const char* path = getenv("PS5BROWSER_CA_BUNDLE");
++    const char* path = getenv("PROSPEROBROWSER_CA_BUNDLE");
 +    if (!path || !*path)
-+        path = PS5BROWSER_CA_BUNDLE;
++        path = PROSPEROBROWSER_CA_BUNDLE;
 +    setCACertPath(String::fromUTF8(path));
 +}
 +#else

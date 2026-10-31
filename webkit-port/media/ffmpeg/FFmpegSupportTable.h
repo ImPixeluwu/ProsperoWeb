@@ -22,7 +22,7 @@ enum class Support { NotSupported, MaybeSupported, IsSupported };
 // Decoders available at run time. Defaults match the PS5 SDK ffmpeg 7.0.1
 // build: native h264/hevc/vp8/vp9/aac/opus/vorbis/mp3/flac/ac3/eac3, but no
 // software AV1 decoder (no libdav1d/libaom; ff_av1_decoder is hwaccel-only).
-// The engine reports VP8/VP9 as unavailable unless PS5BROWSER_MEDIA_VP9=1:
+// The engine reports VP8/VP9 as unavailable unless PROSPEROBROWSER_MEDIA_VP9=1:
 // software VP9 is much slower than H.264, and players then pick H.264.
 struct DecoderAvailability {
     bool h264 { true };
@@ -339,7 +339,7 @@ inline bool parseDecimal(std::string_view text, double& out)
 // is "", so a player never picks a stream this build cannot decode in time.
 // Video defaults to 1080p (software decoding on the console); the longer
 // side may be either dimension, so portrait 1080x1920 fits too.
-// PS5BROWSER_MEDIA_MAX_VIDEO=3840x2160 raises it (parseVideoLimits()).
+// PROSPEROBROWSER_MEDIA_MAX_VIDEO=3840x2160 raises it (parseVideoLimits()).
 struct VideoLimits {
     double maxLongSide { 1920 };
     double maxShortSide { 1088 };

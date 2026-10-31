@@ -4,7 +4,7 @@
 #include <string>
 #include <string_view>
 
-namespace ps5browser::core::detail {
+namespace prosperobrowser::core::detail {
 
 // Strips leading/trailing ASCII whitespace.
 std::string_view trim(std::string_view s);
@@ -27,4 +27,4 @@ std::size_t utf8_next(std::string_view s, std::size_t pos);
 // Number of code points in s (counts lead bytes).
 std::size_t utf8_length(std::string_view s);
 
-}  // namespace ps5browser::core::detail
+}  // namespace prosperobrowser::core::detail

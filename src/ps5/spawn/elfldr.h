@@ -15,7 +15,7 @@ along with this program; see the file COPYING. If not, see
 <http://www.gnu.org/licenses/>.  */
 
 /* Derived from ps5-payload-dev/elfldr (commit 2a8da002), elfldr.h.
-   Changes for ps5-browser: the spawn/exec entry points take a table of
+   Changes for ProsperoBrowser: the spawn/exec entry points take a table of
    extra descriptors (possibly of another process) to inject at child fd 3+i
    (see elfldr.c), and the spawn
    reports what happened in the child through elfldr_spawn_report_t, and the
@@ -26,7 +26,7 @@ along with this program; see the file COPYING. If not, see
 #include <stdint.h>
 #include <unistd.h>
 
-#include "ps5browser/spawn/spawn.h"
+#include "prosperobrowser/spawn/spawn.h"
 
 
 /**

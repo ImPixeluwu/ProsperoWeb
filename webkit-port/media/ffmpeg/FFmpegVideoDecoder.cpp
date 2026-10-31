@@ -32,17 +32,17 @@ constexpr size_t maxPooledFrames = 5;
 constexpr int maxOutputWidth = 1920;
 constexpr int maxOutputHeight = 1080;
 // Decoder threads: 6 of the Zen 2's 8 cores, leaving 2 for the UI process,
-// networking and the audio decoder (PS5BROWSER_MEDIA_THREADS=1..16).
+// networking and the audio decoder (PROSPEROBROWSER_MEDIA_THREADS=1..16).
 // Frame and slice threading: frame threading is what scales H.264 and VP9
 // across cores. The console crashes of run 4/5 that first pointed at the
 // frame threads ("av:h264:df*") were the swscale overrun fixed in
 // FFmpegPlaybackPolicy.h, not frame threading;
-// PS5BROWSER_MEDIA_FRAME_THREADS=0 goes back to slice threads only.
+// PROSPEROBROWSER_MEDIA_FRAME_THREADS=0 goes back to slice threads only.
 constexpr int defaultDecoderThreads = 6;
 
 int decoderThreads()
 {
-    if (const char* value = getenv("PS5BROWSER_MEDIA_THREADS")) {
+    if (const char* value = getenv("PROSPEROBROWSER_MEDIA_THREADS")) {
         int count = atoi(value);
         if (count >= 1 && count <= 16)
             return count;
@@ -52,7 +52,7 @@ int decoderThreads()
 
 bool frameThreadsEnabled()
 {
-    const char* value = getenv("PS5BROWSER_MEDIA_FRAME_THREADS");
+    const char* value = getenv("PROSPEROBROWSER_MEDIA_FRAME_THREADS");
     return !value || strcmp(value, "0");
 }
 

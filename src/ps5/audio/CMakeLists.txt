@@ -5,15 +5,15 @@
 # Logs through ps5_log_printf, which the executable (or the test binary)
 # defines.
 find_package(Threads REQUIRED)
-add_library(ps5browser_audio_server STATIC
+add_library(prosperobrowser_audio_server STATIC
   audio_mixer.cpp
   audio_server.cpp
 )
-add_library(ps5browser::audio_server ALIAS ps5browser_audio_server)
-target_include_directories(ps5browser_audio_server PUBLIC
+add_library(prosperobrowser::audio_server ALIAS prosperobrowser_audio_server)
+target_include_directories(prosperobrowser_audio_server PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}"
   "${CMAKE_SOURCE_DIR}/webkit-port/media/ffmpeg")
-target_compile_features(ps5browser_audio_server PUBLIC cxx_std_20)
-target_link_libraries(ps5browser_audio_server
+target_compile_features(prosperobrowser_audio_server PUBLIC cxx_std_20)
+target_link_libraries(prosperobrowser_audio_server
   PUBLIC Threads::Threads
-  PRIVATE ps5browser_warnings)
+  PRIVATE prosperobrowser_warnings)

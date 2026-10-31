@@ -4,7 +4,7 @@
 // per media player. A sender thread connects to the UI process's overlay
 // server, negotiates the pixel transport on the first frame (named shm
 // object, then a file mapped MAP_SHARED, then pixels inline over TCP; or the
-// one PS5BROWSER_VIDEO_TRANSPORT forces) and then sends the newest geometry
+// one PROSPEROBROWSER_VIDEO_TRANSPORT forces) and then sends the newest geometry
 // and frame whenever they change. Only the latest frame matters: a frame
 // submitted while the previous one is still being sent replaces it.
 //
@@ -531,7 +531,7 @@ private:
         ++m_generation;
         int fd;
         if (kind == Transport::Shm) {
-            snprintf(name, sizeof(name), "/ps5browser-video-%u-%u-%u", m_config.pid, m_config.player, m_generation);
+            snprintf(name, sizeof(name), "/prosperobrowser-video-%u-%u-%u", m_config.pid, m_config.player, m_generation);
             fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0666);
         } else {
             snprintf(name, sizeof(name), "%s/video-%u-%u-%u.shm", m_config.fileDirectory.c_str(), m_config.pid, m_config.player, m_generation);

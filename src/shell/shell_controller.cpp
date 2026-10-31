@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "ps5browser/shell/shell_controller.h"
+#include "prosperobrowser/shell/shell_controller.h"
 
 #include <algorithm>
 #include <cmath>
 #include <ctime>
 #include <utility>
 
-#include "ps5browser/core/url_normalizer.h"
+#include "prosperobrowser/core/url_normalizer.h"
 
-namespace ps5browser::shell {
+namespace prosperobrowser::shell {
 
 using core::Action;
 using core::Button;
@@ -1271,4 +1271,4 @@ json ShellController::chrome_state() const {
   return state;
 }
 
-}  // namespace ps5browser::shell
+}  // namespace prosperobrowser::shell

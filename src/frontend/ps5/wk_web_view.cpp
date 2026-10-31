@@ -36,7 +36,7 @@
 #include "ps5_log.h"
 #include "wk_helpers.h"
 
-namespace ps5browser::frontend {
+namespace prosperobrowser::frontend {
 
 namespace {
 
@@ -60,7 +60,7 @@ std::uint64_t now_ms() {
 constexpr std::uint64_t kBridgePollMs = 40;
 constexpr std::uint64_t kBridgePollTimeoutMs = 3000;
 // Name of the top frame's drain function (see bridge_script()).
-constexpr const char* kBridgeDrain = "__ps5browserBridge";
+constexpr const char* kBridgeDrain = "__prosperobrowserBridge";
 // Poll answer when the page has native script message handlers (a drained
 // batch is a JSON array, so it cannot look like this).
 constexpr const char* kBridgeNative = "#native";
@@ -95,7 +95,7 @@ std::string bridge_script(const std::string& handler_name) {
     if (isTop) {
       enqueue(text);
     } else {
-      try { w.top.postMessage({ __ps5browserBridge: name, body: text }, '*'); } catch (e) {}
+      try { w.top.postMessage({ __prosperobrowserBridge: name, body: text }, '*'); } catch (e) {}
     }
     return resolve();
   }
@@ -109,7 +109,7 @@ std::string bridge_script(const std::string& handler_name) {
   if (!isTop) return;
   w.addEventListener('message', function (ev) {
     var d = ev.data;
-    if (d && typeof d === 'object' && d.__ps5browserBridge === name &&
+    if (d && typeof d === 'object' && d.__prosperobrowserBridge === name &&
         typeof d.body === 'string') {
       ev.stopImmediatePropagation();
       enqueue(d.body);
@@ -681,4 +681,4 @@ display::AreaStat WkWebView::take_needs_display_stats() {
   return s;
 }
 
-}  // namespace ps5browser::frontend
+}  // namespace prosperobrowser::frontend

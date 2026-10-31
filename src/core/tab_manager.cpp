@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "ps5browser/core/tab_manager.h"
+#include "prosperobrowser/core/tab_manager.h"
 
-namespace ps5browser::core {
+namespace prosperobrowser::core {
 
 std::optional<std::uint64_t> TabManager::open(const std::string& url) {
   if (full()) {
@@ -170,4 +170,4 @@ bool TabManager::from_json(const nlohmann::json& j) {
   return true;
 }
 
-}  // namespace ps5browser::core
+}  // namespace prosperobrowser::core

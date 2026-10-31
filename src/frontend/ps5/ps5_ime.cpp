@@ -6,7 +6,7 @@
 #include <cstdlib>
 #include <utility>
 
-#include "ps5browser/core/utf16.h"
+#include "prosperobrowser/core/utf16.h"
 #include "ps5_log.h"
 
 // --- libSceImeDialog / libSceUserService declarations ----------------------
@@ -134,7 +134,7 @@ int sceImeDialogGetResult(SceImeDialogResult* result);
 int sceImeDialogTerm(void);
 }
 
-namespace ps5browser::frontend {
+namespace prosperobrowser::frontend {
 
 namespace {
 
@@ -415,9 +415,9 @@ void Ps5ImeTextInput::poll() {
 }
 
 bool use_system_ime(const std::string& config_value) {
-  const char* env = std::getenv("PS5BROWSER_OSK");
+  const char* env = std::getenv("PROSPEROBROWSER_OSK");
   const std::string value = env && *env ? std::string(env) : config_value;
   return value != "builtin";
 }
 
-}  // namespace ps5browser::frontend
+}  // namespace prosperobrowser::frontend

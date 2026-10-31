@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// ps5browser-host: the browser on a desktop, on top of WebKitGTK 6.0.
+// prosperobrowser-host: the browser on a desktop, on top of WebKitGTK 6.0.
 #include <gtk/gtk.h>
 
 #include <cstdio>
@@ -15,7 +15,7 @@ void usage(const char* argv0) {
   std::printf(
       "Usage: %s [options]\n"
       "  --size WxH            window size (default 1920x1080)\n"
-      "  --profile DIR         profile directory (default $XDG_DATA_HOME/ps5browser)\n"
+      "  --profile DIR         profile directory (default $XDG_DATA_HOME/prosperobrowser)\n"
       "  --url URL             open URL in the active tab after start\n"
       "  --screenshot PATH     save a PNG of the window and exit\n"
       "  --after-ms N          delay before the screenshot (default 3000)\n"
@@ -39,7 +39,7 @@ bool parse_size(const char* s, int& w, int& h) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  ps5browser::host::Options opt;
+  prosperobrowser::host::Options opt;
   if (const char* lang = std::getenv("LANG"); lang && std::strncmp(lang, "ru", 2) == 0) {
     opt.language = "ru";
   }
@@ -105,6 +105,6 @@ int main(int argc, char** argv) {
   g_setenv("WEBKIT_GST_ENABLE_HLS_SUPPORT", "1", FALSE);
 
   gtk_init();
-  ps5browser::host::HostApp app(opt);
+  prosperobrowser::host::HostApp app(opt);
   return app.run();
 }

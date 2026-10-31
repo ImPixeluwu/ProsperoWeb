@@ -6,10 +6,10 @@
 // which plays every stream through one SDL device opened here
 // (src/ps5/audio, protocol in webkit-port/media/ffmpeg/FFmpegAudioWire.h).
 //
-// Env: PS5BROWSER_AUDIO_PORT (default 17772, exported to the WebProcess so
+// Env: PROSPEROBROWSER_AUDIO_PORT (default 17772, exported to the WebProcess so
 // its RemoteAudioSink finds the server; "off" disables the server and the
 // forwarding),
-// PS5BROWSER_AUDIO_TEST=1 plays a 1 s 440 Hz tone at startup.
+// PROSPEROBROWSER_AUDIO_TEST=1 plays a 1 s 440 Hz tone at startup.
 #pragma once
 
 #include <memory>
@@ -19,7 +19,7 @@
 #include "audio_mixer.h"
 #include "audio_server.h"
 
-namespace ps5browser::frontend {
+namespace prosperobrowser::frontend {
 
 class Ps5AudioServer {
  public:
@@ -39,4 +39,4 @@ class Ps5AudioServer {
   SDL_AudioDeviceID device_ = 0;
 };
 
-}  // namespace ps5browser::frontend
+}  // namespace prosperobrowser::frontend

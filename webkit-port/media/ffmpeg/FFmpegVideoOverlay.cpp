@@ -36,7 +36,7 @@ namespace Wire = FFmpegMedia::VideoWire;
 
 bool overlaysEnabled()
 {
-    const char* value = getenv("PS5BROWSER_VIDEO_OVERLAY");
+    const char* value = getenv("PROSPEROBROWSER_VIDEO_OVERLAY");
     if (value && *value)
         return strcmp(value, "0") && strcmp(value, "off");
 #if PLATFORM(PLAYSTATION)
@@ -49,7 +49,7 @@ bool overlaysEnabled()
 // -1 = disabled.
 int overlayPort()
 {
-    const char* value = getenv("PS5BROWSER_VIDEO_PORT");
+    const char* value = getenv("PROSPEROBROWSER_VIDEO_PORT");
     if (!value || !*value)
         return Wire::defaultPort;
     if (!strcmp(value, "off"))
@@ -63,10 +63,10 @@ int overlayPort()
 
 std::string fileDirectory()
 {
-    if (const char* value = getenv("PS5BROWSER_VIDEO_SHM_DIR"); value && *value)
+    if (const char* value = getenv("PROSPEROBROWSER_VIDEO_SHM_DIR"); value && *value)
         return value;
 #if PLATFORM(PLAYSTATION)
-    return "/data/ps5browser/tmp";
+    return "/data/prosperobrowser/tmp";
 #else
     return "/tmp";
 #endif
@@ -125,13 +125,13 @@ std::unique_ptr<FFmpegVideoOverlay> FFmpegVideoOverlay::createIfEnabled()
     static bool loggedDisabled;
     if (!overlaysEnabled()) {
         if (!std::exchange(loggedDisabled, true))
-            ffmpegMediaLog("video overlay: off (PS5BROWSER_VIDEO_OVERLAY), video is painted into the page");
+            ffmpegMediaLog("video overlay: off (PROSPEROBROWSER_VIDEO_OVERLAY), video is painted into the page");
         return nullptr;
     }
     int port = overlayPort();
     if (port < 0) {
         if (!std::exchange(loggedDisabled, true))
-            ffmpegMediaLog("video overlay: off (PS5BROWSER_VIDEO_PORT=%s)", getenv("PS5BROWSER_VIDEO_PORT"));
+            ffmpegMediaLog("video overlay: off (PROSPEROBROWSER_VIDEO_PORT=%s)", getenv("PROSPEROBROWSER_VIDEO_PORT"));
         return nullptr;
     }
     return std::unique_ptr<FFmpegVideoOverlay>(new FFmpegVideoOverlay(nextPlayer++, port));
@@ -145,7 +145,7 @@ FFmpegVideoOverlay::FFmpegVideoOverlay(unsigned player, int port)
     config.port = port;
     config.pid = static_cast<uint32_t>(getpid());
     config.player = player;
-    const char* forced = getenv("PS5BROWSER_VIDEO_TRANSPORT");
+    const char* forced = getenv("PROSPEROBROWSER_VIDEO_TRANSPORT");
     config.force = Wire::parseTransport(forced);
     config.fileDirectory = fileDirectory();
     config.log = [](const std::string& line) {

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <doctest/doctest.h>
 
-#include "ps5browser/core/repeat_timer.h"
+#include "prosperobrowser/core/repeat_timer.h"
 
-using ps5browser::core::RepeatTimer;
+using prosperobrowser::core::RepeatTimer;
 
 TEST_SUITE("repeat_timer") {
   TEST_CASE("fires after the initial delay and then at the interval") {

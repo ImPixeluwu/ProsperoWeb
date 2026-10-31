@@ -13,7 +13,7 @@
 #include <WebKit/WKType.h>
 #include <WebKit/WKURL.h>
 
-namespace ps5browser::frontend {
+namespace prosperobrowser::frontend {
 
 // Owns a WKTypeRef and releases it on scope exit.
 template <typename T>
@@ -82,4 +82,4 @@ inline std::string consume_wk_url(WKURLRef url) {
   return out;
 }
 
-}  // namespace ps5browser::frontend
+}  // namespace prosperobrowser::frontend

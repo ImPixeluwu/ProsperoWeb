@@ -22,7 +22,7 @@
 #include "damage_region.h"
 #include "frame_stats.h"
 
-namespace ps5browser::frontend {
+namespace prosperobrowser::frontend {
 
 // A dirty rectangle in view-local pixels.
 struct DirtyRect {
@@ -54,7 +54,7 @@ class WkWebView {
 
   // context/data_store are shared and owned by the caller (the factory).
   // message_handler_name is the script-message handler to register (e.g.
-  // "ps5browser" or "chrome"). user_scripts are injected at document start in
+  // "prosperobrowser" or "chrome"). user_scripts are injected at document start in
   // all frames. fullscreen_enabled toggles the HTML5 Fullscreen API.
   WkWebView(WKContextRef context, WKWebsiteDataStoreRef data_store,
             const std::string& message_handler_name,
@@ -170,4 +170,4 @@ class WkWebView {
   std::uint64_t last_poll_ms_ = 0;
 };
 
-}  // namespace ps5browser::frontend
+}  // namespace prosperobrowser::frontend

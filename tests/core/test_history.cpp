@@ -3,9 +3,9 @@
 
 #include <string>
 
-#include "ps5browser/core/history.h"
+#include "prosperobrowser/core/history.h"
 
-using ps5browser::core::History;
+using prosperobrowser::core::History;
 
 TEST_SUITE("history") {
   TEST_CASE("duplicates are merged") {

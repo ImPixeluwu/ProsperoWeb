@@ -5,11 +5,11 @@
 #include <string>
 
 #include "fakes.h"
-#include "ps5browser/core/in_memory_storage.h"
-#include "ps5browser/core/session.h"
-#include "ps5browser/shell/shell_controller.h"
+#include "prosperobrowser/core/in_memory_storage.h"
+#include "prosperobrowser/core/session.h"
+#include "prosperobrowser/shell/shell_controller.h"
 
-using namespace ps5browser;
+using namespace prosperobrowser;
 using core::Button;
 using shell::ShellController;
 using shell::test::FakeChromeUi;
@@ -820,7 +820,7 @@ TEST_SUITE("shell.chrome_events") {
 
   TEST_CASE("Diagnostics menu item opens the probe page in a new tab") {
     Fixture f;
-    f.diagnostics_url = "file:///data/ps5browser/chrome/diag.html";
+    f.diagnostics_url = "file:///data/prosperobrowser/chrome/diag.html";
     f.make();
     f.press(Button::Options);
     f.frame();
@@ -829,7 +829,7 @@ TEST_SUITE("shell.chrome_events") {
     CHECK(f.chrome.last["menu"]["items"][9]["label"] == "Quit");
     f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 7}});
     CHECK(f.shell->tabs().size() == 2);
-    CHECK(f.active().called("load file:///data/ps5browser/chrome/diag.html"));
+    CHECK(f.active().called("load file:///data/prosperobrowser/chrome/diag.html"));
     CHECK(f.shell->focus() == Focus::Page);
   }
 

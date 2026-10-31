@@ -25,7 +25,7 @@
 extern "C" void ps5_media_video_decoder_stats(unsigned* decoders, unsigned* threads)
     __attribute__((weak));
 
-namespace ps5browser::frontend {
+namespace prosperobrowser::frontend {
 
 namespace {
 
@@ -143,7 +143,8 @@ class Monitor {
       const long online = sysconf(_SC_NPROCESSORS_ONLN);
       log_printf("cpu: %ld cpus online, root set %s (%d), process may run on %s (%d)", online,
                  root_text.c_str(), root_count, process_text.c_str(), process_count);
-      if (process_count > 0 && root_count > process_count && !env_off("PS5BROWSER_CPU_WIDEN")) {
+      if (process_count > 0 && root_count > process_count &&
+          !env_off("PROSPEROBROWSER_CPU_WIDEN")) {
         if (cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1, sizeof(root), &root) == 0) {
           cpuset_t after;
           get_mask(CPU_LEVEL_WHICH, CPU_WHICH_PID, -1, after, error);
@@ -233,7 +234,7 @@ class Monitor {
 }  // namespace
 
 void start_cpu_monitor() {
-  if (env_off("PS5BROWSER_CPU_MONITOR")) {
+  if (env_off("PROSPEROBROWSER_CPU_MONITOR")) {
     return;
   }
   auto* monitor = new Monitor();  // lives as long as the process
@@ -246,4 +247,4 @@ void start_cpu_monitor() {
   }).detach();
 }
 
-}  // namespace ps5browser::frontend
+}  // namespace prosperobrowser::frontend

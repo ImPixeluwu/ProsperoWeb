@@ -8,10 +8,10 @@
 // area, and recomposes a player's rect whenever it has a new frame (no
 // WebKit repaint involved).
 //
-// Env (exported to the WebProcess too): PS5BROWSER_VIDEO_PORT (default
+// Env (exported to the WebProcess too): PROSPEROBROWSER_VIDEO_PORT (default
 // 17773, "off" disables the server; the players then paint into the page),
-// PS5BROWSER_VIDEO_OVERLAY=0 (players paint into the page; the server still
-// runs), PS5BROWSER_VIDEO_SCALE=nearest (default bilinear).
+// PROSPEROBROWSER_VIDEO_OVERLAY=0 (players paint into the page; the server still
+// runs), PROSPEROBROWSER_VIDEO_SCALE=nearest (default bilinear).
 #pragma once
 
 #include <functional>
@@ -24,7 +24,7 @@
 #include "damage_region.h"
 #include "video_server.h"
 
-namespace ps5browser::frontend {
+namespace prosperobrowser::frontend {
 
 class Ps5VideoOverlay {
  public:
@@ -50,4 +50,4 @@ class Ps5VideoOverlay {
   std::unique_ptr<video::VideoServer> server_;
 };
 
-}  // namespace ps5browser::frontend
+}  // namespace prosperobrowser::frontend

@@ -1,4 +1,4 @@
-add_library(ps5browser_core STATIC
+add_library(prosperobrowser_core STATIC
   bookmarks.cpp
   drm_policy.cpp
   file_storage.cpp
@@ -16,14 +16,14 @@ add_library(ps5browser_core STATIC
   url_normalizer.cpp
   utf16.cpp
 )
-add_library(ps5browser::core ALIAS ps5browser_core)
+add_library(prosperobrowser::core ALIAS prosperobrowser_core)
 
-target_include_directories(ps5browser_core
+target_include_directories(prosperobrowser_core
   PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
   PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
 )
-target_include_directories(ps5browser_core SYSTEM
-  PUBLIC "${PS5BROWSER_THIRD_PARTY_DIR}"
+target_include_directories(prosperobrowser_core SYSTEM
+  PUBLIC "${PROSPEROBROWSER_THIRD_PARTY_DIR}"
 )
-target_compile_features(ps5browser_core PUBLIC cxx_std_20)
-target_link_libraries(ps5browser_core PRIVATE ps5browser_warnings)
+target_compile_features(prosperobrowser_core PUBLIC cxx_std_20)
+target_link_libraries(prosperobrowser_core PRIVATE prosperobrowser_warnings)

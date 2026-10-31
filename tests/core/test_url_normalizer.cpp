@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <doctest/doctest.h>
 
-#include "ps5browser/core/url_normalizer.h"
+#include "prosperobrowser/core/url_normalizer.h"
 
-using ps5browser::core::UrlNormalizer;
+using prosperobrowser::core::UrlNormalizer;
 
 TEST_SUITE("url_normalizer") {
   TEST_CASE("pass-through schemes") {

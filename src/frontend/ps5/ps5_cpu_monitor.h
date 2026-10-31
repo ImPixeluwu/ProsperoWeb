@@ -10,13 +10,13 @@
 // tries once to widen it to the whole root set (cpuset_setaffinity, the
 // FreeBSD API the payload SDK exposes; there is no sceKernelSetCpumask
 // stub) and logs the result; failure is harmless.
-// PS5BROWSER_CPU_WIDEN=0 skips that, PS5BROWSER_CPU_MONITOR=0 disables all.
+// PROSPEROBROWSER_CPU_WIDEN=0 skips that, PROSPEROBROWSER_CPU_MONITOR=0 disables all.
 #pragma once
 
-namespace ps5browser::frontend {
+namespace prosperobrowser::frontend {
 
 // Logs the first report (and widens) synchronously, then reports from a
 // detached thread every 30 s for the life of the process.
 void start_cpu_monitor();
 
-}  // namespace ps5browser::frontend
+}  // namespace prosperobrowser::frontend

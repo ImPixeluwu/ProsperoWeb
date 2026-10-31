@@ -13,7 +13,7 @@
 
 #include "ps5_log.h"
 
-namespace ps5browser::frontend {
+namespace prosperobrowser::frontend {
 
 namespace {
 
@@ -85,16 +85,16 @@ void setup_runtime_env(const std::string& base_dir) {
   const std::string tmp = base_dir + "/tmp";
   set_default("FONTCONFIG_FILE", fonts + "/fonts.conf");
   set_default("FONTCONFIG_PATH", fonts);
-  set_default("PS5BROWSER_CA_BUNDLE", base_dir + "/cacert.pem");
+  set_default("PROSPEROBROWSER_CA_BUNDLE", base_dir + "/cacert.pem");
   set_default("SYSTEM_LANGUAGE", system_language_tag(""));
   set_default("TMPDIR", tmp);
   set_default("HOME", base_dir);
   // The UI's audio server (ps5_audio_server.h); the WebProcess inherits it
   // and forwards media audio there.
-  set_default("PS5BROWSER_AUDIO_PORT", "17772");
+  set_default("PROSPEROBROWSER_AUDIO_PORT", "17772");
   // The UI's video overlay server (ps5_video_overlay.h); WebProcess media
   // players send their frames there instead of painting them into the page.
-  set_default("PS5BROWSER_VIDEO_PORT", "17773");
+  set_default("PROSPEROBROWSER_VIDEO_PORT", "17773");
   apply_config_env(base_dir);
   // JavaScriptCore is built with the baseline/DFG JIT and WebAssembly, but
   // both stay off unless config.json "env" enables them: executable memory
@@ -119,4 +119,4 @@ void apply_language_env(const std::string& language) {
   log_printf("env SYSTEM_LANGUAGE=%s (config.json)", tag.c_str());
 }
 
-}  // namespace ps5browser::frontend
+}  // namespace prosperobrowser::frontend

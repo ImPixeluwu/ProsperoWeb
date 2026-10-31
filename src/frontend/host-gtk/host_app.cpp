@@ -8,10 +8,10 @@
 
 #include "gamepad.h"
 #include "gtk_engine_view.h"
-#include "ps5browser/core/file_storage.h"
-#include "ps5browser/core/in_memory_storage.h"
+#include "prosperobrowser/core/file_storage.h"
+#include "prosperobrowser/core/in_memory_storage.h"
 
-namespace ps5browser::host {
+namespace prosperobrowser::host {
 
 using core::Button;
 
@@ -72,9 +72,9 @@ bool file_exists(const std::string& path) { return g_file_test(path.c_str(), G_F
 std::string find_chrome_dir(const std::string& explicit_dir) {
   std::vector<std::string> candidates;
   if (!explicit_dir.empty()) candidates.push_back(explicit_dir);
-  if (const char* env = std::getenv("PS5BROWSER_CHROME_DIR")) candidates.emplace_back(env);
-  candidates.emplace_back(PS5BROWSER_CHROME_DIR);
-  candidates.emplace_back(PS5BROWSER_CHROME_SOURCE_DIR);
+  if (const char* env = std::getenv("PROSPEROBROWSER_CHROME_DIR")) candidates.emplace_back(env);
+  candidates.emplace_back(PROSPEROBROWSER_CHROME_DIR);
+  candidates.emplace_back(PROSPEROBROWSER_CHROME_SOURCE_DIR);
   for (const auto& dir : candidates) {
     if (file_exists(dir + "/chrome.html")) {
       return dir;
@@ -87,7 +87,7 @@ std::string find_chrome_dir(const std::string& explicit_dir) {
 
 HostApp::HostApp(Options options) : options_(std::move(options)) {
   if (options_.profile_dir.empty()) {
-    options_.profile_dir = std::string(g_get_user_data_dir()) + "/ps5browser";
+    options_.profile_dir = std::string(g_get_user_data_dir()) + "/prosperobrowser";
   }
   if (options_.demo.empty()) {
     storage_ = std::make_unique<core::FileStorage>(options_.profile_dir + "/state");
@@ -117,7 +117,7 @@ std::unique_ptr<shell::EngineView> HostApp::create(shell::EngineViewClient& clie
 
 void HostApp::build_window() {
   window_ = GTK_WINDOW(gtk_window_new());
-  gtk_window_set_title(window_, "ps5-browser (host)");
+  gtk_window_set_title(window_, "ProsperoBrowser (host)");
   gtk_window_set_default_size(window_, options_.width, options_.height);
   gtk_window_set_decorated(window_, FALSE);
   gtk_window_set_resizable(window_, FALSE);
@@ -181,7 +181,7 @@ void HostApp::build_chrome_view(const std::string& chrome_dir) {
 int HostApp::run() {
   const std::string chrome_dir = find_chrome_dir(options_.chrome_dir);
   if (chrome_dir.empty()) {
-    std::fprintf(stderr, "ps5browser-host: chrome.html not found (use --chrome-dir)\n");
+    std::fprintf(stderr, "prosperobrowser-host: chrome.html not found (use --chrome-dir)\n");
     return 1;
   }
   loop_ = g_main_loop_new(nullptr, FALSE);
@@ -414,16 +414,16 @@ void HostApp::run_next_input() {
   }
   const std::string name = options_.input[next_input_++];
   if (const auto b = button_by_name(name)) {
-    std::fprintf(stderr, "ps5browser-host: input %s\n", name.c_str());
+    std::fprintf(stderr, "prosperobrowser-host: input %s\n", name.c_str());
     shell_->on_button(*b, true);
     input_release_ = *b;
   } else if (int x = 0, y = 0; std::sscanf(name.c_str(), "pointer:%dx%d", &x, &y) == 2) {
     // Places the pointer (window coordinates) for a following "cross", e.g.
     // to press a chrome button; the shell treats it like a mouse move.
-    std::fprintf(stderr, "ps5browser-host: input %s\n", name.c_str());
+    std::fprintf(stderr, "prosperobrowser-host: input %s\n", name.c_str());
     shell_->on_mouse_move(static_cast<float>(x), static_cast<float>(y));
   } else if (name != "wait") {
-    std::fprintf(stderr, "ps5browser-host: unknown input '%s'\n", name.c_str());
+    std::fprintf(stderr, "prosperobrowser-host: unknown input '%s'\n", name.c_str());
   }
 }
 
@@ -475,7 +475,7 @@ bool HostApp::save_window_png(const std::string& path) {
 //  - "x11": ImageMagick `import -window root`; captures what is on screen,
 //    which under Xvfb is exactly the undecorated window at the origin.
 // Default: x11 when running on X11 with `import` available, else gtk.
-// PS5BROWSER_SCREENSHOT_METHOD=gtk|x11 forces one.
+// PROSPEROBROWSER_SCREENSHOT_METHOD=gtk|x11 forces one.
 bool HostApp::save_x11_png(const std::string& path) {
   gchar* argv[] = {const_cast<gchar*>("import"), const_cast<gchar*>("-window"),
                    const_cast<gchar*>("root"), const_cast<gchar*>(path.c_str()), nullptr};
@@ -487,7 +487,7 @@ bool HostApp::save_x11_png(const std::string& path) {
 
 void HostApp::take_screenshot() {
   std::string method;
-  if (const char* env = std::getenv("PS5BROWSER_SCREENSHOT_METHOD")) {
+  if (const char* env = std::getenv("PROSPEROBROWSER_SCREENSHOT_METHOD")) {
     method = env;
   } else {
     gchar* import = g_find_program_in_path("import");
@@ -497,7 +497,7 @@ void HostApp::take_screenshot() {
   }
   const bool ok = method == "x11" ? save_x11_png(options_.screenshot)
                                   : save_window_png(options_.screenshot);
-  std::fprintf(stderr, "ps5browser-host: screenshot (%s) %s: %s\n", method.c_str(),
+  std::fprintf(stderr, "prosperobrowser-host: screenshot (%s) %s: %s\n", method.c_str(),
                ok ? "saved" : "FAILED", options_.screenshot.c_str());
   exit_code_ = ok ? 0 : 2;
 }
@@ -509,4 +509,4 @@ gboolean HostApp::on_screenshot_timer(gpointer self) {
   return G_SOURCE_REMOVE;
 }
 
-}  // namespace ps5browser::host
+}  // namespace prosperobrowser::host

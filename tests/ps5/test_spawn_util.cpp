@@ -4,7 +4,7 @@
 
 #include <doctest/doctest.h>
 
-#include "ps5browser/spawn/spawn.h"
+#include "prosperobrowser/spawn/spawn.h"
 
 namespace {
 
@@ -12,7 +12,7 @@ namespace {
 const char* env_unset(const char*) { return nullptr; }
 const char* env_empty(const char*) { return ""; }
 const char* env_custom(const char* name) {
-  if (std::strcmp(name, "PS5BROWSER_SELF_PATH") == 0) {
+  if (std::strcmp(name, "PROSPEROBROWSER_SELF_PATH") == 0) {
     return "/mnt/usb/my.elf";
   }
   return nullptr;
@@ -23,7 +23,7 @@ const char* env_custom(const char* name) {
 TEST_SUITE("spawn_self_path") {
   TEST_CASE("env override wins") {
     char buf[256] = {};
-    CHECK(ps5_spawn_resolve_self_path("/data/ps5browser/ps5browser.elf",
+    CHECK(ps5_spawn_resolve_self_path("/data/prosperobrowser/prosperobrowser.elf",
                                       env_custom, buf, sizeof(buf)) == 0);
     CHECK(std::string(buf) == "/mnt/usb/my.elf");
   }
@@ -32,14 +32,14 @@ TEST_SUITE("spawn_self_path") {
     char buf[256] = {};
     CHECK(ps5_spawn_resolve_self_path("WebProcess", env_unset, buf,
                                       sizeof(buf)) == 0);
-    CHECK(std::string(buf) == "/data/ps5browser/ps5browser.elf");
+    CHECK(std::string(buf) == "/data/prosperobrowser/prosperobrowser.elf");
   }
 
   TEST_CASE("empty env is ignored") {
     char buf[256] = {};
     CHECK(ps5_spawn_resolve_self_path("WebProcess", env_empty, buf,
                                       sizeof(buf)) == 0);
-    CHECK(std::string(buf) == "/data/ps5browser/ps5browser.elf");
+    CHECK(std::string(buf) == "/data/prosperobrowser/prosperobrowser.elf");
   }
 
   TEST_CASE("absolute argv0 rescues a too-small buffer") {

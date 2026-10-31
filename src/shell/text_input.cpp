@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "ps5browser/shell/text_input.h"
+#include "prosperobrowser/shell/text_input.h"
 
-namespace ps5browser::shell {
+namespace prosperobrowser::shell {
 
 const char* text_input_kind_name(TextInputKind kind) {
   switch (kind) {
@@ -24,4 +24,4 @@ TextInputKind text_input_kind_from_type(const std::string& input_type) {
   return TextInputKind::Text;
 }
 
-}  // namespace ps5browser::shell
+}  // namespace prosperobrowser::shell

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "ps5browser/core/file_storage.h"
+#include "prosperobrowser/core/file_storage.h"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -7,7 +7,7 @@
 #include <cerrno>
 #include <cstdio>
 
-namespace ps5browser::core {
+namespace prosperobrowser::core {
 
 namespace {
 
@@ -88,4 +88,4 @@ bool FileStorage::write(const std::string& key, const std::string& value) {
   return true;
 }
 
-}  // namespace ps5browser::core
+}  // namespace prosperobrowser::core

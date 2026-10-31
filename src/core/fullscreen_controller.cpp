@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "ps5browser/core/fullscreen_controller.h"
+#include "prosperobrowser/core/fullscreen_controller.h"
 
-namespace ps5browser::core {
+namespace prosperobrowser::core {
 
 using Effect = FullscreenController::Effect;
 using State = FullscreenController::State;
@@ -38,4 +38,4 @@ Effect FullscreenController::user_exit() {
                                               : Effect::None;
 }
 
-}  // namespace ps5browser::core
+}  // namespace prosperobrowser::core

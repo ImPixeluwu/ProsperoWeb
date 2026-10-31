@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <doctest/doctest.h>
 
-#include "ps5browser/core/fullscreen_controller.h"
+#include "prosperobrowser/core/fullscreen_controller.h"
 
-using FC = ps5browser::core::FullscreenController;
+using FC = prosperobrowser::core::FullscreenController;
 
 TEST_SUITE("fullscreen") {
   TEST_CASE("toggle chrome") {

@@ -10,7 +10,7 @@
 
 #include <ps5/klog.h>
 
-namespace ps5browser::frontend {
+namespace prosperobrowser::frontend {
 
 namespace {
 
@@ -61,9 +61,9 @@ void log_line(const std::string& message) {
   char prefix[64];
   std::snprintf(prefix, sizeof(prefix), "[%7lld %s]", monotonic_ms() - g_start_ms,
                 g_role.c_str());
-  std::fprintf(stderr, "[ps5browser] %s %s\n", prefix, message.c_str());
+  std::fprintf(stderr, "[prosperobrowser] %s %s\n", prefix, message.c_str());
   std::fflush(stderr);
-  klog_printf("[ps5browser] %s %s\n", prefix, message.c_str());
+  klog_printf("[prosperobrowser] %s %s\n", prefix, message.c_str());
   if (g_log_file) {
     std::fprintf(g_log_file, "%s %s\n", prefix, message.c_str());
     std::fflush(g_log_file);
@@ -78,16 +78,16 @@ void log_printf(const char* fmt, ...) {
   va_end(ap);
 }
 
-}  // namespace ps5browser::frontend
+}  // namespace prosperobrowser::frontend
 
-// The C logging contract of the spawner (ps5browser/spawn/spawn.h).
+// The C logging contract of the spawner (prosperobrowser/spawn/spawn.h).
 extern "C" void ps5_log_line(const char* line) {
-  ps5browser::frontend::log_line(line ? line : "");
+  prosperobrowser::frontend::log_line(line ? line : "");
 }
 
 extern "C" void ps5_log_printf(const char* fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  ps5browser::frontend::vlog(fmt, ap);
+  prosperobrowser::frontend::vlog(fmt, ap);
   va_end(ap);
 }

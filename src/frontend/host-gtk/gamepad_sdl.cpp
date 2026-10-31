@@ -5,7 +5,7 @@
 
 #include <cstdio>
 
-namespace ps5browser::host {
+namespace prosperobrowser::host {
 
 namespace {
 
@@ -53,7 +53,7 @@ Gamepad::Gamepad() : impl_(std::make_unique<Impl>()) {
   if (SDL_Init(SDL_INIT_GAMECONTROLLER) == 0) {
     impl_->initialized = true;
   } else {
-    std::fprintf(stderr, "ps5browser-host: SDL game controller init failed: %s\n",
+    std::fprintf(stderr, "prosperobrowser-host: SDL game controller init failed: %s\n",
                  SDL_GetError());
   }
 }
@@ -80,7 +80,7 @@ void Gamepad::poll(const std::function<void(core::Button, bool)>& on_button) {
         if (!impl_->controller) {
           impl_->controller = SDL_GameControllerOpen(event.cdevice.which);
           if (impl_->controller) {
-            std::fprintf(stderr, "ps5browser-host: controller connected: %s\n",
+            std::fprintf(stderr, "prosperobrowser-host: controller connected: %s\n",
                          SDL_GameControllerName(impl_->controller));
           }
         }
@@ -126,4 +126,4 @@ void Gamepad::poll(const std::function<void(core::Button, bool)>& on_button) {
   }
 }
 
-}  // namespace ps5browser::host
+}  // namespace prosperobrowser::host

@@ -21,9 +21,9 @@
 #include <unistd.h>
 
 #include "broker_proto.h"
-#include "ps5browser/spawn/spawn.h"
+#include "prosperobrowser/spawn/spawn.h"
 
-namespace ps5browser::spawn {
+namespace prosperobrowser::spawn {
 
 namespace {
 
@@ -524,4 +524,4 @@ int broker_serve(const BrokerServerOptions& options, const std::atomic<bool>* st
   return server.run(stop);
 }
 
-}  // namespace ps5browser::spawn
+}  // namespace prosperobrowser::spawn
