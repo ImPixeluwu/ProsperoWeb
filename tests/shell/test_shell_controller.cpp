@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 
@@ -290,8 +291,9 @@ TEST_SUITE("shell.input") {
     CHECK(p.x > 960.0f);
     CHECK(f.view(0).called_prefix("pointer_move "));
     f.frame();
-    CHECK(f.chrome.last["pointer"]["visible"] == true);
-    CHECK(f.chrome.last["pointer"]["x"].get<float>() == doctest::Approx(p.x));
+    REQUIRE_FALSE(f.chrome.pointer_calls.empty());
+    CHECK(f.chrome.pointer_calls.back().visible);
+    CHECK(f.chrome.pointer_calls.back().x == static_cast<int>(p.x));
 
     f.view(0).calls.clear();
     f.press(Button::Cross);
@@ -407,6 +409,144 @@ TEST_SUITE("shell.input") {
     f.shell->on_sticks(0.0f, 1.0f, 0.0f, 0.0f);
     f.frame();
     CHECK(f.chrome.last["pointer"]["visible"] == true);
+  }
+}
+
+TEST_SUITE("shell.pointer") {
+  // Moves the pointer with the left stick for n frames of dt.
+  void move_stick(Fixture& f, float lx, float ly, int frames, float dt = 1.0f / 60.0f) {
+    f.shell->on_sticks(lx, ly, 0.0f, 0.0f);
+    for (int i = 0; i < frames; ++i) {
+      f.frame(dt);
+    }
+    f.shell->on_sticks(0.0f, 0.0f, 0.0f, 0.0f);
+  }
+
+  std::size_t moves(const FakeEngineView& v) {
+    return static_cast<std::size_t>(std::count_if(v.calls.begin(), v.calls.end(), [](const std::string& c) {
+      return c.starts_with("pointer_move ");
+    }));
+  }
+
+  TEST_CASE("pointer motion does not re-render the chrome") {
+    Fixture f;
+    f.make();
+    f.frame();
+    const int renders = f.chrome.renders;
+    f.chrome.pointer_calls.clear();
+    move_stick(f, 1.0f, 0.0f, 30);
+    CHECK(f.chrome.renders == renders);
+    CHECK(f.chrome.pointer_calls.size() == 30);  // one ring update per frame
+    const auto p = f.shell->pointer();
+    CHECK(f.chrome.pointer_calls.back().x == static_cast<int>(p.x));
+    CHECK(f.chrome.pointer_calls.back().y == static_cast<int>(p.y));
+  }
+
+  TEST_CASE("a still pointer sends nothing to the page or the chrome") {
+    Fixture f;
+    f.make();
+    move_stick(f, 1.0f, 0.0f, 5);
+    f.view(0).calls.clear();
+    f.chrome.pointer_calls.clear();
+    const int renders = f.chrome.renders;
+    for (int i = 0; i < 120; ++i) {
+      f.frame();
+    }
+    CHECK(moves(f.view(0)) == 0);
+    CHECK(f.chrome.pointer_calls.empty());
+    CHECK(f.chrome.renders == renders);
+  }
+
+  TEST_CASE("page moves are sent at most once per frame") {
+    Fixture f;
+    f.make();
+    f.view(0).calls.clear();
+    move_stick(f, 1.0f, 1.0f, 20);
+    CHECK(moves(f.view(0)) <= 20);
+    CHECK(moves(f.view(0)) >= 10);
+  }
+
+  TEST_CASE("sub-pixel motion is coalesced until the integer position changes") {
+    Fixture f;
+    f.make();
+    f.frame();
+    f.view(0).calls.clear();
+    // About 18 px/s: a third of a pixel per frame.
+    move_stick(f, 0.235f, 0.0f, 30);
+    const std::size_t sent = moves(f.view(0));
+    CHECK(sent >= 5);
+    CHECK(sent <= 15);
+    // The pointer did move; whatever reached the page is its integer position.
+    if (sent > 0) {
+      const auto p = f.shell->pointer();
+      const int y = static_cast<int>(p.y) - ShellController::kChromeBandHeight;
+      CHECK(f.view(0).called("pointer_move " + std::to_string(static_cast<int>(p.x)) + "," +
+                             std::to_string(y)));
+    }
+  }
+
+  TEST_CASE("a click does not repeat the move it already sent") {
+    Fixture f;
+    f.make();
+    move_stick(f, 1.0f, 0.0f, 3);
+    f.press(Button::Cross);
+    f.view(0).calls.clear();
+    f.frame();
+    CHECK(moves(f.view(0)) == 0);
+  }
+
+  TEST_CASE("switching tabs sends the position to the new page on the next move") {
+    Fixture f;
+    f.make();
+    move_stick(f, 1.0f, 0.0f, 3);
+    f.shell->on_chrome_event({{"type", "tab_new"}});
+    REQUIRE(f.factory.created.size() == 2);
+    f.frame();
+    move_stick(f, 1.0f, 0.0f, 1);
+    CHECK(moves(f.view(1)) == 1);
+  }
+
+  TEST_CASE("over the chrome band no move goes to the page") {
+    Fixture f;
+    f.make();
+    f.view(0).calls.clear();
+    move_stick(f, 0.0f, -1.0f, 60, 0.05f);
+    REQUIRE(f.shell->pointer().y < static_cast<float>(ShellController::kChromeBandHeight));
+    f.view(0).calls.clear();
+    move_stick(f, 1.0f, 0.0f, 5);
+    CHECK(moves(f.view(0)) == 0);
+  }
+
+  TEST_CASE("native pointer: no chrome rect, state marked native, no ring updates") {
+    Fixture f;
+    ShellController::Config config;
+    config.home_url = kHome;
+    config.native_pointer = true;
+    f.shell = std::make_unique<ShellController>(f.factory, f.chrome, f.storage, config);
+    f.shell->start();
+    f.frame();
+    CHECK(f.shell->pointer_visible());
+    CHECK(f.chrome.last["pointer"]["native"] == true);
+    const auto p = f.shell->pointer();
+    for (const auto& r : f.shell->chrome_rects()) {
+      CHECK_FALSE((static_cast<int>(p.y) >= r.y && static_cast<int>(p.y) < r.y + r.height));
+    }
+    move_stick(f, 1.0f, 0.0f, 10);
+    CHECK(f.chrome.pointer_calls.empty());
+    CHECK(moves(f.view(0)) > 0);  // the page still gets hover moves
+  }
+
+  TEST_CASE("hiding the pointer for the menu is reported once") {
+    Fixture f;
+    f.make();
+    move_stick(f, 1.0f, 0.0f, 2);
+    f.chrome.pointer_calls.clear();
+    f.press(Button::Options);
+    f.frame();
+    f.frame();
+    CHECK_FALSE(f.shell->pointer_visible());
+    CHECK(f.chrome.last["pointer"]["visible"] == false);
+    CHECK(f.chrome.pointer_calls.empty());  // the render carried it
   }
 }
 

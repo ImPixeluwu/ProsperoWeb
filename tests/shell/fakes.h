@@ -94,9 +94,19 @@ class FakeChromeUi final : public ChromeUi {
     ++renders;
   }
   void click(int x, int y) override { clicks.emplace_back(x, y); }
+  void pointer(int x, int y, bool visible) override {
+    pointer_calls.push_back({x, y, visible});
+  }
+
+  struct PointerCall {
+    int x = 0;
+    int y = 0;
+    bool visible = false;
+  };
 
   nlohmann::json last;
   int renders = 0;
+  std::vector<PointerCall> pointer_calls;
   std::vector<std::pair<int, int>> clicks;
 };
 

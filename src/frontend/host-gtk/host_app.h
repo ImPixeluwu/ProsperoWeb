@@ -52,6 +52,7 @@ class HostApp final : public shell::ChromeUi, public shell::EngineFactory {
 
   // shell::ChromeUi
   void render(const nlohmann::json& state) override;
+  void pointer(int x, int y, bool visible) override;
   void click(int x, int y) override;
   // shell::EngineFactory
   std::unique_ptr<shell::EngineView> create(shell::EngineViewClient& client) override;

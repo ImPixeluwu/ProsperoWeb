@@ -567,14 +567,18 @@ void ShellController::tick(float dt_seconds) {
   if (focus_ == Focus::Page) {
     const core::Vec2 delta = pointer_.update(sticks_[0], sticks_[1], dt_seconds);
     if (delta.x != 0.0f || delta.y != 0.0f) {
-      pointer_hidden_by_mouse_ = false;
-      const core::Vec2 p = to_view(pointer_.position());
-      if (p.y >= 0.0f) {
-        if (auto* view = active_view()) {
-          view->pointer_move(static_cast<int>(p.x), static_cast<int>(p.y));
-        }
+      pointer_moved_ = true;
+      if (pointer_hidden_by_mouse_) {
+        pointer_hidden_by_mouse_ = false;
+        mark_dirty();
       }
-      mark_dirty();
+    }
+    // Pointer motion reaches the page at most once per tick, and only when
+    // its integer position changed: every move costs the WebProcess a hit
+    // test, which starves page animations on the console. The chrome is not
+    // re-rendered for it either (sync_chrome_pointer() below).
+    if (pointer_moved_) {
+      send_page_pointer_move();
     }
     const core::Vec2 s = core::PointerModel::scroll(sticks_[2], sticks_[3], dt_seconds);
     scroll_carry_.x += s.x;
@@ -588,10 +592,50 @@ void ShellController::tick(float dt_seconds) {
     }
   }
 
+  pointer_moved_ = false;
+
   save_session_if_due(dt_seconds);
 
   if (dirty_) {
     render_now();
+  }
+  sync_chrome_pointer();
+}
+
+bool ShellController::pointer_visible() const {
+  return focus_ == Focus::Page && !pointer_hidden_by_mouse_;
+}
+
+void ShellController::note_page_pointer(std::uint64_t tab_id, int x, int y) {
+  page_pointer_ = PagePointer{tab_id, x, y};
+}
+
+void ShellController::send_page_pointer_move() {
+  const core::Vec2 p = to_view(pointer_.position());
+  const auto tab_id = tabs_.active_id();
+  auto* view = active_view();
+  if (p.y < 0.0f || !view || !tab_id) {
+    return;
+  }
+  const int x = static_cast<int>(p.x);
+  const int y = static_cast<int>(p.y);
+  if (page_pointer_ && page_pointer_->tab_id == *tab_id && page_pointer_->x == x &&
+      page_pointer_->y == y) {
+    return;
+  }
+  view->pointer_move(x, y);
+  note_page_pointer(*tab_id, x, y);
+}
+
+void ShellController::sync_chrome_pointer() {
+  const core::Vec2 p = pointer_.position();
+  const ChromePointer now{static_cast<int>(p.x), static_cast<int>(p.y), pointer_visible()};
+  if (chrome_pointer_ == now) {
+    return;
+  }
+  chrome_pointer_ = now;
+  if (!config_.native_pointer) {
+    chrome_.pointer(now.x, now.y, now.visible);
   }
 }
 
@@ -617,6 +661,9 @@ void ShellController::click_at_pointer() {
   const int x = static_cast<int>(p.x);
   const int y = static_cast<int>(p.y);
   view->pointer_move(x, y);
+  if (const auto tab_id = tabs_.active_id()) {
+    note_page_pointer(*tab_id, x, y);
+  }
   view->pointer_button(x, y, MouseButton::Left, true);
   view->pointer_button(x, y, MouseButton::Left, false);
   since_click_ = 0.0f;
@@ -1158,6 +1205,9 @@ void ShellController::on_chrome_event(const json& event) {
 void ShellController::render_now() {
   dirty_ = false;
   chrome_.render(chrome_state());
+  // The state carries the pointer: no separate ChromeUi::pointer() for it.
+  const core::Vec2 p = pointer_.position();
+  chrome_pointer_ = ChromePointer{static_cast<int>(p.x), static_cast<int>(p.y), pointer_visible()};
 }
 
 std::vector<ShellController::Rect> ShellController::chrome_rects() const {
@@ -1177,7 +1227,7 @@ std::vector<ShellController::Rect> ShellController::chrome_rects() const {
     const int top = config_.height - config_.height * 45 / 100 - static_cast<int>(3.0f * rem);
     rects.push_back({0, std::max(0, top), config_.width, config_.height - std::max(0, top)});
   }
-  if (focus_ == Focus::Page && !pointer_hidden_by_mouse_) {
+  if (pointer_visible() && !config_.native_pointer) {
     // .pointer: a 2.25rem ring centred on the position, plus its shadow.
     const int r = static_cast<int>(2.25f * rem);
     const core::Vec2 p = pointer_.position();
@@ -1215,7 +1265,8 @@ json ShellController::chrome_state() const {
   const core::Vec2 p = pointer_.position();
   state["pointer"] = {{"x", p.x},
                       {"y", p.y},
-                      {"visible", focus_ == Focus::Page && !pointer_hidden_by_mouse_}};
+                      {"visible", pointer_visible()},
+                      {"native", config_.native_pointer}};
   json rects = json::array();
   for (const Rect& r : chrome_rects()) {
     rects.push_back({{"x", r.x}, {"y", r.y}, {"width", r.width}, {"height", r.height}});

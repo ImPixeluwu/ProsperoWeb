@@ -274,6 +274,17 @@ void HostApp::flush_chrome() {
   pending_state_.clear();
 }
 
+void HostApp::pointer(int x, int y, bool visible) {
+  // Before the chrome loaded the next render() places the ring.
+  if (!chrome_loaded_ || !chrome_view_ || !options_.demo.empty()) {
+    return;
+  }
+  const std::string js = "window.ps5chrome && window.ps5chrome.pointer(" + std::to_string(x) +
+                         "," + std::to_string(y) + "," + (visible ? "true" : "false") + ");";
+  webkit_web_view_evaluate_javascript(chrome_view_, js.c_str(), static_cast<gssize>(js.size()),
+                                      nullptr, nullptr, nullptr, nullptr, nullptr);
+}
+
 void HostApp::click(int x, int y) {
   if (!chrome_view_) {
     return;

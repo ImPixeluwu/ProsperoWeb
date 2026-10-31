@@ -66,6 +66,10 @@ class ShellController {
     // outlive the controller. nullptr: the built-in HTML OSK. The built-in
     // OSK is also the fallback when the provider reports an error.
     TextInputProvider* text_input = nullptr;
+    // The frontend draws the gamepad pointer itself (the PS5 compositor):
+    // chrome_rects() leaves it out and the state marks it "native", so the
+    // HTML chrome never repaints for pointer motion.
+    bool native_pointer = false;
   };
 
   enum class Focus : std::uint8_t { Page, Chrome, Osk, Menu, Notice };
@@ -146,6 +150,9 @@ class ShellController {
   const core::FullscreenController& fullscreen() const { return fullscreen_; }
   const core::OnScreenKeyboard& osk() const { return osk_; }
   core::Vec2 pointer() const { return pointer_.position(); }
+  // True while the gamepad pointer is shown (page focus, not hidden by mouse
+  // use); frontends with Config::native_pointer draw it at pointer().
+  bool pointer_visible() const;
   // Window y of the content view's top edge: the chrome band height while
   // the chrome is visible, else 0. The content view is width x (height -
   // content_top()) and page coordinates are window coordinates minus this.
@@ -237,6 +244,12 @@ class ShellController {
 
   // Input helpers.
   void click_at_pointer();
+  // Sends the pointer position to the page if its integer position changed
+  // since the last move sent to the active tab (see tick()).
+  void send_page_pointer_move();
+  // Moves the pointer ring through ChromeUi::pointer() when it changed.
+  void sync_chrome_pointer();
+  void note_page_pointer(std::uint64_t tab_id, int x, int y);
   void scroll_active(int dx, int dy);
   core::Vec2 to_view(core::Vec2 window_pos) const;
 
@@ -312,6 +325,22 @@ class ShellController {
   float sticks_[4] = {0, 0, 0, 0};
   core::Vec2 scroll_carry_;
   bool pointer_hidden_by_mouse_ = false;
+  bool pointer_moved_ = false;  // the pointer moved during this tick
+  // The last pointer_move() sent to a page (coalescing, see tick()).
+  struct PagePointer {
+    std::uint64_t tab_id = 0;
+    int x = 0;
+    int y = 0;
+  };
+  std::optional<PagePointer> page_pointer_;
+  // The last ChromeUi::pointer() call.
+  struct ChromePointer {
+    int x = 0;
+    int y = 0;
+    bool visible = false;
+    bool operator==(const ChromePointer&) const = default;
+  };
+  std::optional<ChromePointer> chrome_pointer_;
   float since_click_ = -1.0f;  // seconds since the last Cross click, <0 = none
   bool text_input_focused_ = false;
   bool quit_requested_ = false;

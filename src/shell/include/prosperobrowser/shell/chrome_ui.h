@@ -17,7 +17,8 @@ namespace prosperobrowser::shell {
 //     "chrome_visible": bool,
 //     "fullscreen_state": "normal" | "chrome_hidden" | "element",
 //     "content": {"x", "y", "width", "height"},   // where the page view goes
-//     "pointer": {"x", "y", "visible"},           // window coordinates
+//     "pointer": {"x", "y", "visible",            // window coordinates
+//                 "native"},  // the frontend draws it; the chrome hides its ring
 //     "osk": {"open", "layout", "shift", "text", "target": "address" | "page",
 //             "caret_index",                  // code points before the caret
 //             "cursor": {"row", "col"},       // focused key in "rows"
@@ -35,6 +36,12 @@ class ChromeUi {
   // chrome element under (x, y) in window coordinates. The chrome is our own
   // UI, so a synthesized click is fine here (page input never goes this way).
   virtual void click(int /*x*/, int /*y*/) {}
+  // The gamepad pointer moved or was shown / hidden (window coordinates).
+  // Pointer motion does not re-render the chrome: this is called instead, at
+  // most once per ShellController::tick() and only on a change (the next
+  // full render() carries the same position). A frontend that draws the
+  // pointer itself (ShellController::Config::native_pointer) ignores it.
+  virtual void pointer(int /*x*/, int /*y*/, bool /*visible*/) {}
 };
 
 }  // namespace prosperobrowser::shell
