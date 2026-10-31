@@ -221,7 +221,9 @@ MediaPlayer::SupportsType MediaPlayerPrivateFFmpeg::supportsType(const MediaEngi
         codecs.push_back(codec.utf8().toStdString());
     auto containerString = container.utf8().toStdString();
     auto result = MediaPlayer::SupportsType::IsNotSupported;
-    switch (FFmpegMedia::evaluate(containerString, codecs, decoderAvailability())) {
+    // Extended parameters (width, framerate, eotf, ...): see FFmpegSupportTable.h.
+    auto parameterSupport = FFmpegMedia::evaluateContentTypeParameters(FFmpegMedia::parseContentTypeParameters(parameters.type.raw().utf8().toStdString()));
+    switch (FFmpegMedia::combineSupport(FFmpegMedia::evaluate(containerString, codecs, decoderAvailability()), parameterSupport)) {
     case FFmpegMedia::Support::IsSupported:
         result = MediaPlayer::SupportsType::IsSupported;
         break;

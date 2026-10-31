@@ -236,5 +236,196 @@ inline Support evaluate(std::string_view mimeType, const std::vector<std::string
     return result;
 }
 
+
+// MARK: - Media Source Extensions and content type parameters
+
+// MSE byte stream formats this engine parses (SourceBufferPrivateFFmpeg):
+// ISO BMFF (fragmented MP4) and WebM. HLS, MP3, ADTS and the progressive
+// aliases (video/x-m4v, video/quicktime, ...) are not MSE byte streams.
+inline Container mediaSourceContainerForMIMEType(std::string_view mimeType)
+{
+    auto lower = lowercase(trim(mimeType));
+    if (lower == "video/mp4" || lower == "audio/mp4")
+        return Container::MP4;
+    if (lower == "video/webm" || lower == "audio/webm")
+        return Container::WebM;
+    return Container::Unknown;
+}
+
+inline bool isVideoFamily(CodecFamily family)
+{
+    return family == CodecFamily::H264 || family == CodecFamily::HEVC || family == CodecFamily::VP8
+        || family == CodecFamily::VP9 || family == CodecFamily::AV1;
+}
+
+struct ContentTypeParameter {
+    std::string name; // lowercased
+    std::string value; // unquoted, case preserved
+};
+
+// Splits `type/subtype; name=value; name="quoted, value"` into its MIME type
+// and parameters (RFC 7231 media-type syntax, lenient about whitespace).
+// Returns the parameters; `mimeType` receives the trimmed type/subtype.
+inline std::vector<ContentTypeParameter> parseContentTypeParameters(std::string_view raw, std::string* mimeType = nullptr)
+{
+    std::vector<ContentTypeParameter> result;
+    size_t semicolon = raw.find(';');
+    if (mimeType)
+        *mimeType = std::string(trim(raw.substr(0, semicolon)));
+    size_t position = semicolon == std::string_view::npos ? raw.size() : semicolon + 1;
+    while (position < raw.size()) {
+        size_t equals = raw.find('=', position);
+        size_t nextSemicolon = raw.find(';', position);
+        if (equals == std::string_view::npos || (nextSemicolon != std::string_view::npos && nextSemicolon < equals)) {
+            // A parameter without a value: skip it.
+            if (nextSemicolon == std::string_view::npos)
+                break;
+            position = nextSemicolon + 1;
+            continue;
+        }
+        ContentTypeParameter parameter;
+        parameter.name = lowercase(trim(raw.substr(position, equals - position)));
+        size_t valueStart = equals + 1;
+        while (valueStart < raw.size() && (raw[valueStart] == ' ' || raw[valueStart] == '\t'))
+            ++valueStart;
+        size_t end;
+        if (valueStart < raw.size() && raw[valueStart] == '"') {
+            size_t closing = raw.find('"', valueStart + 1);
+            if (closing == std::string_view::npos)
+                closing = raw.size();
+            parameter.value = std::string(raw.substr(valueStart + 1, closing - valueStart - 1));
+            end = raw.find(';', closing);
+        } else {
+            end = raw.find(';', valueStart);
+            parameter.value = std::string(trim(raw.substr(valueStart, (end == std::string_view::npos ? raw.size() : end) - valueStart)));
+        }
+        if (!parameter.name.empty())
+            result.push_back(parameter);
+        if (end == std::string_view::npos)
+            break;
+        position = end + 1;
+    }
+    return result;
+}
+
+inline bool parseDecimal(std::string_view text, double& out)
+{
+    text = trim(text);
+    if (text.empty() || text.size() > 32)
+        return false;
+    double value = 0;
+    double scale = 0;
+    for (char c : text) {
+        if (c >= '0' && c <= '9') {
+            if (scale) {
+                value += (c - '0') * scale;
+                scale /= 10;
+            } else
+                value = value * 10 + (c - '0');
+        } else if (c == '.' && !scale)
+            scale = 0.1;
+        else
+            return false;
+    }
+    out = value;
+    return true;
+}
+
+// Limits for the extended isTypeSupported() parameters that YouTube (and
+// other Cobalt-style players) use to probe the decoder: anything beyond them
+// is "", so a player never picks a stream this build cannot decode in time.
+inline constexpr double maxVideoWidth = 4096;
+inline constexpr double maxVideoHeight = 4096;
+inline constexpr double maxFrameRate = 120;
+inline constexpr double maxAudioChannels = 8;
+
+// Checks the non-codecs parameters of a content type. IsSupported means "no
+// objection" (the codecs decide), NotSupported means some parameter asks for
+// something this engine cannot do:
+//  - width/height above 4096, framerate above 120, channels above 8, or a
+//    value that is not a number;
+//  - eotf other than bt709 (smpte2084 and arib-std-b67 are HDR transfer
+//    functions; there is no HDR output);
+//  - decode-to-texture other than true/false, experimental other than
+//    allowed/true/false, tunnelmode other than false (no tunneled playback);
+//  - cryptoblockformat with any value (no EME).
+// Unknown parameters are ignored.
+inline Support evaluateContentTypeParameters(const std::vector<ContentTypeParameter>& parameters)
+{
+    for (auto& parameter : parameters) {
+        auto& name = parameter.name;
+        auto value = lowercase(trim(parameter.value));
+        double number = 0;
+        if (name == "width" || name == "height") {
+            if (!parseDecimal(value, number) || number > (name == "width" ? maxVideoWidth : maxVideoHeight))
+                return Support::NotSupported;
+        } else if (name == "framerate") {
+            if (!parseDecimal(value, number) || number > maxFrameRate)
+                return Support::NotSupported;
+        } else if (name == "channels") {
+            if (!parseDecimal(value, number) || number > maxAudioChannels)
+                return Support::NotSupported;
+        } else if (name == "bitrate") {
+            if (!parseDecimal(value, number))
+                return Support::NotSupported;
+        } else if (name == "eotf") {
+            if (value != "bt709")
+                return Support::NotSupported;
+        } else if (name == "decode-to-texture") {
+            if (value != "true" && value != "false")
+                return Support::NotSupported;
+        } else if (name == "experimental") {
+            if (value != "allowed" && value != "true" && value != "false")
+                return Support::NotSupported;
+        } else if (name == "tunnelmode") {
+            if (value != "false")
+                return Support::NotSupported;
+        } else if (name == "cryptoblockformat")
+            return Support::NotSupported;
+    }
+    return Support::IsSupported;
+}
+
+inline Support combineSupport(Support a, Support b)
+{
+    if (a == Support::NotSupported || b == Support::NotSupported)
+        return Support::NotSupported;
+    if (a == Support::MaybeSupported || b == Support::MaybeSupported)
+        return Support::MaybeSupported;
+    return Support::IsSupported;
+}
+
+// MediaSource.isTypeSupported() / addSourceBuffer() answer for a full content
+// type string. No container (MediaPlayer choosing an engine for a MediaSource
+// before any type is known) is "maybe", so this engine gets selected.
+inline Support evaluateMediaSource(std::string_view rawContentType, const DecoderAvailability& decoders)
+{
+    std::string mimeType;
+    auto parameters = parseContentTypeParameters(rawContentType, &mimeType);
+    if (mimeType.empty())
+        return Support::MaybeSupported;
+    auto container = mediaSourceContainerForMIMEType(mimeType);
+    if (container == Container::Unknown)
+        return Support::NotSupported;
+
+    std::vector<std::string> codecs;
+    bool hasCodecs = false;
+    for (auto& parameter : parameters) {
+        if (parameter.name == "codecs") {
+            hasCodecs = true;
+            codecs = splitCodecs(parameter.value);
+        }
+    }
+    if (hasCodecs && codecs.empty())
+        return Support::NotSupported;
+    bool isAudioType = startsWith(lowercase(mimeType), "audio/");
+    for (auto& codec : codecs) {
+        if (isAudioType && isVideoFamily(codecFamily(codec)))
+            return Support::NotSupported;
+    }
+    auto codecSupport = evaluate(mimeType, codecs, decoders);
+    return combineSupport(codecSupport, evaluateContentTypeParameters(parameters));
+}
+
 } // namespace FFmpegMedia
 } // namespace WebCore
