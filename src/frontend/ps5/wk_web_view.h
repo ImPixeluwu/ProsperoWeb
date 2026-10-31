@@ -19,6 +19,7 @@
 #include <WebKit/WKBase.h>
 #include <WebKit/WKGeometry.h>
 
+#include "damage_region.h"
 #include "frame_stats.h"
 
 namespace ps5browser::frontend {
@@ -31,21 +32,6 @@ struct DirtyRect {
   int width = 0;
   int height = 0;
 };
-
-// Smallest rectangle covering both a and b (an invalid rect is empty).
-inline DirtyRect union_of(const DirtyRect& a, const DirtyRect& b) {
-  if (!a.valid) {
-    return b;
-  }
-  if (!b.valid) {
-    return a;
-  }
-  const int x0 = a.x < b.x ? a.x : b.x;
-  const int y0 = a.y < b.y ? a.y : b.y;
-  const int x1 = (a.x + a.width) > (b.x + b.width) ? a.x + a.width : b.x + b.width;
-  const int y1 = (a.y + a.height) > (b.y + b.height) ? a.y + a.height : b.y + b.height;
-  return DirtyRect{true, x0, y0, x1 - x0, y1 - y0};
-}
 
 class WkWebView {
  public:
@@ -117,13 +103,13 @@ class WkWebView {
   void set_user_agent(const std::string& user_agent);
   void request_exit_fullscreen();
 
-  // Paints the dirty area into an ARGB32 (little-endian: B,G,R,A bytes) buffer
-  // of size width*height*4. rect is clamped to the surface by WebKit.
-  void paint(unsigned char* argb, int width, int height, const DirtyRect& rect);
+  // Paints rect into an ARGB32 (little-endian: B,G,R,A bytes) buffer of size
+  // width*height*4. rect is clamped to the surface by WebKit.
+  void paint(unsigned char* argb, int width, int height, const display::Rect& rect);
 
-  // Returns and clears the pending dirty rect: the union of every
-  // needs_display rect since the last call.
-  DirtyRect take_dirty();
+  // Returns and clears the pending damage: every needs_display rect since
+  // the last call, coalesced into a few rects (display::Region).
+  display::Region take_dirty();
 
   // Returns and clears the setViewNeedsDisplay count and area since the last
   // call (the frame-pipeline statistics).
@@ -139,6 +125,9 @@ class WkWebView {
   // native handlers do exist, the shim stands aside and polling stops at the
   // first poll that finds them or the first native message.
   static void poll_all();
+  // Called (on the main thread) after any view's setViewNeedsDisplay: the
+  // frame loop schedules a frame at once instead of waiting for its tick.
+  static void set_damage_hook(void (*hook)(void* data), void* data);
   // Marks the view as having started a navigation (polling starts then).
   void note_navigation() { navigated_ = true; }
   // Called by the native handler trampoline.
@@ -160,7 +149,7 @@ class WkWebView {
   WKPageRef page_ = nullptr;
   WKUserContentControllerRef content_controller_ = nullptr;
   WKPreferencesRef preferences_ = nullptr;
-  DirtyRect dirty_;
+  display::Region dirty_;
   display::AreaStat needs_display_stats_;
   int width_ = 1920;
   int height_ = 1080;

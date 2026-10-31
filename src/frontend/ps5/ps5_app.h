@@ -4,6 +4,7 @@
 // content/chrome compositor driven by the shell controller.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -12,6 +13,7 @@
 #include <SDL.h>
 
 #include "ps5browser/core/file_storage.h"
+#include "damage_region.h"
 #include "frame_stats.h"
 #include "ps5browser/shell/shell_controller.h"
 #include "ps5_audio_server.h"
@@ -19,6 +21,7 @@
 #include "ps5_config.h"
 #include "ps5_engine_view.h"
 #include "ps5_ime.h"
+#include "ps5_presenter.h"
 
 namespace ps5browser::frontend {
 
@@ -40,11 +43,17 @@ class Ps5App {
   void paint_content();
   void paint_chrome();
   void composite_and_present();
+  // Takes the accumulated page damage plus the chrome changes visible in
+  // chrome_rects, in window pixels.
+  display::Region take_frame_damage(const std::vector<display::Rect>& chrome_rects);
   void draw_splash();
   // Frame-pipeline statistics: one log line every kStatsWindowMs while
   // anything is painted or presented.
   void collect_and_log_stats(std::uint64_t now);
-  std::vector<SDL_Rect> derive_chrome_rects();
+  std::vector<display::Rect> derive_chrome_rects();
+  // Queues frame() on the main run loop unless one is queued already.
+  // Thread-safe (the presenter calls it).
+  void request_frame();
   // Remote diagnostics (ps5_diagnostics.h).
   void poll_diagnostic_requests(std::uint64_t now);
   void dump_screen(SDL_Surface* surface);
@@ -55,6 +64,8 @@ class Ps5App {
   SDL_Window* window_ = nullptr;
   SDL_GameController* pad_ = nullptr;
   std::unique_ptr<Ps5AudioServer> audio_server_;
+  std::unique_ptr<Ps5Presenter> presenter_;
+  std::atomic<bool> frame_queued_{false};
 
   Ps5Config config_;
   std::unique_ptr<core::FileStorage> storage_;
@@ -67,7 +78,8 @@ class Ps5App {
 
   // Content cache: ARGB32 (what WKPagePaint writes), the active view painted
   // at y = content_top(); only dirty areas are repainted. The composed frame
-  // goes straight to the SDL window surface (ABGR8888), never back here.
+  // goes straight to the SDL window surface (ABGR8888), never back here, and
+  // only the damaged rects are composed and presented.
   std::vector<std::uint32_t> page_buffer_;
   std::uint64_t painted_tab_ = ~std::uint64_t{0};  // tab id in page_buffer_
   int painted_top_ = -1;
@@ -76,7 +88,13 @@ class Ps5App {
   bool chrome_painted_ = false;
   // Chrome rects of the last frames (newest first), see derive_chrome_rects().
   static constexpr std::size_t kChromeRectHistory = 4;
-  std::deque<std::vector<SDL_Rect>> recent_chrome_rects_;
+  std::deque<std::vector<display::Rect>> recent_chrome_rects_;
+  // Damage not yet composed into the window surface (window pixels): page
+  // repaints, and chrome repaints (shown only inside the chrome rects).
+  display::Region pending_damage_;
+  display::Region pending_chrome_damage_;
+  // The chrome rects the surface was last composed with.
+  std::vector<display::Rect> composed_chrome_rects_;
   int width_ = 1920;
   int height_ = 1080;
 
@@ -104,8 +122,6 @@ class Ps5App {
   // One-shot startup diagnostics (log.txt).
   std::uint64_t frames_ = 0;
   bool surface_logged_ = false;
-  bool first_flip_logged_ = false;
-  bool flip_error_logged_ = false;
   // The startup splash stays on screen until WebKit reports its first paint
   // (page or chrome); until then the frame loop does not flip.
   bool webkit_painted_ = false;

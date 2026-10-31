@@ -3,6 +3,8 @@
 # the SDL window surface. Portable C++ (no SDL, no WebKit), so the host tests
 # cover them; the PS5 frontend links them.
 add_library(ps5browser_display STATIC
+  compose.cpp
+  damage_region.cpp
   frame_stats.cpp
 )
 add_library(ps5browser::display ALIAS ps5browser_display)

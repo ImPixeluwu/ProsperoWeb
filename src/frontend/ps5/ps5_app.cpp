@@ -11,6 +11,7 @@
 
 #include <WebKit/WKRunLoop.h>
 
+#include "compose.h"
 #include "ps5browser/core/gamepad.h"
 #include "ps5browser/core/page_scripts.h"
 #include "ps5_diagnostics.h"
@@ -59,16 +60,10 @@ constexpr const char* kInputTraceScript = R"JS((function () {
 constexpr const char* kBaseDir = kPs5DataDir;
 
 std::string tmp_path(const std::string& name) { return std::string(kBaseDir) + "/tmp/" + name; }
-constexpr std::uint32_t kFrameMs = 16;  // ~60 Hz
-
 // Milliseconds since `start` (an SDL_GetPerformanceCounter() value).
 double ms_since(std::uint64_t start) {
   static const double ms_per_tick = 1000.0 / static_cast<double>(SDL_GetPerformanceFrequency());
   return static_cast<double>(SDL_GetPerformanceCounter() - start) * ms_per_tick;
-}
-
-std::uint64_t area_of(int w, int h) {
-  return w > 0 && h > 0 ? static_cast<std::uint64_t>(w) * static_cast<std::uint64_t>(h) : 0;
 }
 
 std::optional<core::Button> sdl_button_to_core(SDL_GameControllerButton b) {
@@ -133,39 +128,13 @@ std::uint32_t dom_modifiers(SDL_Keymod m) {
   return out;
 }
 
-// ARGB32 (0xAARRGGBB) -> ABGR8888 (0xAABBGGRR): swap R and B.
-inline std::uint32_t argb_to_abgr(std::uint32_t p) {
-  return (p & 0xFF00FF00u) | ((p & 0x00FF0000u) >> 16) | ((p & 0x000000FFu) << 16);
-}
-
-// Premultiplied source-over: src + dst * (255 - src.alpha) / 255, per channel.
-inline std::uint32_t blend_over(std::uint32_t src, std::uint32_t dst) {
-  const std::uint32_t a = src >> 24;
-  if (a == 0xFF) {
-    return src;
-  }
-  if (a == 0) {
-    return dst;
-  }
-  const std::uint32_t inv = 255 - a;
-  auto scale = [inv](std::uint32_t c) {
-    const std::uint32_t t = c * inv + 128;
-    return (t + (t >> 8)) >> 8;  // c * inv / 255, rounded
-  };
-  std::uint32_t out = 0;
-  for (int shift = 0; shift < 32; shift += 8) {
-    const std::uint32_t s = (src >> shift) & 0xFF;
-    const std::uint32_t d = (dst >> shift) & 0xFF;
-    out |= std::min<std::uint32_t>(255, s + scale(d)) << shift;
-  }
-  return out;
-}
-
 }  // namespace
 
 Ps5App::Ps5App() = default;
 
 Ps5App::~Ps5App() {
+  WkWebView::set_damage_hook(nullptr, nullptr);
+  presenter_.reset();     // before the window goes
   audio_server_.reset();  // before SDL_Quit
   if (pad_) {
     SDL_GameControllerClose(pad_);
@@ -276,7 +245,17 @@ int Ps5App::run() {
 
   running_ = true;
   last_frame_ticks_ = SDL_GetTicks64();
-  WKRunLoopCallOnMainThread(&Ps5App::frame_trampoline, this);
+  {
+    const char* env = std::getenv("PS5BROWSER_PRESENT_THREAD");
+    const bool threaded = !(env && !std::strcmp(env, "0"));
+    presenter_ = std::make_unique<Ps5Presenter>(window_, threaded, [this] { request_frame(); });
+    log_printf("present: %s, frames paced by flips and a %u ms tick",
+               threaded ? "presenter thread" : "main thread (PS5BROWSER_PRESENT_THREAD=0)",
+               Ps5Presenter::kTickMs);
+  }
+  WkWebView::set_damage_hook(
+      [](void* self) { static_cast<Ps5App*>(self)->request_frame(); }, this);
+  request_frame();
   log_line("WKRunLoopRunMain: entering");
   WKRunLoopRunMain();
 
@@ -320,7 +299,19 @@ void Ps5App::frame_trampoline(void* self) {
   static_cast<Ps5App*>(self)->frame();
 }
 
+void Ps5App::request_frame() {
+  // At most one frame queued on the run loop: a slow frame does not pile up
+  // ticks behind it.
+  if (!frame_queued_.exchange(true, std::memory_order_acq_rel)) {
+    WKRunLoopCallOnMainThread(&Ps5App::frame_trampoline, this);
+  }
+}
+
 void Ps5App::frame() {
+  frame_queued_.store(false, std::memory_order_release);
+  if (!running_) {
+    return;
+  }
   std::uint64_t now = SDL_GetTicks64();
   if (frames_ == 0) {
     log_line("frame: first frame");
@@ -352,15 +343,11 @@ void Ps5App::frame() {
   if (controller_->quit_requested()) {
     controller_->shutdown();
     running_ = false;
+    presenter_->stop();
     WKRunLoopStopMain();
-    return;
   }
-
-  std::uint64_t spent = SDL_GetTicks64() - now;
-  if (spent < kFrameMs) {
-    SDL_Delay(static_cast<std::uint32_t>(kFrameMs - spent));
-  }
-  WKRunLoopCallOnMainThread(&Ps5App::frame_trampoline, this);
+  // The next frame comes from the presenter (after a flip, or its tick):
+  // the run loop stays free for WebKit's IPC in between.
 }
 
 void Ps5App::pump_sdl_events() {
@@ -568,15 +555,15 @@ void Ps5App::trigger_edge(core::Button button, bool down, bool& was_down) {
   }
 }
 
-std::vector<SDL_Rect> Ps5App::derive_chrome_rects() {
+std::vector<display::Rect> Ps5App::derive_chrome_rects() {
   // The chrome renders asynchronously (WebProcess round trip), so its pixels
   // lag the shell state by a frame or two: keep composing the areas of the
   // last few frames, or a moving pointer or a closing panel would be cut off.
-  std::vector<SDL_Rect> current;
+  std::vector<display::Rect> current;
   for (const auto& r : controller_->chrome_rects()) {
-    current.push_back(SDL_Rect{r.x, r.y, r.width, r.height});
+    current.push_back(display::Rect{r.x, r.y, r.width, r.height});
   }
-  std::vector<SDL_Rect> rects = current;
+  std::vector<display::Rect> rects = current;
   for (const auto& old : recent_chrome_rects_) {
     rects.insert(rects.end(), old.begin(), old.end());
   }
@@ -588,29 +575,28 @@ std::vector<SDL_Rect> Ps5App::derive_chrome_rects() {
 }
 
 void Ps5App::paint_chrome() {
-  DirtyRect dirty = chrome_->web().take_dirty();
-  webkit_painted_ = webkit_painted_ || dirty.valid;
+  display::Region dirty = chrome_->web().take_dirty();
+  webkit_painted_ = webkit_painted_ || !dirty.empty();
   if (!chrome_painted_) {
-    dirty = DirtyRect{true, 0, 0, width_, height_};
+    dirty.clear();
+    dirty.add(display::Rect{0, 0, width_, height_});
     chrome_painted_ = true;
   }
-  if (!dirty.valid) {
-    return;
+  dirty.clip(display::Rect{0, 0, width_, height_});
+  for (const display::Rect& r : dirty.rects()) {
+    // WebKit blends its backing store over the target (source-over), so the
+    // area must start out transparent or old chrome pixels would show through.
+    for (int y = r.y; y < r.bottom(); y++) {
+      std::uint32_t* row = &chrome_buffer_[static_cast<size_t>(y) * width_];
+      std::fill(row + r.x, row + r.right(), 0u);
+    }
+    const std::uint64_t t0 = SDL_GetPerformanceCounter();
+    chrome_->web().paint(reinterpret_cast<unsigned char*>(chrome_buffer_.data()), width_,
+                         height_, r);
+    stats_.chrome_paint.add(ms_since(t0), r.area());
   }
-  // WebKit blends its backing store over the target (source-over), so the
-  // area must start out transparent or old chrome pixels would show through.
-  const int x0 = std::clamp(dirty.x, 0, width_);
-  const int x1 = std::clamp(dirty.x + dirty.width, 0, width_);
-  const int y0 = std::clamp(dirty.y, 0, height_);
-  const int y1 = std::clamp(dirty.y + dirty.height, 0, height_);
-  for (int y = y0; y < y1; y++) {
-    std::uint32_t* row = &chrome_buffer_[static_cast<size_t>(y) * width_];
-    std::fill(row + x0, row + x1, 0u);
-  }
-  const std::uint64_t t0 = SDL_GetPerformanceCounter();
-  chrome_->web().paint(reinterpret_cast<unsigned char*>(chrome_buffer_.data()), width_,
-                       height_, dirty);
-  stats_.chrome_paint.add(ms_since(t0), area_of(x1 - x0, y1 - y0));
+  // Visible only inside the chrome rects; compose_damage() clips it.
+  pending_chrome_damage_.add(dirty);
 }
 
 void Ps5App::paint_content() {
@@ -618,29 +604,36 @@ void Ps5App::paint_content() {
   const std::uint64_t tab = controller_->tabs().active_id().value_or(0);
   const int top = std::clamp(controller_->content_top(), 0, height_);
   const int content_height = height_ - top;
-  DirtyRect dirty = view ? view->web().take_dirty() : DirtyRect{};
-  webkit_painted_ = webkit_painted_ || dirty.valid;
+  display::Region dirty = view ? view->web().take_dirty() : display::Region{};
+  webkit_painted_ = webkit_painted_ || !dirty.empty();
 
-  // A different view or geometry invalidates the whole cache; otherwise only
-  // what WebKit reported changed is repainted (nothing on an idle page).
+  // A different view or geometry invalidates the whole cache (and screen);
+  // otherwise only what WebKit reported changed is repainted (nothing on an
+  // idle page).
   const bool full = tab != painted_tab_ || top != painted_top_;
   if (full) {
     std::fill(page_buffer_.begin(), page_buffer_.end(), 0xFF000000u);
     painted_tab_ = tab;
     painted_top_ = top;
-    dirty = DirtyRect{true, 0, 0, width_, content_height};
+    dirty.clear();
+    dirty.add(display::Rect{0, 0, width_, content_height});
+    pending_damage_.add(display::Rect{0, 0, width_, height_});
   }
-  if (!view || !dirty.valid || content_height <= 0) {
+  if (!view || dirty.empty() || content_height <= 0) {
     return;
   }
+  dirty.clip(display::Rect{0, 0, width_, content_height});
   // The view is width_ x content_height and sits at window y = top, the same
   // offset ShellController::to_view() removes from pointer coordinates.
   auto* origin = reinterpret_cast<unsigned char*>(page_buffer_.data() +
                                                   static_cast<size_t>(top) * width_);
-  const std::uint64_t t0 = SDL_GetPerformanceCounter();
-  view->web().paint(origin, width_, content_height, dirty);
-  stats_.page_paint.add(ms_since(t0), area_of(std::min(dirty.width, width_),
-                                               std::min(dirty.height, content_height)));
+  for (const display::Rect& r : dirty.rects()) {
+    const std::uint64_t t0 = SDL_GetPerformanceCounter();
+    view->web().paint(origin, width_, content_height, r);
+    stats_.page_paint.add(ms_since(t0), r.area());
+  }
+  dirty.translate(0, top);
+  pending_damage_.add(dirty);
 }
 
 void Ps5App::collect_and_log_stats(std::uint64_t now) {
@@ -656,11 +649,39 @@ void Ps5App::collect_and_log_stats(std::uint64_t now) {
   if (elapsed < kStatsWindowMs) {
     return;
   }
+  if (presenter_) {
+    stats_.present.merge(presenter_->take_stats());
+  }
   if (stats_.active()) {
     log_line(stats_.format(static_cast<double>(elapsed) / 1000.0));
   }
   stats_ = display::FrameStats{};
   stats_start_ticks_ = now;
+}
+
+display::Region Ps5App::take_frame_damage(const std::vector<display::Rect>& chrome_rects) {
+  display::Region damage = pending_damage_;
+  // A chrome rect that appeared, moved or went away changes what is blended
+  // where: recompose the old and the new areas.
+  if (chrome_rects != composed_chrome_rects_) {
+    for (const display::Rect& r : composed_chrome_rects_) {
+      damage.add(r);
+    }
+    for (const display::Rect& r : chrome_rects) {
+      damage.add(r);
+    }
+  }
+  // Chrome repaints show only inside the chrome rects.
+  for (const display::Rect& d : pending_chrome_damage_.rects()) {
+    for (const display::Rect& c : chrome_rects) {
+      damage.add(display::intersect(d, c));
+    }
+  }
+  damage.clip(display::Rect{0, 0, width_, height_});
+  pending_damage_.clear();
+  pending_chrome_damage_.clear();
+  composed_chrome_rects_ = chrome_rects;
+  return damage;
 }
 
 void Ps5App::composite_and_present() {
@@ -678,10 +699,11 @@ void Ps5App::composite_and_present() {
     return;
   }
 
-  // 1. Bring the content and chrome caches up to date (dirty areas only).
+  // 1. Bring the content and chrome caches up to date (dirty areas only);
+  //    their damage accumulates until it is composed.
   paint_content();
   paint_chrome();
-  const std::vector<SDL_Rect> chrome_rects = derive_chrome_rects();
+  const std::vector<display::Rect> chrome_rects = derive_chrome_rects();
 
   // Keep the splash until WebKit has painted something real; composing the
   // still empty caches would replace it with black.
@@ -690,57 +712,48 @@ void Ps5App::composite_and_present() {
       return;
     }
     splash_replaced_ = true;
+    pending_damage_.add(display::Rect{0, 0, width_, height_});
     log_printf("splash: replaced by the first WebKit frame (frame %llu)",
                static_cast<unsigned long long>(frames_));
   }
 
-  // 2. Compose into the ABGR8888 window surface: the page, with the
-  //    premultiplied chrome blended over it inside the chrome rects. Neither
-  //    cache is written here, so a closed overlay leaves no trace.
+  // 2. The surface belongs to the presenter while a flip is in flight; the
+  //    damage waits for the next frame (which the flip completion requests).
+  if (presenter_->busy()) {
+    if (!pending_damage_.empty() || !pending_chrome_damage_.empty()) {
+      stats_.present_waits++;
+    }
+    return;
+  }
+  const display::Region damage = take_frame_damage(chrome_rects);
+  if (damage.empty()) {
+    if (screenshot_pending_) {
+      dump_screen(surface);  // the surface holds the last composed frame
+    }
+    return;
+  }
+
+  // 3. Compose the damaged rects into the ABGR8888 window surface: the page,
+  //    with the premultiplied chrome blended over it inside the chrome rects.
+  //    Neither cache is written here, so a closed overlay leaves no trace.
   const std::uint64_t compose_t0 = SDL_GetPerformanceCounter();
   if (SDL_MUSTLOCK(surface)) {
     SDL_LockSurface(surface);
   }
-  auto* out = static_cast<std::uint32_t*>(surface->pixels);
-  const int stride = surface->pitch / 4;
-  std::vector<std::pair<int, int>> spans;
-  for (int y = 0; y < height_; y++) {
-    const std::uint32_t* page = &page_buffer_[static_cast<size_t>(y) * width_];
-    const std::uint32_t* chrome = &chrome_buffer_[static_cast<size_t>(y) * width_];
-    std::uint32_t* orow = &out[static_cast<size_t>(y) * stride];
-
-    // Merge the chrome rects crossing this row into disjoint spans, so no
-    // pixel is blended twice where rects overlap.
-    spans.clear();
-    for (const auto& r : chrome_rects) {
-      if (y >= r.y && y < r.y + r.h) {
-        const int x0 = std::max(0, r.x);
-        const int x1 = std::min(width_, r.x + r.w);
-        if (x0 < x1) {
-          spans.emplace_back(x0, x1);
-        }
-      }
+  const display::Layers layers{page_buffer_.data(), chrome_buffer_.data(), width_, height_};
+  const int out_w = std::min(width_, surface->w);
+  const int out_h = std::min(height_, surface->h);
+  std::vector<SDL_Rect> present_rects;
+  for (const display::Rect& r : damage.rects()) {
+    const display::Rect clipped = display::intersect(r, display::Rect{0, 0, out_w, out_h});
+    if (clipped.empty()) {
+      continue;
     }
-    std::sort(spans.begin(), spans.end());
-    int x = 0;
-    for (std::size_t i = 0; i < spans.size();) {
-      int s0 = spans[i].first;
-      int s1 = spans[i].second;
-      for (++i; i < spans.size() && spans[i].first <= s1; ++i) {
-        s1 = std::max(s1, spans[i].second);
-      }
-      for (; x < s0; x++) {
-        orow[x] = argb_to_abgr(page[x]);
-      }
-      for (; x < s1; x++) {
-        orow[x] = argb_to_abgr(blend_over(chrome[x], page[x]));
-      }
-    }
-    for (; x < width_; x++) {
-      orow[x] = argb_to_abgr(page[x]);
-    }
+    display::compose_rect(layers, chrome_rects, clipped, static_cast<std::uint32_t*>(surface->pixels),
+                          surface->pitch / 4);
+    present_rects.push_back(SDL_Rect{clipped.x, clipped.y, clipped.w, clipped.h});
   }
-  stats_.compose.add(ms_since(compose_t0), area_of(width_, height_));
+  stats_.compose.add(ms_since(compose_t0), damage.area());
   // The composed frame, before the flip hands the buffer to the display.
   if (screenshot_pending_) {
     dump_screen(surface);
@@ -748,26 +761,13 @@ void Ps5App::composite_and_present() {
   if (SDL_MUSTLOCK(surface)) {
     SDL_UnlockSurface(surface);
   }
-  // Under the SDL PS5 driver this submits the frame (sceVideoOutSubmitFlip).
-  if (!first_flip_logged_) {
-    log_line("SDL_UpdateWindowSurface: first flip, calling");
+  if (present_rects.empty()) {
+    return;
   }
-  const std::uint64_t present_t0 = SDL_GetPerformanceCounter();
-  const int rc = SDL_UpdateWindowSurface(window_);
-  stats_.present.add(ms_since(present_t0), area_of(width_, height_));
-  stats_.damage_rects++;
-  if (!first_flip_logged_) {
-    first_flip_logged_ = true;
-    if (rc == 0) {
-      log_line("SDL_UpdateWindowSurface: first flip submitted");
-    } else {
-      log_printf("SDL_UpdateWindowSurface: first flip failed: %s", SDL_GetError());
-    }
-  } else if (rc != 0 && !flip_error_logged_) {
-    flip_error_logged_ = true;
-    log_printf("SDL_UpdateWindowSurface failed (frame %llu): %s",
-               static_cast<unsigned long long>(frames_), SDL_GetError());
-  }
+  // Under the SDL PS5 driver this de-tiles the rects' bounding box and
+  // submits the flip (sceVideoOutSubmitFlip), see ps5_presenter.h.
+  stats_.damage_rects += static_cast<std::uint32_t>(present_rects.size());
+  presenter_->submit(std::move(present_rects));
 }
 
 }  // namespace ps5browser::frontend

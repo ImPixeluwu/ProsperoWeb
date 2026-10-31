@@ -300,8 +300,11 @@ void script_message(WKScriptMessageRef message, WKCompletionListenerRef reply,
   }
 }
 
-WKRect to_wk_rect(const DirtyRect& r) {
-  return WKRectMake(r.x, r.y, r.width, r.height);
+void (*g_damage_hook)(void*) = nullptr;
+void* g_damage_hook_data = nullptr;
+
+WKRect to_wk_rect(const display::Rect& r) {
+  return WKRectMake(r.x, r.y, r.w, r.h);
 }
 
 }  // namespace
@@ -321,11 +324,19 @@ void WkWebView::s_needs_display(WKViewRef, WKRect rect, const void* ci) {
                d.x, d.y, d.width, d.height);
   }
   self->needs_display_stats_.add(static_cast<std::uint64_t>(d.width) * d.height);
-  // Several invalidations can arrive between two frames; keep their union.
-  self->dirty_ = union_of(self->dirty_, d);
+  // Several invalidations can arrive between two frames; keep them all.
+  self->dirty_.add(display::Rect{d.x, d.y, d.width, d.height});
   if (self->cb_.needs_display) {
     self->cb_.needs_display(d);
   }
+  if (g_damage_hook) {
+    g_damage_hook(g_damage_hook_data);
+  }
+}
+
+void WkWebView::set_damage_hook(void (*hook)(void* data), void* data) {
+  g_damage_hook = hook;
+  g_damage_hook_data = data;
 }
 
 // Element fullscreen handshake of the PlayStation port: enterFullScreen
@@ -644,12 +655,11 @@ void WkWebView::request_exit_fullscreen() { WKViewRequestExitFullScreen(view_); 
 // --- painting ---------------------------------------------------------------
 
 void WkWebView::paint(unsigned char* argb, int width, int height,
-                      const DirtyRect& rect) {
-  if (!argb) {
+                      const display::Rect& rect) {
+  if (!argb || rect.empty()) {
     return;
   }
-  WKRect r = rect.valid ? to_wk_rect(rect)
-                        : WKRectMake(0, 0, width, height);
+  const WKRect r = to_wk_rect(rect);
   WKPagePaint(page_, argb, WKSizeMake(width, height), r);
   if (!paint_logged_) {
     paint_logged_ = true;
@@ -659,9 +669,9 @@ void WkWebView::paint(unsigned char* argb, int width, int height,
   }
 }
 
-DirtyRect WkWebView::take_dirty() {
-  DirtyRect d = dirty_;
-  dirty_ = DirtyRect{};
+display::Region WkWebView::take_dirty() {
+  display::Region d = dirty_;
+  dirty_.clear();
   return d;
 }
 
