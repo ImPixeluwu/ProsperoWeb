@@ -28,6 +28,11 @@ int ps5_spawn_self(const char* const* argv, const int* fds, int nfds);
 // Returns 0 on success, -1 on failure. Safe for an already-dead pid.
 int ps5_terminate_process(int pid);
 
+// Runs the spawn broker role: the plain-payload process that performs the
+// spawns for the UI (see src/ps5/spawn/README.md, "Spawn broker"). main()
+// dispatches the "spawn-broker" role here. Returns the exit code.
+int ps5_spawn_broker_main(void);
+
 // --- Logging, provided by the executable (src/frontend/ps5/ps5_log.cpp). ---
 //
 // The spawner reports every spawn and every child-side failure through these,

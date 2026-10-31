@@ -22,8 +22,9 @@ along with this program; see the file COPYING. If not, see
        rfork entry opened as 0/1/2 and injects a table of extra descriptors
        at child fd 3+i (the WebKit IPC socket lands at fd 3).
      - elfldr_spawn() -> elfldr_spawn_fds(): same signature change; also
-       forwards the current environment to the child (WebKit needs the
-       PS5BROWSER_* variables).
+       sets the child's environment from an envp argument (the UI's environ,
+       forwarded by the spawn broker; WebKit needs the PS5BROWSER_*
+       variables).
      - elfldr_read()/elfldr_find_pid() dropped (not used by ps5-browser).
      - the load mirror is calloc'ed (memsz gaps reach the child as zeros), a
        replaced child descriptor is logged, and a child that fails to set up
@@ -56,7 +57,6 @@ along with this program; see the file COPYING. If not, see
 #include "log.h"
 #include "pt.h"
 
-extern char** environ;
 
 #ifndef IPV6_2292PKTOPTIONS
 #define IPV6_2292PKTOPTIONS 25
@@ -658,7 +658,8 @@ elfldr_spawn_fail(elfldr_spawn_report_t* report, const char* stage, int err) {
 
 
 pid_t
-elfldr_spawn_fds(char* const argv[], const struct ps5_spawn_fd_entry* fds,
+elfldr_spawn_fds(char* const argv[], char* const envp[],
+		 const struct ps5_spawn_fd_entry* fds,
 		 int nfds, const uint8_t* elf, size_t elf_size,
 		 elfldr_spawn_report_t* report) {
   elfldr_rfork_args_t args;
@@ -763,7 +764,7 @@ elfldr_spawn_fds(char* const argv[], const struct ps5_spawn_fd_entry* fds,
   }
 
   elfldr_set_procname(pid, argv[0]);
-  elfldr_set_environ(pid, environ);
+  elfldr_set_environ(pid, (char**)envp);
 
   if(elfldr_exec_fds(pid, fds, nfds, elf)) {
     kill(pid, SIGKILL);

@@ -94,7 +94,8 @@ target_include_directories(ps5browser_frontend_ps5_objs SYSTEM PRIVATE
   "${SDL2_INCLUDE_DIRS}"
   "${PS5BROWSER_THIRD_PARTY_DIR}")
 # ps5browser::core / ::shell provide the public headers the frontend consumes.
-target_link_libraries(ps5browser_frontend_ps5_objs PRIVATE ps5browser::core ps5browser::shell)
+target_link_libraries(ps5browser_frontend_ps5_objs PRIVATE ps5browser::core ps5browser::shell
+  ps5browser::spawn_util)  # ps5browser/spawn/spawn.h (the broker role entry)
 
 # The final executable. It cannot link until the WebKit archives exist, so it
 # is excluded from the default build: cmake --build <dir> --target ps5browser.

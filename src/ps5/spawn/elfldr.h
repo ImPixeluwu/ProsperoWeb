@@ -17,7 +17,8 @@ along with this program; see the file COPYING. If not, see
 /* Derived from ps5-payload-dev/elfldr (commit 2a8da002), elfldr.h.
    Changes for ps5-browser: the spawn/exec entry points take a table of
    extra descriptors to inject at child fd 3+i (see elfldr.c), and the spawn
-   reports what happened in the child through elfldr_spawn_report_t. */
+   reports what happened in the child through elfldr_spawn_report_t, and the
+   child's environment is a parameter instead of the caller's environ. */
 
 #pragma once
 
@@ -43,10 +44,12 @@ typedef struct elfldr_spawn_report {
  * Spawn a new process that executes the given ELF image, forwarding the
  * descriptors described by fds[0..nfds) so that fds[i].parent_fd appears in
  * the child as fds[i].child_fd. argv is NUL-terminated; argv[0] becomes the
- * child's process name. Returns the child pid, or -1 on failure. report
+ * child's process name; envp (NUL-terminated) becomes its environment.
+ * Returns the child pid, or -1 on failure. report
  * (required) is filled in on success and on failure.
  **/
-pid_t elfldr_spawn_fds(char* const argv[], const struct ps5_spawn_fd_entry* fds,
+pid_t elfldr_spawn_fds(char* const argv[], char* const envp[],
+                       const struct ps5_spawn_fd_entry* fds,
                        int nfds, const uint8_t* elf, size_t elf_size,
                        elfldr_spawn_report_t* report);
 

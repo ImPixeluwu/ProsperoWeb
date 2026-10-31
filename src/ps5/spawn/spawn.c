@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Definition of the WebKit spawn contract (webkit-port/include/ps5webkit/
-// spawn.h) on top of the elfldr-derived loader. PS5 target only.
+// The in-process spawner on top of the elfldr-derived loader: used by the
+// spawn broker for every spawn, and by the UI itself in the "direct" spawn
+// mode (spawn_glue.cpp selects the mode). PS5 target only.
 
-#include "ps5browser/spawn/spawn.h"
+#include "spawn_backend.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -23,13 +24,18 @@
 
 #include "elfldr.h"
 
-// Our own ELF image, mapped (or, if mmap fails, read) once and kept for the
-// lifetime of the process. WebKit spawns auxiliary processes repeatedly, so
-// re-reading the file each time would be wasteful; a read-only private
-// mapping keeps the large image out of the UI heap.
+extern char** environ;
+
+// The ELF image being spawned (our own multi-call ELF), mapped (or, if mmap
+// fails, read) once and kept for the lifetime of the process. WebKit spawns
+// auxiliary processes repeatedly, so re-reading the file each time would be
+// wasteful; a read-only private mapping keeps the large image out of the
+// heap. One slot: a request for another path replaces it.
 static pthread_mutex_t g_image_lock = PTHREAD_MUTEX_INITIALIZER;
 static const uint8_t* g_image_bytes = NULL;
 static size_t g_image_size = 0;
+static int g_image_mapped = 0;
+static char g_image_path[1024];
 
 // Adapter: this libc declares getenv() as char*(const char*); the resolver
 // takes a const char*(const char*) lookup.
@@ -55,13 +61,25 @@ static uint8_t* read_whole_file(int fd, size_t size) {
   return bytes;
 }
 
-static int load_self_image(const char* argv0) {
-  char path[1024];
-  if (ps5_spawn_resolve_self_path(argv0, getenv_const, path, sizeof(path)) != 0) {
-    ps5_log_line("spawn: cannot resolve the self ELF path");
+static void unload_image(void) {
+  if (!g_image_bytes) {
+    return;
+  }
+  if (g_image_mapped) {
+    munmap((void*)g_image_bytes, g_image_size);
+  } else {
+    free((void*)g_image_bytes);
+  }
+  g_image_bytes = NULL;
+  g_image_size = 0;
+  g_image_path[0] = '\0';
+}
+
+static int load_image(const char* path) {
+  if (strlen(path) >= sizeof(g_image_path)) {
+    ps5_log_printf("spawn: ELF path too long: %s", path);
     return -1;
   }
-
   int fd = open(path, O_RDONLY);
   if (fd < 0) {
     ps5_log_printf("spawn: cannot open %s: %s", path, strerror(errno));
@@ -102,21 +120,25 @@ static int load_self_image(const char* argv0) {
     return -1;
   }
 
-  ps5_log_printf("spawn: self ELF %s (%zu bytes, %s), fw 0x%08x, ui pid %d",
+  ps5_log_printf("spawn: self ELF %s (%zu bytes, %s), fw 0x%08x, pid %d",
                  path, size, mapped ? "mapped" : "read",
                  (unsigned)kernel_get_fw_version(), (int)getpid());
   g_image_bytes = bytes;
   g_image_size = size;
+  g_image_mapped = mapped;
+  memcpy(g_image_path, path, strlen(path) + 1);
   return 0;
 }
 
-// Returns the cached image, loading it on first use. argv0 is only used as a
-// last-resort path hint (see ps5_spawn_resolve_self_path).
-static const uint8_t* self_image(const char* argv0, size_t* out_size) {
+// Returns the image of path, loading it on first use. Callers serialise
+// their spawns per image (one path per process in practice), so replacing
+// the slot does not pull an image from under a running spawn.
+static const uint8_t* image_for(const char* path, size_t* out_size) {
   const uint8_t* result = NULL;
   pthread_mutex_lock(&g_image_lock);
-  if (!g_image_bytes) {
-    load_self_image(argv0);
+  if (!g_image_bytes || strcmp(g_image_path, path) != 0) {
+    unload_image();
+    load_image(path);
   }
   if (g_image_bytes) {
     result = g_image_bytes;
@@ -309,29 +331,60 @@ static void log_spawn_result(const char* role, int pid, const char* fds,
                  status[0] ? ", child " : "", status, budget);
 }
 
-int ps5_spawn_self(const char* const* argv, const int* fds, int nfds) {
+int ps5_spawn_elfldr(const char* elf_path, char* const* argv, char* const* envp,
+                     const int* fds, int nfds, struct ps5_spawn_failure* failure) {
+  failure->stage = NULL;
+  failure->err = 0;
+  failure->budget_errno = 0;
+  const char* role = argv && argv[0] ? argv[0] : "(none)";
+
+  struct ps5_spawn_fd_entry table[PS5_SPAWN_MAX_FDS];
+  int ntable = ps5_spawn_build_fd_table(fds, nfds, table, PS5_SPAWN_MAX_FDS);
+  if (ntable < 0) {
+    ps5_log_printf("spawn: role=%s FAILED: invalid fd table (nfds=%d)", role, nfds);
+    failure->stage = "fd table";
+    failure->err = EINVAL;
+    return -1;
+  }
+  char fd_desc[96];
+  describe_fds(table, ntable, fd_desc, sizeof(fd_desc));
+
+  size_t image_size = 0;
+  const uint8_t* image = image_for(elf_path, &image_size);
+  if (!image) {
+    ps5_log_printf("spawn: role=%s FAILED: cannot load %s", role, elf_path);
+    failure->stage = "load ELF";
+    failure->err = ENOEXEC;
+    return -1;
+  }
+
+  elfldr_spawn_report_t report;
+  ps5_log_printf("spawn: role=%s starting, fds=[%s]", role, fd_desc);
+  const long t0 = now_ms();
+  int pid = elfldr_spawn_fds(argv, envp, table, ntable, image, image_size, &report);
+  log_spawn_result(role, pid, fd_desc, &report, now_ms() - t0);
+  failure->budget_errno = report.budget_errno;
+  if (pid <= 0) {
+    failure->stage = report.failed_stage ? report.failed_stage : "unknown stage";
+    failure->err = report.failed_errno;
+    return -1;
+  }
+  return pid;
+}
+
+int ps5_spawn_direct(const char* const* argv, const int* fds, int nfds) {
   if (!argv || !argv[0]) {
     ps5_log_line("spawn: called without a role");
     return -1;
   }
   const char* role = argv[0];
 
-  struct ps5_spawn_fd_entry table[PS5_SPAWN_MAX_FDS];
-  int ntable = ps5_spawn_build_fd_table(fds, nfds, table, PS5_SPAWN_MAX_FDS);
-  if (ntable < 0) {
-    ps5_log_printf("spawn: role=%s FAILED: invalid fd table (nfds=%d)", role, nfds);
-    return -1;
-  }
-  char fd_desc[96];
-  describe_fds(table, ntable, fd_desc, sizeof(fd_desc));
-
   // argv[0] is the child's role name, never a path: resolve the image from
   // PS5BROWSER_SELF_PATH (exported by main() from the UI's own argv[0]) or
   // the default install path.
-  size_t image_size = 0;
-  const uint8_t* image = self_image(NULL, &image_size);
-  if (!image) {
-    ps5_log_printf("spawn: role=%s FAILED: no self ELF image", role);
+  char path[1024];
+  if (ps5_spawn_resolve_self_path(NULL, getenv_const, path, sizeof(path)) != 0) {
+    ps5_log_printf("spawn: role=%s FAILED: cannot resolve the self ELF path", role);
     return -1;
   }
 
@@ -354,11 +407,8 @@ int ps5_spawn_self(const char* const* argv, const int* fds, int nfds) {
 
   int pid = -1;
   if (ok) {
-    elfldr_spawn_report_t report;
-    ps5_log_printf("spawn: role=%s starting, fds=[%s]", role, fd_desc);
-    const long t0 = now_ms();
-    pid = elfldr_spawn_fds(child_argv, table, ntable, image, image_size, &report);
-    log_spawn_result(role, pid, fd_desc, &report, now_ms() - t0);
+    struct ps5_spawn_failure failure;
+    pid = ps5_spawn_elfldr(path, child_argv, environ, fds, nfds, &failure);
   } else {
     ps5_log_printf("spawn: role=%s FAILED: out of memory", role);
   }
@@ -374,7 +424,7 @@ int ps5_spawn_self(const char* const* argv, const int* fds, int nfds) {
   return pid;
 }
 
-int ps5_terminate_process(int pid) {
+int ps5_terminate_direct(int pid) {
   if (pid <= 0) {
     return -1;
   }
