@@ -26,6 +26,7 @@ installed under `/data/ps5browser/`:
   bookmarks.json        persisted bookmarks
   cache/                network cache (WKWebsiteDataStore)
   storage/ localstorage/ indexeddb/   web storage (WKWebsiteDataStore)
+  tmp/                  TMPDIR (created at startup)
   log.txt               UI-process log (also echoed to stderr)
 ```
 
@@ -53,8 +54,9 @@ entries. Without websrv, elfldr loads it directly:
 `echo file:/data/ps5browser/ps5browser.elf | nc -q0 PS5 9021` (elfldr
 reads a raw ELF, a URI line or an HTTP GET `?uri=`, not a POST body).
 
-Environment set by the UI process before WebKit initialisation
-(`src/frontend/ps5/ps5_runtime_env.cpp`, existing values win):
+Environment set in `main()` before the role dispatch, so every process role
+gets it (`src/frontend/ps5/ps5_runtime_env.cpp`, existing values win; the UI
+then overrides `SYSTEM_LANGUAGE` from `config.json`):
 
 | Variable | Value | Read by |
 |---|---|---|
@@ -62,6 +64,8 @@ Environment set by the UI process before WebKit initialisation
 | `FONTCONFIG_PATH` | `/data/ps5browser/fonts` | fontconfig |
 | `PS5BROWSER_CA_BUNDLE` | `/data/ps5browser/cacert.pem` | curl SSL handle (NetworkProcess, patch 0004) |
 | `SYSTEM_LANGUAGE` | `en-US` / `ru-RU` from `config.json` `language` | WTF `platformUserPreferredLanguages` (patch 0006) |
+| `TMPDIR` | `/data/ps5browser/tmp` (created at startup) | temporary files |
+| `HOME` | `/data/ps5browser` | home-relative defaults |
 
 `elfldr_spawn_fds` copies the parent's `environ` into each child
 (`elfldr_set_environ`, the shsrv pattern), so the auxiliary processes see

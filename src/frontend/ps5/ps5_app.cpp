@@ -16,7 +16,7 @@ namespace ps5browser::frontend {
 
 namespace {
 
-constexpr const char* kBaseDir = "/data/ps5browser";
+constexpr const char* kBaseDir = kPs5DataDir;
 constexpr std::uint32_t kFrameMs = 16;  // ~60 Hz
 
 std::optional<core::Button> sdl_button_to_core(SDL_GameControllerButton b) {
@@ -149,9 +149,10 @@ int Ps5App::run() {
   page_buffer_.assign(static_cast<size_t>(width_) * height_, 0xFF000000u);
   chrome_buffer_.assign(static_cast<size_t>(width_) * height_, 0u);
 
-  // fontconfig, TLS roots and language for WebKit; must precede WebKit
-  // initialisation and the first auxiliary process spawn.
-  setup_runtime_env(kBaseDir, config_.language);
+  // main() set the runtime defaults for every role; the language comes from
+  // config.json and must precede WebKit initialisation and the first
+  // auxiliary process spawn (which copies the environment).
+  apply_language_env(config_.language);
 
   // WebKit main run loop (also initializes WebKit2).
   WKRunLoopInitializeMain();

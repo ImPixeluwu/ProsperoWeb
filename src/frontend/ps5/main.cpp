@@ -14,6 +14,7 @@
 
 #include "ps5webkit/entry.h"
 #include "ps5_app.h"
+#include "ps5_runtime_env.h"
 
 namespace {
 
@@ -44,6 +45,10 @@ std::string resolve_role(int argc, char** argv) {
 
 int main(int argc, char** argv) {
   std::string role = resolve_role(argc, argv);
+
+  // Before any role starts: WebProcess and NetworkProcess read fontconfig,
+  // TLS and temp-dir settings from their own environment.
+  ps5browser::frontend::setup_runtime_env(ps5browser::frontend::kPs5DataDir);
 
   if (role == "WebProcess") {
     return ps5_webkit_web_process_main(argc, argv);
