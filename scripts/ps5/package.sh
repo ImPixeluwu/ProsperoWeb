@@ -140,14 +140,18 @@ async function main() {
 }
 EOF
 
-# Home screen artwork, rendered from assets/*.svg by scripts/assets/render.sh
-# and committed. websrv shows only icon0.png; pic0/pic1 and param.json are
-# the title's identity for a native app folder (docs/store-submission.md).
-# websrv ignores them, and without an eboot.bin no mounter registers the
-# folder as a title.
+# websrv tile: only icon0.png. Do NOT put param.json or pic*.png here:
+# ShadowMountPlus scans /data/homebrew/*/sce_sys/param.json and tries to
+# install the folder as a native title, which fails without an eboot.bin and
+# leaves a "installing" title with no home-screen tile. The native-title
+# identity (param.json, backgrounds) is staged separately for a future
+# eboot.bin build under build-dist/native/PRSB00001/ (docs/store-submission.md).
+cp -- "${ROOT}"/assets/sce_sys/icon0.png "${TILE}/sce_sys/"
+NATIVE="${ROOT}/build-dist/native/sce_sys"
+mkdir -p "${NATIVE}"
 cp -- "${ROOT}"/assets/sce_sys/icon0.png "${ROOT}"/assets/sce_sys/pic0.png \
-    "${ROOT}"/assets/sce_sys/pic1.png "${TILE}/sce_sys/"
-python3 -I - "${ROOT}/assets/app.json" "${TILE}/sce_sys/param.json" <<'PY'
+    "${ROOT}"/assets/sce_sys/pic1.png "${NATIVE}/"
+python3 -I - "${ROOT}/assets/app.json" "${NATIVE}/param.json" <<'PY'
 import json, re, sys
 app = json.load(open(sys.argv[1], encoding="utf-8"))
 title_id = app["titleId"]
