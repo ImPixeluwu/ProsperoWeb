@@ -27,7 +27,7 @@ the client accepts: nothing called willEnterFullScreen(), so
 m_isFullScreen stayed false, exitFullScreen() never reached the client
 and WKViewRequestExitFullScreen() did nothing.
 diff --git a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp b/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
-index 8a0972133..108753e52 100644
+index 8a0972133..23ccee89a 100644
 --- a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
 +++ b/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.cpp
 @@ -36,6 +36,9 @@
@@ -40,7 +40,7 @@ index 8a0972133..108753e52 100644
  
  #if USE(CAIRO)
  #include <cairo.h>
-@@ -62,10 +65,28 @@ static void drawPageBackground(WebKit::PlatformPaintContextPtr ctx, const std::o
+@@ -62,9 +65,32 @@ static void drawPageBackground(WebKit::PlatformPaintContextPtr ctx, const std::o
      cairo_set_operator(ctx, CAIRO_OPERATOR_OVER);
      cairo_fill(ctx);
  #elif USE(SKIA)
@@ -52,24 +52,28 @@ index 8a0972133..108753e52 100644
      ctx->clear(SkColor(backgroundColor.value()));
 +#if defined(PS5_HOMEBREW)
 +    ctx->restore();
-+#endif
  #endif
- }
- 
++#endif
++}
++
 +#if defined(PS5_HOMEBREW)
++uint64_t WKPageGetWebPageIdentifierPlayStation(WKPageRef pageRef)
++{
++    return WebKit::toImpl(pageRef)->webPageIDInMainFrameProcess().toUInt64();
++}
++
 +void WKPageSetDrawsTransparentBackground(WKPageRef pageRef, bool transparent)
 +{
 +    std::optional<WebCore::Color> color;
 +    if (transparent)
 +        color = WebCore::Color(WebCore::Color::transparentBlack);
 +    WebKit::toImpl(pageRef)->setBackgroundColor(color);
-+}
+ }
 +#endif
-+
+ 
  void WKPageHandleKeyboardEvent(WKPageRef pageRef, WKKeyboardEvent event)
  {
-     using WebKit::NativeWebKeyboardEvent;
-@@ -74,7 +95,20 @@ void WKPageHandleKeyboardEvent(WKPageRef pageRef, WKKeyboardEvent event)
+@@ -74,7 +100,20 @@ void WKPageHandleKeyboardEvent(WKPageRef pageRef, WKKeyboardEvent event)
      wpeEvent.time = 0;
      wpeEvent.key_code = event.virtualKeyCode;
      wpeEvent.hardware_key_code = event.virtualKeyCode;
@@ -90,7 +94,7 @@ index 8a0972133..108753e52 100644
      switch (event.type) {
      case kWKEventKeyDown:
          wpeEvent.pressed = true;
-@@ -90,7 +124,16 @@ void WKPageHandleKeyboardEvent(WKPageRef pageRef, WKKeyboardEvent event)
+@@ -90,7 +129,16 @@ void WKPageHandleKeyboardEvent(WKPageRef pageRef, WKKeyboardEvent event)
      NativeWebKeyboardEvent::HandledByInputMethod handledByInputMethod = NativeWebKeyboardEvent::HandledByInputMethod::No;
      std::optional<Vector<WebCore::CompositionUnderline>> preeditUnderlines;
      std::optional<WebKit::EditingRange> preeditSelectionRange;
@@ -107,7 +111,7 @@ index 8a0972133..108753e52 100644
  }
  
  void WKPageHandleMouseEvent(WKPageRef pageRef, WKMouseEvent event)
-@@ -134,10 +177,52 @@ void WKPageHandleMouseEvent(WKPageRef pageRef, WKMouseEvent event)
+@@ -134,10 +182,52 @@ void WKPageHandleMouseEvent(WKPageRef pageRef, WKMouseEvent event)
          ASSERT_NOT_REACHED();
          return;
      }
@@ -160,7 +164,7 @@ index 8a0972133..108753e52 100644
  
      const float deviceScaleFactor = 1;
  
-@@ -153,6 +238,20 @@ void WKPageHandleWheelEvent(WKPageRef pageRef, WKWheelEvent event)
+@@ -153,6 +243,20 @@ void WKPageHandleWheelEvent(WKPageRef pageRef, WKWheelEvent event)
      int positionX = event.position.x;
      int positionY = event.position.y;
  
@@ -181,7 +185,7 @@ index 8a0972133..108753e52 100644
      struct wpe_input_axis_event xEvent = {
          wpe_input_axis_event_type_motion,
          0, positionX, positionY,
-@@ -168,6 +267,7 @@ void WKPageHandleWheelEvent(WKPageRef pageRef, WKWheelEvent event)
+@@ -168,6 +272,7 @@ void WKPageHandleWheelEvent(WKPageRef pageRef, WKWheelEvent event)
      };
  
      WebKit::toImpl(pageRef)->handleNativeWheelEvent(NativeWebWheelEvent::create(&yEvent, deviceScaleFactor, WebWheelEvent::Phase::None, WebWheelEvent::Phase::None));
@@ -190,10 +194,10 @@ index 8a0972133..108753e52 100644
  
  void WKPagePaint(WKPageRef pageRef, unsigned char* surfaceData, WKSize wkSurfaceSize, WKRect wkPaintRect)
 diff --git a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.h b/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.h
-index 674924662..74ea890ea 100644
+index 674924662..96fc98abe 100644
 --- a/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.h
 +++ b/Source/WebKit/UIProcess/API/C/playstation/WKPagePrivatePlayStation.h
-@@ -38,6 +38,11 @@ WK_EXPORT void WKPageHandleWheelEvent(WKPageRef, WKWheelEvent);
+@@ -38,6 +38,16 @@ WK_EXPORT void WKPageHandleWheelEvent(WKPageRef, WKWheelEvent);
  
  WK_EXPORT void WKPagePaint(WKPageRef, unsigned char* cairoSurfaceARGB32Data, WKSize surfaceSize, WKRect paintRect);
  
@@ -201,6 +205,11 @@ index 674924662..74ea890ea 100644
 +// default opaque white (the C counterpart of drawsBackground = NO). Pixels the
 +// page does not paint keep alpha 0 in WKPagePaint's output.
 +WK_EXPORT void WKPageSetDrawsTransparentBackground(WKPageRef, bool transparent);
++
++// PS5 port: the page's identifier in its web process (WebCore's
++// PageIdentifier), so the embedder can match what that process reports about
++// the page (the video overlay tags its players with it). 0 when unknown.
++WK_EXPORT uint64_t WKPageGetWebPageIdentifierPlayStation(WKPageRef);
 +
  #ifdef __cplusplus
  }
