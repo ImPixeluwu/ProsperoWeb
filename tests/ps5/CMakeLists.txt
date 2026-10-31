@@ -4,9 +4,10 @@ add_executable(ps5browser_ps5_tests
   test_spawn_broker.cpp
   test_audio_server.cpp
   test_display.cpp
+  test_video_overlay.cpp
 )
 target_link_libraries(ps5browser_ps5_tests PRIVATE ps5browser::spawn_util
-  ps5browser::spawn_broker ps5browser::audio_server ps5browser::display ps5browser_warnings)
+  ps5browser::spawn_broker ps5browser::audio_server ps5browser::display ps5browser::video_server ps5browser_warnings)
 target_include_directories(ps5browser_ps5_tests SYSTEM PRIVATE "${PS5BROWSER_THIRD_PARTY_DIR}")
 
 add_test(NAME ps5.spawn_util
@@ -20,3 +21,6 @@ add_test(NAME ps5.audio_server
 add_test(NAME ps5.display
          COMMAND ps5browser_ps5_tests
                  --test-suite=display_region,display_pixels,display_stats --no-version)
+add_test(NAME ps5.video_overlay
+         COMMAND ps5browser_ps5_tests
+                 --test-suite=video_wire,video_geometry,video_scale,video_compose,video_e2e --no-version)
