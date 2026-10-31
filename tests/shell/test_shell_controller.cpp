@@ -414,6 +414,140 @@ TEST_SUITE("shell.osk") {
   }
 }
 
+TEST_SUITE("shell.osk.caret") {
+  // Opens the address OSK on kHome ("https://home.example/", 21 chars).
+  void open_address_osk(Fixture& f) {
+    f.make();
+    f.press(Button::Triangle);
+    f.frame();
+    REQUIRE(f.shell->focus() == Focus::Osk);
+  }
+
+  TEST_CASE("the caret starts at the end and is published as caret_index") {
+    Fixture f;
+    open_address_osk(f);
+    CHECK(f.chrome.last["osk"]["caret_index"] == 21);
+    f.press(Button::L1);
+    f.press(Button::L1);
+    f.frame();
+    CHECK(f.chrome.last["osk"]["caret_index"] == 19);
+    f.press(Button::R1);
+    f.frame();
+    CHECK(f.chrome.last["osk"]["caret_index"] == 20);
+    CHECK(f.chrome.last["osk"]["cursor"]["row"] == 0);  // key grid untouched
+  }
+
+  TEST_CASE("typing at the caret edits the middle of the address") {
+    Fixture f;
+    open_address_osk(f);
+    for (int i = 0; i < 8; ++i) f.press(Button::L1);  // after "https://home."
+    f.press(Button::Square);                           // drops the "."
+    f.frame();
+    CHECK(f.chrome.last["osk"]["text"] == "https://homeexample/");
+    CHECK(f.chrome.last["osk"]["caret_index"] == 12);
+    f.shell->on_chrome_event({{"type", "osk_key"}, {"row", 3}, {"col", 8}});  // "."
+    f.frame();
+    CHECK(f.chrome.last["osk"]["text"] == "https://home.example/");
+    CHECK(f.chrome.last["osk"]["caret_index"] == 13);
+    CHECK(f.chrome.last["address"]["text"] == "https://home.example/");
+  }
+
+  TEST_CASE("Touchpad switches the layout and the OSK rows show the new keys") {
+    Fixture f;
+    open_address_osk(f);
+    f.press(Button::Touchpad);
+    f.frame();
+    CHECK(f.chrome.last["osk"]["layout"] == "symbols");
+    const auto& special = f.chrome.last["osk"]["rows"][4];
+    REQUIRE(special.size() == 8);
+    CHECK(special[2]["code"] == "clear");
+    CHECK(special[3]["code"] == "left");
+    CHECK(special[5]["code"] == "right");
+    f.press(Button::L2);
+    f.frame();
+    CHECK(f.chrome.last["osk"]["shift"] == true);
+  }
+
+  TEST_CASE("the Clear key empties the address in one press") {
+    Fixture f;
+    open_address_osk(f);
+    f.shell->on_chrome_event({{"type", "osk_key"}, {"row", 4}, {"col", 2}});
+    f.frame();
+    CHECK(f.chrome.last["osk"]["text"] == "");
+    CHECK(f.chrome.last["osk"]["caret_index"] == 0);
+  }
+
+  TEST_CASE("holding Square repeats Backspace after 350 ms, every 50 ms") {
+    Fixture f;
+    open_address_osk(f);
+    f.shell->on_button(Button::Square, true);
+    CHECK(f.shell->osk().text().size() == 20);  // fires once on press
+    f.frame(0.34f);
+    CHECK(f.shell->osk().text().size() == 20);  // still inside the delay
+    f.frame(0.02f);                               // 360 ms
+    CHECK(f.shell->osk().text().size() == 19);
+    f.frame(0.1f);  // 460 ms: repeats at 400 and 450
+    CHECK(f.shell->osk().text().size() == 17);
+    f.shell->on_button(Button::Square, false);
+    f.frame(0.5f);
+    CHECK(f.shell->osk().text().size() == 17);  // release stops the repeat
+  }
+
+  TEST_CASE("a long Square hold deletes faster but never clears everything") {
+    Fixture f;
+    f.make();
+    f.press(Button::Square);  // page-field OSK
+    REQUIRE(f.shell->focus() == Focus::Osk);
+    for (int i = 0; i < 80; ++i) f.press(Button::Triangle);  // 80 spaces
+    REQUIRE(f.shell->osk().text().size() == 80);
+    f.shell->on_button(Button::Square, true);
+    for (int i = 0; i < 100; ++i) f.frame(0.02f);  // 2 s
+    const auto left = f.shell->osk().text().size();
+    CHECK(left > 30);   // 1 + (2000 - 350) / 50 + 1 = 35 deleted
+    CHECK(left < 50);
+    f.shell->on_button(Button::Square, false);
+  }
+
+  TEST_CASE("holding L1 or R1 repeats caret moves") {
+    Fixture f;
+    open_address_osk(f);
+    f.shell->on_button(Button::L1, true);
+    f.frame(0.42f);  // press + repeats at 350 and 400
+    f.shell->on_button(Button::L1, false);
+    CHECK(f.shell->osk().caret() == 18);
+    f.shell->on_button(Button::R1, true);
+    f.frame(0.36f);  // press + repeat at 350
+    f.shell->on_button(Button::R1, false);
+    CHECK(f.shell->osk().caret() == 20);
+  }
+
+  TEST_CASE("holding the D-pad repeats key-grid moves at the OSK rate") {
+    Fixture f;
+    open_address_osk(f);
+    f.shell->on_button(Button::Right, true);
+    CHECK(f.shell->osk().cursor().col == 1);
+    f.frame(0.3f);
+    CHECK(f.shell->osk().cursor().col == 1);  // OSK delay is 350 ms, not 300
+    f.frame(0.11f);                            // 410 ms: repeats at 350 and 400
+    CHECK(f.shell->osk().cursor().col == 3);
+    f.shell->on_button(Button::Right, false);
+    f.frame(0.2f);
+    CHECK(f.shell->osk().cursor().col == 3);
+  }
+
+  TEST_CASE("closing the OSK while a key is held stops the repeat") {
+    Fixture f;
+    open_address_osk(f);
+    f.shell->on_button(Button::Square, true);
+    f.press(Button::Circle);  // cancel
+    CHECK(f.shell->focus() == Focus::Page);
+    const auto calls = f.view(0).calls.size();
+    f.frame(1.0f);
+    CHECK(f.view(0).calls.size() == calls);  // no scrolls or other page actions
+    f.shell->on_button(Button::Square, false);
+  }
+}
+
 TEST_SUITE("shell.fullscreen") {
   TEST_CASE("R3 hides and shows the chrome and resizes the view") {
     Fixture f;
