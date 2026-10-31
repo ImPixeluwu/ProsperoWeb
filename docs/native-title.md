@@ -151,6 +151,14 @@ Two findings:
 
 Also: `PROSPEROWEB_HWDEC`/`PROSPEROWEB_VIDEO_DECODE` from `config.json` are now read before the start-up probe (they were applied only after it).
 
+## Fourth console run (run 17)
+
+The IPC self-test passed completely (SEQPACKET end copied into the broker with rdup, data both ways, `SCM_RIGHTS` with `shm_open(SHM_ANON)` memory both ways, mapped and read). Each child's fd 3 was a `SOCK_SEQPACKET` AF_UNIX socket with **nothing waiting** after 2 and 10 s: the UI's WebKit never sent the children a message. The NetworkProcess returned after about 20 s. `access(R_OK)` on `/app0/data/chrome/chrome.html` answered EPERM; `access` has always come from libkernel (it is not in `libc.a`'s `syscalls.o`), so the title's kernel refuses that call rather than the libc mapping.
+
+For run 18 the title wraps `access()` to fall back to `stat()`/`open()` on EPERM (`native/native_trace.c`), logs a file self-test (`file selftest: ...`: stat, access, open+read, fopen, `sceKernelOpen`/`sceKernelStat`, opendir, getcwd under `/app0`, the install folder and the profile), traces WebKit's `socketpair`/`sendmsg`/`recvmsg`/`select` calls (`trace: ...`, the first 64 of each and every failure), sends WebKit's stderr to `/data/prosperoweb/stderr-ui.txt`, and checks every 5 s whether the WebKit main run loop runs posted work (`main loop: heartbeat ...`); the launcher completes each child's launch on that loop (`ProcessLauncherPlayStation.cpp`, `RunLoop::mainSingleton().dispatch(... didFinishLaunchingProcess ...)`).
+
+elfldr closing port 9021 after the broker launch is not by design: its `main()` loops `serve_elfldr(port); sleep(3);` forever (`socksrv.c` at `2a8da002`). But for a `file:` URI it reads the whole file into its own heap first (`uri.c` `path_read`: `malloc(size)` + `fread`), 176 MB for `prosperoweb.elf`, which is a plausible way to kill it. The launcher already falls back to websrv; a small broker-only payload would spare elfldr that load.
+
 ## Not verified on hardware
 
 Everything above links, converts, signs and passes the import and syscall checks; none of it has run on a console yet. The open questions, most likely first:
