@@ -28,6 +28,7 @@ if(PS5)
   add_library(prosperobrowser_spawn STATIC
     spawn.c
     spawn_glue.cpp
+    cpuset_assign_ps5.cpp
     elfldr.c
     pt.c
   )
@@ -41,6 +42,10 @@ if(PS5)
   target_compile_features(prosperobrowser_spawn PUBLIC c_std_11 cxx_std_20)
   # elfldr.c/pt.c are vendored C; do not force -Werror on third-party code.
   target_compile_options(prosperobrowser_spawn PRIVATE -Wall)
-  set_source_files_properties(spawn_glue.cpp PROPERTIES COMPILE_OPTIONS "-Wextra;-Werror")
-  target_link_libraries(prosperobrowser_spawn PUBLIC prosperobrowser::spawn_util prosperobrowser::spawn_broker)
+  # Our own sources keep the strict warnings.
+  set_source_files_properties(spawn_glue.cpp cpuset_assign_ps5.cpp
+    PROPERTIES COMPILE_OPTIONS "-Wextra;-Werror")
+  target_link_libraries(prosperobrowser_spawn
+    PUBLIC prosperobrowser::spawn_util prosperobrowser::spawn_broker
+    PRIVATE prosperobrowser::cpu)
 endif()

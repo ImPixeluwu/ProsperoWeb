@@ -22,6 +22,7 @@
 
 #include <ps5/kernel.h>
 
+#include "cpuset_assign_ps5.h"
 #include "elfldr.h"
 
 extern char** environ;
@@ -373,6 +374,10 @@ int ps5_spawn_elfldr(const char* elf_path, char* const* argv, char* const* envp,
     failure->err = report.failed_errno;
     return -1;
   }
+
+  // The child started in the console's system cpuset (9,11,13-15); move it
+  // onto the UI's app cores (src_pid is the UI). Best-effort, non-fatal.
+  ps5_cpuset_assign_child(pid, src_pid);
   return pid;
 }
 

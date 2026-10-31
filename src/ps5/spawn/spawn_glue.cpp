@@ -30,6 +30,7 @@
 #include "broker_client.h"
 #include "broker_proto.h"
 #include "broker_server.h"
+#include "cpuset_assign_ps5.h"
 #include "spawn_backend.h"
 
 extern char** environ;
@@ -415,6 +416,10 @@ extern "C" int ps5_spawn_broker_main(void) {
     }
   }
   std::signal(SIGPIPE, SIG_DFL);
+
+  // The broker itself started in the system cpuset; widen it to the root set
+  // (no UI process to join yet). Best-effort, non-fatal.
+  ps5_cpuset_assign_child(getpid(), 0);
 
   struct sigaction sa {};
   sa.sa_handler = on_sigterm;

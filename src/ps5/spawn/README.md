@@ -191,6 +191,31 @@ The result is logged for every spawn, e.g.
 Whether the inherited big-app budget gives WebProcess enough memory is
 still to be confirmed on the console.
 
+## CPU placement
+
+Children spawned elfldr-style (the broker, and from it WebProcess and
+NetworkProcess) land in the console's system cpuset `9,11,13-15` (5 logical
+CPUs), while the UI big app runs on the app cores `0-12`. An unprivileged
+process cannot move itself out: `cpuset_setaffinity` returns `EPERM` at the
+kernel's `priv_check(PRIV_SCHED_CPUSET)`, and `cpuset_setid` fails likewise.
+This starves the WebProcess media decoder (ffmpeg, 6 threads) and drops
+frames.
+
+The broker already holds kernel read/write (elfldr). After a child starts it
+raises its *own* credentials to uid 0 with full capabilities
+(`cpuset_assign_ps5.cpp`), which makes the priv check pass, then as a
+privileged caller moves the child onto the app cores: it joins the child to
+the UI's cpuset (`cpuset_setid`, the UI's id from
+`cpuset_getid(CPU_LEVEL_CPUSET, …, ui_pid)`) and/or widens the child's mask
+(`cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID, …)`), then restores its
+own credentials. The decision (which mechanism, which mask, clipped to the
+root set) is portable code in `src/ps5/cpu/cpuset_assign.{h,cpp}`, covered by
+the host tests; the syscalls are here. `PROSPEROBROWSER_CHILD_CPU` selects the
+mechanism (`off`/`0`, `setid`, `mask`, default auto). The broker also widens
+itself to the root set at start-up. Every attempt is logged with its errno:
+
+    cpu: child pid 1120 ui pid 1000 -> cpuset id 3: ok; mask 0x1fff: skipped | before 9,11,13-15 (0xea00), after 0-12 (0x1fff) | join ui set
+
 ## Logging
 
 `spawn.c` writes through `ps5_log_line()`/`ps5_log_printf()` (declared in
