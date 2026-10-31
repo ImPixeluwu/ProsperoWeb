@@ -182,6 +182,7 @@ if(PROSPEROWEB_NATIVE_TITLE_TARGET)
   add_library(prosperoweb_native_runtime OBJECT
     native/native_crt.cpp
     native/native_runtime.c
+    native/native_libc.c
     native/native_trace.c
     native/native_memory.c
     native/native_title.c)

@@ -44,6 +44,7 @@ int sceKernelMkdir(const char* path, int mode);
 int sceKernelLoadStartModule(const char* path, std::size_t args, const void* argp,
                              std::uint32_t flags, void* option, int* result);
 int sceKernelDlsym(int handle, const char* symbol, void** address);
+void native_libc_init(void);  // src/frontend/ps5/native/native_libc.c
 
 extern Initializer __preinit_array_start[] __attribute__((weak));
 extern Initializer __preinit_array_end[] __attribute__((weak));
@@ -377,6 +378,8 @@ extern "C" [[noreturn]] __attribute__((visibility("default"))) void _start(
 
   _init_env(process_parameters);
   say("[prosperoweb] crt: _init_env done\n");
+  native_libc_init();
+  say("[prosperoweb] crt: native libc stdio bound\n");
   if (loader_teardown != nullptr) {
     (void)atexit(loader_teardown);
   }

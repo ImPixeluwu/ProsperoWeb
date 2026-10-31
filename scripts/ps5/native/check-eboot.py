@@ -227,6 +227,12 @@ def main():
                          if nid(name) not in surface)
         print(f"libSceLibcInternal imports not exported by sce_module/libc.prx: {len(outside)}"
               + (": " + " ".join(outside) if outside else ""))
+        if outside:
+            # The companion libc.prx shadows these with a wrong entry, so the
+            # call jumps into garbage (console run 18). They must be defined
+            # in the title instead (src/frontend/ps5/native/native_libc.c).
+            ok = False
+            print("ERROR: define these in the title; libc.prx does not export them")
     if unresolved:
         ok = False
         print("ERROR: imports no stub exports: " + " ".join(unresolved))
