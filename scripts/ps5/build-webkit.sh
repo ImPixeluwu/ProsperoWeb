@@ -3,11 +3,13 @@
 #
 # Cross-build the WebKit PlayStation port for the PS5 payload SDK.
 #
-#   scripts/ps5/build-webkit.sh <configure|wtf|jsc|webcore|webkit|package|all>
+#   scripts/ps5/build-webkit.sh <configure|wtf|jsc|webcore|webkit|package|smoke|all>
 #
 # "package" bundles every object of bmalloc, WTF, JavaScriptCore, PAL,
 # WebCore and WebKit (OBJECT libraries upstream, so CMake never archives
 # them) into ${WEBKIT_BUILD_DIR}/lib/libWebKitPS5.a for the shell's link.
+# "smoke" links webkit-port/smoke/wk_smoke.cpp with the link line documented
+# in webkit-port/README.md (built, never run).
 #
 # Environment:
 #   PS5_PAYLOAD_SDK   SDK root                        (/opt/ps5-payload-sdk)
@@ -132,22 +134,45 @@ package() {
     ls -l "${out}"
 }
 
+smoke() {
+    require_deps
+    local out="${BUILD}/smoke"
+    mkdir -p "${out}"
+    "${PORT_DIR}/toolchain/ps5-clang++" -std=c++23 -O2 -g0 \
+        -I"${BUILD}/WebKit/Headers" -I"${PORT_DIR}/include" -I"${PREFIX}/include/wpe-1.0" \
+        -c "${PORT_DIR}/smoke/wk_smoke.cpp" -o "${out}/wk_smoke.o"
+    # Keep in sync with "Link contract" in webkit-port/README.md.
+    "${PORT_DIR}/toolchain/ps5-clang++" -Wl,--gc-sections -o "${out}/wk_smoke.elf" "${out}/wk_smoke.o" \
+        "${BUILD}/lib/libWebKitPS5.a" "${BUILD}/lib/libSkia.a" \
+        "${STUBS_BUILD}/libEGL.a" "${STUBS_BUILD}/libGLESv2.a" \
+        "${PREFIX}/lib/libwpe-1.0.a" "${PREFIX}/lib/libxkbcommon.a" \
+        "${PREFIX}/lib/libharfbuzz-icu.a" "${PREFIX}/lib/libharfbuzz.a" "${PREFIX}/lib/libfreetype.a" \
+        "${PREFIX}/lib/libbrotlidec.a" "${PREFIX}/lib/libbrotlicommon.a" \
+        "${PREFIX}/lib/libicui18n.a" "${PREFIX}/lib/libicuuc.a" "${PREFIX}/lib/libicudata.a" \
+        -lcurl -lpsl -lssl -lcrypto -lzstd -lxml2 -liconv -lsqlite3 -lfontconfig -lexpat \
+        -lpng16 -ljpeg -lwebpdemux -lwebp -lsharpyuv -lz -lm -lpthread
+    file "${out}/wk_smoke.elf"
+    ls -l "${out}/wk_smoke.elf"
+}
+
 stage="${1:-}"
 case "${stage}" in
     configure) configure ;;
     wtf)       build WTF bmalloc ;;
     jsc)       build jsc ;;
     webcore)   build PAL Skia WebCore WebCoreDOMAndRendering WebCoreInspector WebCoreJSBindings WebCoreStyle ;;
-    webkit)    build WebKit ;;
+    webkit)    build WebKit WebKitShared WebKitUIProcess WebKitWebProcess WebKitNetworkProcess WebKitGPUProcess ;;
     package)   package ;;
+    smoke)     smoke ;;
     all)
         require_deps
         configure
         build WTF bmalloc
         build jsc
         build PAL Skia WebCore WebCoreDOMAndRendering WebCoreInspector WebCoreJSBindings WebCoreStyle
-        build WebKit
+        build WebKit WebKitShared WebKitUIProcess WebKitWebProcess WebKitNetworkProcess WebKitGPUProcess
         package
+        smoke
         ;;
-    *) die "usage: $0 <configure|wtf|jsc|webcore|webkit|package|all>" ;;
+    *) die "usage: $0 <configure|wtf|jsc|webcore|webkit|package|smoke|all>" ;;
 esac

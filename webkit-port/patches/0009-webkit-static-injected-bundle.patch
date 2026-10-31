@@ -1,0 +1,50 @@
+Subject: WebKit: statically linked injected bundle for PS5_HOMEBREW
+
+InjectedBundlePlayStation.cpp loads bundles with Sony's library-bundle.h.
+The homebrew build has no loadable libraries, so resolve
+WKBundleInitialize as a weak symbol of the executable instead: the shell
+may define it, and enables it by setting any non-empty injected bundle
+path. Without a definition, bundle initialization fails as before when
+the library is missing.
+diff --git a/Source/WebKit/WebProcess/InjectedBundle/playstation/InjectedBundlePlayStation.cpp b/Source/WebKit/WebProcess/InjectedBundle/playstation/InjectedBundlePlayStation.cpp
+index 908624f67..676cf4550 100644
+--- a/Source/WebKit/WebProcess/InjectedBundle/playstation/InjectedBundlePlayStation.cpp
++++ b/Source/WebKit/WebProcess/InjectedBundle/playstation/InjectedBundlePlayStation.cpp
+@@ -28,12 +28,29 @@
+ 
+ #include "WKBundleAPICast.h"
+ #include "WKBundleInitialize.h"
++#if defined(PS5_HOMEBREW)
++// The homebrew build cannot load bundles from separate libraries. An
++// injected bundle is instead linked into the executable: define
++// extern "C" void WKBundleInitialize(WKBundleRef, WKTypeRef) there and set a
++// non-empty injected bundle path in the context configuration to enable it.
++extern "C" void WKBundleInitialize(WKBundleRef, WKTypeRef) __attribute__((weak));
++#else
+ #include "library-bundle.h"
++#endif
+ 
+ namespace WebKit {
+ 
+ bool InjectedBundle::initialize(const WebProcessCreationParameters& parameters, RefPtr<API::Object>&& initializationUserData)
+ {
++#if defined(PS5_HOMEBREW)
++    UNUSED_PARAM(parameters);
++    if (!WKBundleInitialize) {
++        printf("InjectedBundle: no statically linked WKBundleInitialize\n");
++        return false;
++    }
++    WKBundleInitialize(toAPI(this), toAPI(initializationUserData.get()));
++    return true;
++#else
+     auto bundle = LibraryBundle::create(m_path.utf8().legacyCStringPointer());
+     m_platformBundle = bundle;
+     if (!m_platformBundle) {
+@@ -47,6 +64,7 @@ bool InjectedBundle::initialize(const WebProcessCreationParameters& parameters,
+     }
+     initializeFunction(toAPI(this), toAPI(initializationUserData.get()));
+     return true;
++#endif
+ }
+ 
+ void InjectedBundle::setBundleParameter(WTF::String const&, std::span<const uint8_t>)

@@ -1,0 +1,68 @@
+Subject: WebCore: out-of-line TimingFunction destructors for PS5_HOMEBREW
+
+With clang 18 targeting x86_64-sie-ps5, the vtables of
+Linear/Steps/SpringTimingFunction reference their implicit complete
+object destructors (D1), but no translation unit emits them, so the
+final link fails with undefined WebCore::*TimingFunction::~*(). Declare
+the destructors in the header and define them (= default) in
+TimingFunction.cpp.
+diff --git a/Source/WebCore/platform/animation/TimingFunction.cpp b/Source/WebCore/platform/animation/TimingFunction.cpp
+index 2ec1d097e..1ef10ef49 100644
+--- a/Source/WebCore/platform/animation/TimingFunction.cpp
++++ b/Source/WebCore/platform/animation/TimingFunction.cpp
+@@ -33,6 +33,12 @@
+ 
+ namespace WebCore {
+ 
++#if defined(PS5_HOMEBREW)
++LinearTimingFunction::~LinearTimingFunction() = default;
++StepsTimingFunction::~StepsTimingFunction() = default;
++SpringTimingFunction::~SpringTimingFunction() = default;
++#endif
++
+ TextStream& operator<<(TextStream& ts, const TimingFunction& timingFunction)
+ {
+     switch (timingFunction.type()) {
+diff --git a/Source/WebCore/platform/animation/TimingFunction.h b/Source/WebCore/platform/animation/TimingFunction.h
+index 95651669f..cb4a94b60 100644
+--- a/Source/WebCore/platform/animation/TimingFunction.h
++++ b/Source/WebCore/platform/animation/TimingFunction.h
+@@ -58,6 +58,12 @@ public:
+ 
+ class LinearTimingFunction final : public TimingFunction {
+ public:
++#if defined(PS5_HOMEBREW)
++    // Defined out of line: clang 18 for the PS5 target does not emit the
++    // implicit destructor that the inline vtable references.
++    ~LinearTimingFunction();
++#endif
++
+     struct Point {
+         double value;
+         double progress;
+@@ -188,6 +194,12 @@ private:
+ 
+ class StepsTimingFunction final : public TimingFunction {
+ public:
++#if defined(PS5_HOMEBREW)
++    // Defined out of line: clang 18 for the PS5 target does not emit the
++    // implicit destructor that the inline vtable references.
++    ~StepsTimingFunction();
++#endif
++
+     enum class StepPosition : uint8_t {
+         JumpStart,
+         JumpEnd,
+@@ -247,6 +259,12 @@ private:
+ 
+ class SpringTimingFunction final : public TimingFunction {
+ public:
++#if defined(PS5_HOMEBREW)
++    // Defined out of line: clang 18 for the PS5 target does not emit the
++    // implicit destructor that the inline vtable references.
++    ~SpringTimingFunction();
++#endif
++
+     static Ref<SpringTimingFunction> create(double mass, double stiffness, double damping, double initialVelocity)
+     {
+         return adoptRef(*new SpringTimingFunction(mass, stiffness, damping, initialVelocity));

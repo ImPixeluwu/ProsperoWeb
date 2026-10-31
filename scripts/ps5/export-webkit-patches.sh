@@ -22,6 +22,8 @@ TOPICS=(
     "0006-wtf-payload-sdk-compat|Source/WTF/wtf/Compiler.h Source/WTF/wtf/AvailableMemory.cpp Source/WTF/wtf/RAMSize.cpp Source/WTF/wtf/unix/MemoryPressureHandlerUnix.cpp Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp Source/WTF/wtf/playstation/LanguagePlayStation.cpp"
     "0007-webcore-playstation-build-fixes|Source/WebCore/platform/graphics/skia/PlatformDisplaySkia.cpp Source/WebCore/platform/network/DNS.cpp Source/WebCore/page/Page.cpp"
     "0008-skia-freebsd-malloc-usable-size|Source/ThirdParty/skia/src/ports/SkMemory_malloc.cpp"
+    "0009-webkit-static-injected-bundle|Source/WebKit/WebProcess/InjectedBundle/playstation/InjectedBundlePlayStation.cpp"
+    "0010-webcore-timing-function-destructors|Source/WebCore/platform/animation/TimingFunction.h Source/WebCore/platform/animation/TimingFunction.cpp"
 )
 
 mkdir -p "${PATCH_DIR}"
