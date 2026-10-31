@@ -46,6 +46,9 @@ class ShellController {
   // Tabs and history are saved at most this long after they change, so a
   // console app kill (PS button, crash) loses little; shutdown() saves too.
   static constexpr float kSessionSaveDelaySeconds = 5.0f;
+  // Auto-repeat of held OSK buttons (D-pad key moves, Square, L1/R1).
+  static constexpr std::uint32_t kOskRepeatDelayMs = 350;
+  static constexpr std::uint32_t kOskRepeatIntervalMs = 50;
 
   struct Config {
     int width = 1920;
@@ -224,6 +227,8 @@ class ShellController {
   void toggle_fullscreen();
   void exit_fullscreen();
   void set_focus(Focus focus);
+  void stop_repeat();
+  core::RepeatTimer& held_timer() { return held_in_osk_ ? osk_repeat_ : repeat_; }
 
   std::int64_t now() const;
   core::Language language() const;
@@ -242,6 +247,7 @@ class ShellController {
   core::GamepadMapper mapper_;
   core::PointerModel pointer_;
   core::RepeatTimer repeat_;
+  core::RepeatTimer osk_repeat_{kOskRepeatDelayMs, kOskRepeatIntervalMs};
   core::OnScreenKeyboard osk_;
   core::FullscreenController fullscreen_;
   core::DrmPolicy drm_;
@@ -260,8 +266,9 @@ class ShellController {
   std::optional<Notice> notice_;
   std::optional<PendingNavigation> pending_nav_;
 
-  // Held button for auto-repeat.
+  // Held button for auto-repeat; held_in_osk_ selects osk_repeat_.
   std::optional<core::Button> held_button_;
+  bool held_in_osk_ = false;
   float repeat_carry_ms_ = 0.0f;
 
   float sticks_[4] = {0, 0, 0, 0};

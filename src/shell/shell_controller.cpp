@@ -82,6 +82,12 @@ bool is_direction(Button b) {
   return b == Button::Up || b == Button::Down || b == Button::Left || b == Button::Right;
 }
 
+// OSK buttons that repeat while held: key-grid moves, Backspace and the
+// caret. Holding Square only deletes faster; clearing stays an explicit key.
+bool is_osk_repeatable(Button b) {
+  return is_direction(b) || b == Button::Square || b == Button::L1 || b == Button::R1;
+}
+
 }  // namespace
 
 // Forwards engine callbacks of one tab to the controller, tagged with the
@@ -468,8 +474,7 @@ core::Mode ShellController::mode() const {
 void ShellController::on_button(Button button, bool pressed) {
   if (!pressed) {
     if (held_button_ == button) {
-      held_button_.reset();
-      repeat_.release();
+      stop_repeat();
     }
     return;
   }
@@ -477,10 +482,13 @@ void ShellController::on_button(Button button, bool pressed) {
     handle_notice_button(button);
     return;
   }
-  if (is_direction(button)) {
+  const bool in_osk = mode() == Mode::Osk;
+  if (in_osk ? is_osk_repeatable(button) : is_direction(button)) {
+    stop_repeat();
     held_button_ = button;
+    held_in_osk_ = in_osk;
     repeat_carry_ms_ = 0.0f;
-    repeat_.press();
+    held_timer().press();
   }
   run_action(mapper_.map(button, true, mode()));
 }
@@ -512,7 +520,7 @@ void ShellController::tick(float dt_seconds) {
     repeat_carry_ms_ += dt_seconds * 1000.0f;
     const auto whole = static_cast<std::uint32_t>(repeat_carry_ms_);
     repeat_carry_ms_ -= static_cast<float>(whole);
-    const std::uint32_t fires = repeat_.update(whole);
+    const std::uint32_t fires = held_timer().update(whole);
     for (std::uint32_t i = 0; i < fires && held_button_ && focus_ != Focus::Notice; ++i) {
       run_action(mapper_.map(*held_button_, true, mode()));
     }
@@ -748,10 +756,15 @@ void ShellController::handle_notice_button(Button button) {
 void ShellController::set_focus(Focus focus) {
   if (focus_ != focus) {
     focus_ = focus;
-    held_button_.reset();
-    repeat_.release();
+    stop_repeat();
     mark_dirty();
   }
+}
+
+void ShellController::stop_repeat() {
+  held_button_.reset();
+  repeat_.release();
+  osk_repeat_.release();
 }
 
 void ShellController::open_osk(OskTarget target, const std::string& text) {
@@ -892,8 +905,7 @@ void ShellController::show_notice(Notice notice) {
   }
   notice_ = std::move(notice);
   focus_ = Focus::Notice;
-  held_button_.reset();
-  repeat_.release();
+  stop_repeat();
   mark_dirty();
 }
 
