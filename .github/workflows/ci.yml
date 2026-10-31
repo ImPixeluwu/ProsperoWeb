@@ -250,6 +250,8 @@ jobs:
             -D"${CMAKE_OPTION_PREFIX}_FRONTEND=ps5" -D"${CMAKE_OPTION_PREFIX}_BUILD_TESTS=OFF" \
             -DCMAKE_BUILD_TYPE=Release
           scripts/ci/timed.sh "Frontend link" cmake --build build-ps5 -j"${JOBS}" --target "${APP_NAME}"
+          # The same frontend linked as the native title's eboot (docs/native-title.md).
+          scripts/ci/timed.sh "Native link" cmake --build build-ps5 -j"${JOBS}" --target "${APP_NAME}_native"
 
       - name: Package
         env:
@@ -286,7 +288,8 @@ jobs:
           if [[ ! -f build-dist/assets/background-3840x2160.png ]]; then
             scripts/ci/timed.sh "Render assets" scripts/assets/render.sh
           fi
-          scripts/ci/timed.sh "Native title" scripts/ps5/native/make-title.sh
+          # The real browser eboot is required here: no loader-stub fallback.
+          NATIVE_ALLOW_STUB=0 scripts/ci/timed.sh "Native title" scripts/ps5/native/make-title.sh
           zip_name="${NATIVE_TITLE_ID}.zip"
           [[ -f "build-dist/${zip_name}" ]] \
             || { echo "::error::build-dist/${zip_name} not found; is NATIVE_TITLE_ID current?"; ls build-dist; exit 1; }
