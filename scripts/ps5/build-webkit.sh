@@ -3,7 +3,11 @@
 #
 # Cross-build the WebKit PlayStation port for the PS5 payload SDK.
 #
-#   scripts/ps5/build-webkit.sh <configure|wtf|jsc|webcore|webkit|all>
+#   scripts/ps5/build-webkit.sh <configure|wtf|jsc|webcore|webkit|package|all>
+#
+# "package" bundles every object of bmalloc, WTF, JavaScriptCore, PAL,
+# WebCore and WebKit (OBJECT libraries upstream, so CMake never archives
+# them) into ${WEBKIT_BUILD_DIR}/lib/libWebKitPS5.a for the shell's link.
 #
 # Environment:
 #   PS5_PAYLOAD_SDK   SDK root                        (/opt/ps5-payload-sdk)
@@ -101,6 +105,32 @@ build() {
     ninja -C "${BUILD}" -j"${JOBS}" "$@"
 }
 
+package() {
+    require_deps
+    local out="${BUILD}/lib/libWebKitPS5.a" list="${BUILD}/lib/libWebKitPS5.objects"
+    local dirs=()
+    local d
+    for d in \
+        Source/bmalloc/CMakeFiles/bmalloc.dir \
+        Source/WTF/wtf/CMakeFiles/WTF.dir \
+        Source/JavaScriptCore/CMakeFiles/JavaScriptCore.dir \
+        Source/JavaScriptCore/CMakeFiles/JavaScriptCoreJIT.dir \
+        Source/JavaScriptCore/CMakeFiles/LowLevelInterpreterLib.dir \
+        Source/WebCore/PAL/pal/CMakeFiles/PAL.dir \
+        Source/WebCore/CMakeFiles/WebCore*.dir \
+        Source/WebKit/CMakeFiles/WebKit*.dir; do
+        for m in "${BUILD}"/${d}; do
+            [[ -d "${m}" ]] && dirs+=("${m}")
+        done
+    done
+    (( ${#dirs[@]} )) || die "no object directories found; build first"
+    find "${dirs[@]}" -name '*.o' | sort > "${list}"
+    log "archiving $(wc -l < "${list}") objects into ${out}"
+    rm -f "${out}"
+    "${SDK}/bin/prospero-ar" rcs "${out}" @"${list}"
+    ls -l "${out}"
+}
+
 stage="${1:-}"
 case "${stage}" in
     configure) configure ;;
@@ -108,6 +138,7 @@ case "${stage}" in
     jsc)       build jsc ;;
     webcore)   build WebCore ;;
     webkit)    build WebKit ;;
+    package)   package ;;
     all)
         require_deps
         configure
@@ -115,6 +146,7 @@ case "${stage}" in
         build jsc
         build WebCore
         build WebKit
+        package
         ;;
-    *) die "usage: $0 <configure|wtf|jsc|webcore|webkit|all>" ;;
+    *) die "usage: $0 <configure|wtf|jsc|webcore|webkit|package|all>" ;;
 esac
