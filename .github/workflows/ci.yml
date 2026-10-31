@@ -251,7 +251,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
           scripts/ci/timed.sh "Frontend link" cmake --build build-ps5 -j"${JOBS}" --target "${APP_NAME}"
           # The same frontend linked as the native title's eboot (docs/native-title.md).
-          scripts/ci/timed.sh "Native link" cmake --build build-ps5 -j"${JOBS}" --target "${APP_NAME}_native"
+          scripts/ci/timed.sh "Native link" cmake --build build-ps5 -j"${JOBS}" --target "${APP_NAME}_native" "${APP_NAME}_broker"
 
       - name: Package
         env:

@@ -16,6 +16,10 @@
 #   payload.elf  the payload ELF the spawn broker and the children run,
 #                shipped as PRWB00001/prosperoweb.elf
 #                [dist/prosperoweb/prosperoweb.elf, from scripts/ps5/package.sh].
+#   BROKER_ELF   the broker-only payload the UI asks elfldr/websrv to start,
+#                shipped as PRWB00001/prosperoweb-broker.elf (debug info
+#                stripped) [build-ps5/src/frontend/ps5/prosperoweb-broker.elf,
+#                target prosperoweb_broker]; optional.
 #
 # Without a native ELF (no WebKit build) the script builds the small native
 # loader stub from scripts/ps5/native/stub/ instead, so the tile format can
@@ -32,6 +36,7 @@ SDK="${PS5_PAYLOAD_SDK:-/opt/ps5-payload-sdk}"
 TITLE_ID="PRWB00001"
 NATIVE_ELF="${1:-${ROOT}/build-ps5/src/frontend/ps5/prosperoweb-native.elf}"
 PAYLOAD_ELF="${2:-${ROOT}/dist/prosperoweb/prosperoweb.elf}"
+BROKER_ELF="${BROKER_ELF:-$(dirname "${NATIVE_ELF}")/prosperoweb-broker.elf}"
 VIDEODEC2_STUB="${VIDEODEC2_STUB:-$(dirname "${NATIVE_ELF}")/libSceVideodec2.so}"
 LLVM_BIN="${LLVM_BIN:-$("${PS5_PAYLOAD_SDK:-/opt/ps5-payload-sdk}/bin/prospero-llvm-config" --bindir)}"
 # ProsperoStore's own asset validator, when a clone is at hand.
@@ -245,6 +250,12 @@ fi
 if [[ "${STUB_USED}" == 0 ]]; then
     [[ -f "${PAYLOAD_ELF}" ]] || die "${PAYLOAD_ELF} not found (run scripts/ps5/package.sh)"
     cp -- "${PAYLOAD_ELF}" "${APP}/prosperoweb.elf"
+    if [[ -f "${BROKER_ELF}" ]]; then
+        "${SDK}/bin/llvm-strip" --strip-debug -o "${APP}/prosperoweb-broker.elf" "${BROKER_ELF}"
+        log "prosperoweb-broker.elf: the broker elfldr/websrv start ($(stat -c %s "${APP}/prosperoweb-broker.elf") bytes)"
+    else
+        log "WARNING: ${BROKER_ELF} not found; the UI will start the 176 MB prosperoweb.elf as the broker"
+    fi
     # The import slots by offset: the start-up code names unresolved ones.
     cp -- "${WORK}/imports.txt" "${APP}/imports.txt"
     log "prosperoweb.elf: the payload for the broker and children ($(stat -c %s "${APP}/prosperoweb.elf") bytes)"
