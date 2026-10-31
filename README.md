@@ -1,5 +1,7 @@
 # ProsperoBrowser
 
+[![CI](https://github.com/kvaps/ProsperoWeb/actions/workflows/ci.yml/badge.svg)](https://github.com/kvaps/ProsperoWeb/actions/workflows/ci.yml)
+
 A homebrew web browser for the PlayStation 5. It ports upstream WebKit's PlayStation port to the open [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk), adds an ffmpeg media engine and an elfldr-style process spawner, and runs a 10-foot browser shell (tabs, address bar, on-screen keyboard, gamepad pointer) that is shared with a WebKitGTK host frontend for development.
 
 Source: https://github.com/kvaps/ProsperoBrowser (formerly ps5-browser).
@@ -136,6 +138,17 @@ Host limitations:
 - The chrome is a full-window transparent web view over the page. GTK 4 has no per-pixel input shape for a child widget, so the chrome only receives the mouse while it has focus (OSK, menu, notice, address typing) or while the mouse is over the top band.
 - Native HLS (`<video src=*.m3u8>`) is behind `WEBKIT_GST_ENABLE_HLS_SUPPORT=1` in WebKitGTK; the host sets it unless it is already set.
 - The Ubuntu WebKitGTK build has no EME (`navigator.requestMediaKeySystemAccess` is undefined), so the EME detector never fires on the host. Known DRM-only sites still get the notice before navigation.
+
+## CI and releases
+
+GitHub Actions ([.github/workflows/](.github/workflows/)) runs on every push and pull request:
+
+- `host`: the core, shell, spawn helper, media and chrome UI unit tests (`ctest`, with node for the chrome test), and a compile of the GTK host frontend.
+- `ps5`: the full PS5 build from scratch as described above (SDK, dependencies, WebKit, frontend, `package.sh`, native title). The SDK tarball, the dependency prefix, downloads and a ccache of the WebKit build are cached; a cold WebKit build can exceed the runner's time limit, in which case the job fails after saving the ccache and a re-run finishes from it.
+
+The run's Summary page lists per-stage timings and the artifacts: `ProsperoWeb-<branch>-<sha>-data.zip` (the contents of `dist/`: unpack and copy both folders under `/data/` on the console) and, when built, the native title zip.
+
+To cut a release, push a `v*` tag (`git tag v0.1.0 && git push origin v0.1.0`). The release workflow runs the same build and creates a draft GitHub release with `ProsperoWeb-<tag>-data.zip` and the native title zip attached; the notes come from the tag's section of `CHANGELOG.md` if there is one. Review the draft and publish it by hand. Tags with a `-` (`v0.2.0-rc1`) are marked as pre-releases.
 
 ## Documentation
 
