@@ -22,8 +22,8 @@
 #   ENABLE_MEDIA_SOURCE MSE on the ffmpeg engine       (ON)
 #   ENABLE_JIT        baseline + DFG JIT compiled in  (ON; FTL stays off)
 #   ENABLE_WEBASSEMBLY WebAssembly (IPInt, no BBQ/OMG) (ON)
-#                     Both are compiled in but off at run time: the shell
-#                     sets JSC_useJIT=false and JSC_useWasm=false unless
+#                     Both are on at run time: the shell sets
+#                     JSC_useJIT=true and JSC_useWasm=true unless
 #                     config.json "env" says otherwise (docs/ps5-runtime.md).
 #   WEBKIT_CMAKE_ARGS extra arguments for cmake
 #

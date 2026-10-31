@@ -63,7 +63,7 @@ The build produces, under `build-wk-ps5/`:
 
 | File | Content |
 |---|---|
-| `lib/libWebKitPS5.a` | every object of bmalloc, WTF, JavaScriptCore (LLInt, baseline/DFG JIT and IPInt WebAssembly compiled in, off at run time unless `JSC_useJIT`/`JSC_useWasm` say otherwise: `docs/ps5-runtime.md`), PAL, WebCore and WebKit (about 1500 objects, about 490 MB) |
+| `lib/libWebKitPS5.a` | every object of bmalloc, WTF, JavaScriptCore (LLInt, baseline/DFG JIT and IPInt WebAssembly compiled in, on at run time unless `JSC_useJIT`/`JSC_useWasm` say otherwise: `docs/ps5-runtime.md`), PAL, WebCore and WebKit (about 1500 objects, about 490 MB) |
 | `lib/libSkia.a` | in-tree Skia (CPU raster only) |
 | `gl-stubs/libEGL.a`, `gl-stubs/libGLESv2.a` | failing EGL/GLES stubs |
 | `WebKit/Headers/WebKit/` | public C API headers (`#include <WebKit/WKContext.h>`, `<WebKit/WKView.h>`, `<WebKit/WKPagePrivatePlayStation.h>`, ...) |
