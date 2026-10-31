@@ -68,11 +68,15 @@ std::string read_some(int fd) {
   return n > 0 ? std::string(buf, static_cast<size_t>(n)) : std::string();
 }
 
+std::atomic<int> g_last_src_pid{-1};
+
 // The fake spawn backend: fork()s a child that writes "hello <argv[0]>" to
 // child fd 3 (fds[0]) and then exits with argv[2] ("exit N") or sleeps
-// until killed ("sleep").
+// until killed ("sleep"). Descriptors named over TCP (src_pid) belong to the
+// test process itself, which the fork inherits, so they work the same.
 BrokerSpawnResult fake_spawn(const BrokerSpawnRequest& req) {
   BrokerSpawnResult res;
+  g_last_src_pid.store(req.src_pid);
   if (req.argv.size() < 2) {
     res.stage = "fake argv";
     res.err = EINVAL;
@@ -206,6 +210,54 @@ TEST_SUITE("broker_proto") {
     close(sp2.a);
     sp2.a = -1;
     CHECK(broker_recv_frame(sp2.b, &got, &fds) == BrokerRecv::kError);
+  }
+}
+
+TEST_SUITE("broker_endpoints") {
+  TEST_CASE("AF_UNIX paths are tried env first, then /tmp, then /data") {
+    CHECK(broker_socket_paths(nullptr) ==
+          std::vector<std::string>{"/tmp/ps5browser-spawn.sock",
+                                   "/data/ps5browser/tmp/spawn.sock"});
+    CHECK(broker_socket_paths("") == broker_socket_paths(nullptr));
+    CHECK(broker_socket_paths("/x/s.sock") ==
+          std::vector<std::string>{"/x/s.sock", "/tmp/ps5browser-spawn.sock",
+                                   "/data/ps5browser/tmp/spawn.sock"});
+    CHECK(broker_socket_paths("/tmp/ps5browser-spawn.sock").size() == 2);  // no duplicate
+  }
+
+  TEST_CASE("the TCP port defaults to 17771 and ignores junk") {
+    CHECK(broker_tcp_port(nullptr) == 17771);
+    CHECK(broker_tcp_port("") == 17771);
+    CHECK(broker_tcp_port("18000") == 18000);
+    CHECK(broker_tcp_port("0") == 17771);
+    CHECK(broker_tcp_port("70000") == 17771);
+    CHECK(broker_tcp_port("12ab") == 17771);
+  }
+
+  TEST_CASE("the client tries every AF_UNIX path, then TCP") {
+    const auto eps = broker_endpoints("/x/s.sock", "18000");
+    REQUIRE(eps.size() == 4);
+    CHECK(eps[0].describe() == "unix /x/s.sock");
+    CHECK(eps[2].describe() == "unix /data/ps5browser/tmp/spawn.sock");
+    CHECK(eps[3].tcp);
+    CHECK(eps[3].describe() == "tcp 127.0.0.1:18000");
+  }
+
+  TEST_CASE("src_fds are parsed strictly") {
+    std::vector<int> fds;
+    std::string why;
+    CHECK(broker_get_src_fds(json{{"op", "spawn"}}, &fds, &why) == BrokerSrcFds::kAbsent);
+    CHECK(broker_get_src_fds(json{{"src_fds", json::array()}}, &fds, &why) ==
+          BrokerSrcFds::kAbsent);
+    REQUIRE(broker_get_src_fds(json{{"src_pid", 93}, {"src_fds", {13, 14}}}, &fds, &why) ==
+            BrokerSrcFds::kPresent);
+    CHECK(fds == std::vector<int>{13, 14});
+    CHECK(broker_get_src_fds(json{{"src_fds", {-1}}}, &fds, &why) == BrokerSrcFds::kInvalid);
+    CHECK(broker_get_src_fds(json{{"src_fds", {"13"}}}, &fds, &why) == BrokerSrcFds::kInvalid);
+    CHECK(broker_get_src_fds(json{{"src_fds", 13}}, &fds, &why) == BrokerSrcFds::kInvalid);
+    CHECK(broker_get_src_fds(json{{"src_fds", std::vector<int>(kBrokerMaxFds + 1, 3)}}, &fds,
+                             &why) == BrokerSrcFds::kInvalid);
+    CHECK(fds.empty());
   }
 }
 
@@ -383,6 +435,167 @@ TEST_SUITE("broker_e2e") {
     REQUIRE(fd >= 0);
     close(fd);
     CHECK(broker_serve(opt, nullptr) == 0);
+  }
+}
+
+TEST_SUITE("broker_tcp") {
+  // A broker whose only AF_UNIX path cannot be bound (as /data on the
+  // console: EOPNOTSUPP there, ENOENT here) listens on TCP alone.
+  struct TcpBroker {
+    BrokerServerOptions opt;
+    std::atomic<bool> stop{false};
+    std::atomic<int> port{0};
+    int rc = -1;
+    std::thread thread;
+
+    TcpBroker() {
+      opt.socket_paths = {"/nonexistent-ps5browser-dir/spawn.sock"};
+      opt.tcp_port = 0;  // ephemeral
+      opt.bound_tcp_port = &port;
+      opt.idle_ms = 60000;
+      opt.reap_interval_ms = 20;
+      broker_set_spawn_hook(fake_spawn);
+      thread = std::thread([this] { rc = broker_serve(opt, &stop); });
+      for (int i = 0; i < 500 && port.load() == 0; i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+    }
+    ~TcpBroker() {
+      stop.store(true);
+      thread.join();
+      broker_set_spawn_hook(nullptr);
+    }
+    std::vector<BrokerEndpoint> endpoints() const {
+      BrokerEndpoint unix_ep;
+      unix_ep.path = opt.socket_paths[0];
+      BrokerEndpoint tcp_ep;
+      tcp_ep.tcp = true;
+      tcp_ep.port = port.load();
+      return {unix_ep, tcp_ep};
+    }
+  };
+
+  TEST_CASE("frames round-trip over loopback TCP") {
+    TcpBroker broker;
+    REQUIRE(broker.port.load() > 0);
+    BrokerClient client(broker.endpoints(), nullptr);
+    std::string failures;
+    REQUIRE(client.connect_wait(5000, 10, &failures));
+    CHECK(client.endpoint().tcp);
+    CHECK(client.endpoint().port == broker.port.load());
+
+    json reply;
+    REQUIRE(client.request(json{{"op", "ping"}}, nullptr, 0, &reply, 5000));
+    CHECK(broker_get_bool(reply, "ok", false));
+    CHECK(broker_get_int(reply, "pid", -1) == getpid());
+    // A large frame (the UI's whole environment) arrives intact in pieces.
+    std::vector<std::string> env(2000, std::string(100, 'x'));
+    REQUIRE(client.request(json{{"op", "spawn"}, {"elf", "/fake.elf"}, {"argv", {"X"}},
+                                {"env", env}, {"nfds", 0}},
+                           nullptr, 0, &reply, 5000));
+    CHECK_FALSE(broker_get_bool(reply, "ok", true));  // the fake wants argv[1]
+    CHECK(broker_get_string(reply, "stage") == "fake argv");
+  }
+
+  TEST_CASE("descriptors named by src_pid/src_fds reach the child") {
+    TcpBroker broker;
+    REQUIRE(broker.port.load() > 0);
+    Exits exits;
+    BrokerClient client(broker.endpoints(), [&](int pid, int status) { exits.add(pid, status); });
+    REQUIRE(client.connect_wait(5000, 10));
+    REQUIRE(client.endpoint().tcp);
+
+    int out[2];
+    REQUIRE(pipe(out) == 0);
+    json reply;
+    // The sender keeps out[1] open until the reply: the broker copies it
+    // out of this process while it sets the child up.
+    const json spawn{{"op", "spawn"},
+                     {"elf", "/fake.elf"},
+                     {"argv", {"WebProcess", "exit", "3"}},
+                     {"env", {"A=1"}},
+                     {"nfds", 0},
+                     {"src_pid", static_cast<int>(getpid())},
+                     {"src_fds", {out[1]}}};
+    g_last_src_pid.store(-1);
+    REQUIRE(client.request(spawn, nullptr, 0, &reply, 5000));
+    close(out[1]);
+    REQUIRE(broker_get_bool(reply, "ok", false));
+    CHECK(g_last_src_pid.load() == getpid());
+    const int pid = static_cast<int>(broker_get_int(reply, "pid", -1));
+    REQUIRE(pid > 0);
+    CHECK(read_some(out[0]) == "hello WebProcess");
+    close(out[0]);
+    int status = -1;
+    REQUIRE(exits.wait_for(pid, &status, 5000));
+    CHECK(WEXITSTATUS(status) == 3);
+
+    // Malformed variants are refused with a request error.
+    json bad = spawn;
+    bad.erase("src_pid");
+    REQUIRE(client.request(bad, nullptr, 0, &reply, 5000));
+    CHECK(broker_get_string(reply, "stage") == "request");
+    bad = spawn;
+    bad["src_fds"] = {-4};
+    REQUIRE(client.request(bad, nullptr, 0, &reply, 5000));
+    CHECK(broker_get_string(reply, "stage") == "request");
+    CHECK(broker_get_int(reply, "errno", 0) == EINVAL);
+  }
+
+  TEST_CASE("SCM_RIGHTS descriptors arrive with src_pid 0") {
+    TempDir dir;
+    BrokerServerOptions opt;
+    const std::string sock = dir.path + "/spawn.sock";
+    opt.socket_paths = {sock};
+    opt.tcp_port = 0;
+    std::atomic<int> port{0};
+    opt.bound_tcp_port = &port;
+    opt.idle_ms = 60000;
+    broker_set_spawn_hook(fake_spawn);
+    std::atomic<bool> stop{false};
+    std::thread server([&] { broker_serve(opt, &stop); });
+
+    // AF_UNIX binds, so it is tried (and used) first; TCP listens as well.
+    BrokerClient client(sock, nullptr);
+    REQUIRE(client.connect_wait(5000, 10));
+    CHECK_FALSE(client.endpoint().tcp);
+    int out[2];
+    REQUIRE(pipe(out) == 0);
+    json reply;
+    g_last_src_pid.store(-1);
+    REQUIRE(client.request(json{{"op", "spawn"}, {"elf", "/fake.elf"},
+                                {"argv", {"WebProcess", "exit", "0"}}, {"env", json::array()},
+                                {"nfds", 1}},
+                           &out[1], 1, &reply, 5000));
+    close(out[1]);
+    CHECK(broker_get_bool(reply, "ok", false));
+    CHECK(g_last_src_pid.load() == 0);
+    CHECK(read_some(out[0]) == "hello WebProcess");
+    close(out[0]);
+    CHECK(port.load() > 0);
+    stop.store(true);
+    server.join();
+    broker_set_spawn_hook(nullptr);
+  }
+
+  TEST_CASE("nothing to listen on is a startup failure") {
+    BrokerServerOptions opt;
+    opt.socket_paths = {"/nonexistent-ps5browser-dir/spawn.sock"};
+    opt.tcp_port = -1;
+    CHECK(broker_serve(opt, nullptr) == 1);
+  }
+
+  TEST_CASE("the client reports every endpoint that failed") {
+    BrokerEndpoint a;
+    a.path = "/nonexistent-ps5browser-dir/spawn.sock";
+    BrokerEndpoint b;
+    b.tcp = true;
+    b.port = 1;  // nothing listens on tcp/1
+    BrokerClient client({a, b}, nullptr);
+    std::string failures;
+    CHECK_FALSE(client.connect_once(&failures));
+    CHECK(failures.find("unix /nonexistent-ps5browser-dir/spawn.sock: ") == 0);
+    CHECK(failures.find("; tcp 127.0.0.1:1: ") != std::string::npos);
   }
 }
 
