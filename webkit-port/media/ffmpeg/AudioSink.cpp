@@ -128,15 +128,14 @@ public:
         ffmpegMediaLog("audio sink: remote 127.0.0.1:%d connected (stream %u, output latency %u frames, %.0f ms ahead)",
             port, accepted.streamId, accepted.outputLatencyFrames, sink->m_client.targetAhead() * 1000);
         sink->m_port = port;
-        sink->m_thread = Thread::create("FFmpegRemoteAudio"_s, [sink = sink.get()] {
-            sink->run();
+        sink->m_thread = Thread::create("FFmpegRemoteAudio"_s, [self = sink.get()] {
+            self->run();
         });
         return sink;
     }
 
     ~RemoteAudioSink() final
     {
-        m_client.requestClose();
         {
             Locker locker { m_lock };
             m_quit = true;
@@ -201,6 +200,7 @@ private:
                 m_condition.waitFor(m_lock, 5_ms);
         }
         // Sends the close message.
+        m_client.requestClose();
         if (!m_client.failed())
             m_client.pump(pull);
     }
