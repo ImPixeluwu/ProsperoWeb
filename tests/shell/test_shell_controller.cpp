@@ -316,6 +316,61 @@ TEST_SUITE("shell.input") {
     CHECK(f.chrome.clicks[0] == std::make_pair(100, 40));
   }
 
+  // The console path: no mouse, the left stick drives the pointer up into
+  // the band, Cross clicks there, and the chrome's event comes back.
+  TEST_CASE("stick pointer moved into the chrome band: Cross reaches ChromeUi::click") {
+    Fixture f;
+    f.make();
+    f.shell->set_viewport(1920, 1080);
+    f.shell->on_sticks(0.0f, -1.0f, 0.0f, 0.0f);
+    for (int i = 0; i < 60; ++i) {
+      f.frame(0.05f);
+    }
+    f.shell->on_sticks(0.0f, 0.0f, 0.0f, 0.0f);
+    const auto p = f.shell->pointer();
+    CHECK(p.y == doctest::Approx(0.0f));
+    REQUIRE(p.y < static_cast<float>(ShellController::kChromeBandHeight));
+
+    f.view(0).calls.clear();
+    f.press(Button::Cross);
+    CHECK_FALSE(f.view(0).called_prefix("pointer_button "));
+    REQUIRE(f.chrome.clicks.size() == 1);
+    CHECK(f.chrome.clicks[0] ==
+          std::make_pair(static_cast<int>(p.x), static_cast<int>(p.y)));
+
+    f.shell->on_chrome_event({{"type", "tab_new"}});
+    CHECK(f.shell->tabs().size() == 2);
+  }
+
+  TEST_CASE("Cross at the last band row goes to the chrome, the next row to the page") {
+    Fixture f;
+    f.make();
+    const float band = static_cast<float>(ShellController::kChromeBandHeight);
+    f.shell->on_mouse_move(300.0f, band - 1.0f);
+    f.press(Button::Cross);
+    REQUIRE(f.chrome.clicks.size() == 1);
+    CHECK(f.chrome.clicks[0] == std::make_pair(300, ShellController::kChromeBandHeight - 1));
+
+    f.view(0).calls.clear();
+    f.shell->on_mouse_move(300.0f, band);
+    f.press(Button::Cross);
+    CHECK(f.chrome.clicks.size() == 1);
+    CHECK(f.view(0).called("pointer_button 300,0 1 down"));
+  }
+
+  TEST_CASE("with the chrome hidden, Cross at the top row clicks the page") {
+    Fixture f;
+    f.make();
+    f.press(Button::R3);
+    f.frame();
+    REQUIRE(f.shell->content_top() == 0);
+    f.shell->on_mouse_move(100.0f, 40.0f);
+    f.view(0).calls.clear();
+    f.press(Button::Cross);
+    CHECK(f.chrome.clicks.empty());
+    CHECK(f.view(0).called("pointer_button 100,40 1 down"));
+  }
+
   TEST_CASE("D-pad and triggers scroll, with auto-repeat while held") {
     Fixture f;
     f.make();
