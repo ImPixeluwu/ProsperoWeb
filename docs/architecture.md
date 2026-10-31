@@ -24,7 +24,7 @@ The project implements Option B of [research.md](research.md) ("port a real engi
  |                  | IPC socketpair end at fd 3          | IPC socketpair at fd 3|
  |  +---------------v------------------+  +---------------v--------------------+  |
  |  | WebProcess  (argv[0]=WebProcess) |  | NetworkProcess                     |  |
- |  |  WebCore + JSC (LLInt, no JIT)   |  |  (argv[0]=NetworkProcess)          |  |
+ |  |  WebCore + JSC (LLInt; opt. JIT) |  |  (argv[0]=NetworkProcess)          |  |
  |  |  Skia CPU raster backing store   |  |  curl + OpenSSL, cacert.pem        |  |
  |  |  MediaPlayerPrivateFFmpeg        |  |  HTTP cache, cookies, storage      |  |
  |  |   ffmpeg demux/decode, SDL audio |  |                                    |  |
@@ -199,4 +199,4 @@ These are out of scope for the current phase, not forgotten:
 - **GPU compositing.** The Mesa zink/RADV path in pacbrew is unproven on hardware; the EGL/GLES stubs keep the build linkable until it is.
 - **WebGL**, which needs the GPU path.
 - **WebAudio** (`ENABLE_WEB_AUDIO` is off in the PlayStation port).
-- **JIT.** JavaScriptCore runs on the LLInt interpreter; executable memory needs kernel help on the PS5, and WebAssembly is effectively unavailable without JIT.
+- **JIT.** JavaScriptCore is built with the baseline/DFG JIT and IPInt WebAssembly but runs on the LLInt interpreter by default (`JSC_useJIT=false`, `JSC_useWasm=false`): executable memory for a payload is unproven on the PS5. `config.json` `"env"` turns them on for a test (`docs/ps5-runtime.md`).

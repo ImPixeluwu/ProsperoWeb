@@ -204,6 +204,13 @@ endless relaunches hammer websrv.
 | `PS5BROWSER_WEBSRV` | `127.0.0.1:8080` | websrv address (IPv4 literal) used to start the broker |
 | `PS5BROWSER_SELF_PATH` | `/data/ps5browser/ps5browser.elf` | the ELF the broker runs as itself and spawns for the children |
 | `PS5BROWSER_ROLE` | — | role fallback (`spawn-broker` for the broker) |
+| `JSC_useJIT` | `false` | JavaScriptCore baseline/DFG JIT (see [JavaScript JIT and WebAssembly](#javascript-jit-and-webassembly)) |
+| `JSC_useWasm` | `false` | WebAssembly (IPInt interpreter, plus the JIT's entry thunks when `JSC_useJIT` is on) |
+| `PS5BROWSER_MEDIA_AUDIO` | unset | `null`: media audio goes to the silent sink |
+| `PS5BROWSER_MEDIA_FRAME_THREADS` | unset | `1`: frame-threaded video decoding (default: slice threads only) |
+
+Any variable can also be set from `config.json` as `"env": {"NAME": "value"}`
+(applied in every process over the defaults above).
 
 ## Spawn mechanics (fd / argv contract)
 
@@ -351,6 +358,63 @@ Log lines (`log.txt`, prefix `ime:`): `user id`, `open title=... kind=...
 len=N max=N`, `init ok`, `status running/finished/none`, `status
 cancelled`, `result "<text>"` (`<N bytes, hidden>` for passwords),
 `error 0x...` with the failing call, `falling back to the built-in OSK`.
+
+## JavaScript JIT and WebAssembly
+
+JavaScriptCore is built with the baseline and DFG JITs and with WebAssembly
+(`scripts/ps5/build-webkit.sh`: `ENABLE_JIT=ON`, `ENABLE_DFG_JIT=ON`,
+`ENABLE_FTL_JIT=OFF`, `ENABLE_WEBASSEMBLY=ON`). Without the FTL there is no
+B3, so WebAssembly has only the IPInt interpreter: `ENABLE_WEBASSEMBLY_BBQJIT`
+and `ENABLE_WEBASSEMBLY_OMGJIT` depend on `ENABLE_FTL_JIT`
+(`Source/cmake/WebKitFeatures.cmake`), and `useWasmFastMemory` is forced off
+on PlayStation (`Source/JavaScriptCore/runtime/Options.cpp:1044`).
+
+Both are **off at run time by default**: `setup_runtime_env()`
+(`src/frontend/ps5/ps5_runtime_env.cpp`, run by `main()` for every role)
+sets `JSC_useJIT=false` and `JSC_useWasm=false` unless already set, so the
+browser behaves like the LLInt-only build until a test turns them on.
+JavaScriptCore reads every `JSC_<option>` with `getenv()` when it
+initialises its options (`Options.cpp:1120` → `overrideOptionWithHeuristic`,
+`Options.cpp:400`). With `useJIT=false`:
+
+- no executable memory is reserved: `enableAssembler()` returns before
+  `ExecutableAllocator::initializeUnderlyingAllocator()`
+  (`runtime/VM.cpp:210`, `:217`), so the `FixedVMPoolExecutableAllocator`,
+  whose constructor makes the JIT page reservation
+  (`jit/ExecutableAllocator.cpp:458` → `initializeJITPageReservation()`), is
+  never created; `ExecutableAllocator::initialize()` and
+  `JITOperationList::initialize()` (`runtime/InitializeThreading.cpp:101-102`)
+  only allocate bookkeeping objects;
+- `canUseJIT` is false (`VM.cpp:249`, `InitializeThreading.cpp:103-105`) and
+  `disableAllJITOptions()` turns off the baseline, DFG, regexp and DOM JITs
+  and switches to polling traps (`Options.cpp:881`).
+
+With `useWasm=false`, `disableAllWasmOptions()` runs (`Options.cpp:858`),
+`Wasm::isSupported()` is false (`wasm/WasmCapabilities.h:39`), so no Wasm
+thunks or signalling memory are set up (`InitializeThreading.cpp:136`,
+`:147`) and the `WebAssembly` global is not exposed.
+
+To test, add to `/data/ps5browser/config.json` (the values are exported in
+every process; the UI's environment also reaches the children):
+
+```json
+{ "env": { "JSC_useJIT": "true" } }
+```
+
+or `{ "env": { "JSC_useJIT": "true", "JSC_useWasm": "true" } }` for
+WebAssembly as well (`JSC_useWasm` alone, without the JIT, leaves only the
+IPInt interpreter; JSC allows it, but it is untested here). Each
+process logs `env JSC_useJIT=true (config.json)` at start. If JIT memory
+cannot be reserved, JSC falls back to the interpreter by itself. If the JIT
+crashes, the WebProcess dies: klog shows `A user thread receives a fatal
+signal`, `signal: 4 (SIGILL)`, `10 (SIGBUS)` or `11 (SIGSEGV)`, `proc name:
+WebProcess`, and a `rip` that is not inside our ELF's text (JIT code lives in
+an anonymous mapping); `log.txt` shows `broker: child pid=N exited (...)`
+and `spawn: child pid=N exited (...)`, and WebKit shows the page as crashed
+and relaunches the WebProcess. Note that on the console the broker has
+reported crashed children as `exit 0` (run 5), so klog is the place to look.
+`JSC_usePollingTraps=true` rules out JSC's signal-based VM traps, which the
+JIT enables, as the cause.
 
 ## Must be verified on a console
 

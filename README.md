@@ -22,7 +22,7 @@ A homebrew web browser for the PlayStation 5. It ports upstream WebKit's PlaySta
 - **YouTube, Twitch and other MSE players**: Media Source Extensions are not implemented; this is the next milestone.
 - **DRM sites** (Netflix, Disney+, Kinopoisk, Okko, ...): no CDM, by design.
 - **GPU acceleration**: software rendering only; no WebGL, no CSS 3D.
-- **WebAudio** and **JIT** (JavaScriptCore runs on its interpreter, so WebAssembly is effectively unavailable).
+- **WebAudio**, and **JIT/WebAssembly** by default (compiled in, but JavaScriptCore runs on its interpreter unless `config.json` `"env"` enables them; see `docs/ps5-runtime.md`).
 
 See [docs/architecture.md](docs/architecture.md#non-goals).
 
