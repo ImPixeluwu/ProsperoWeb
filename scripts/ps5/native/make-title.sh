@@ -5,22 +5,22 @@
 # with icon and backgrounds, a signed development FSELF eboot.bin, the
 # clean-room libc.prx runtime companion and sce_sys/param.json, plus the
 # ProsperoStore catalog artifact (build-dist/PRWB00001.zip, PRWB00001/ at the
-# top). See docs/native-title.md for the design, the launch chain and the
-# frontend code changes still needed.
+# top). See docs/native-title.md for the design and the launch chain.
 #
-#   scripts/ps5/native/make-title.sh [path/to/native-app.elf]
+#   scripts/ps5/native/make-title.sh [native.elf [payload.elf]]
 #
-# The eboot.bin:
-#   - If an ELF is given (or dist/prosperoweb/prosperoweb.elf exists)
-#     AND it was linked as a NATIVE app (third_party ps5-pie.ld + app_crt,
-#     entry _start(process_parameters, teardown)), it is converted and signed
-#     into the title's eboot.bin.
-#   - A plain payload-SDK ELF (the browser as built today) is NOT a native
-#     app: the converter rejects it ("no room for PS5 process parameters").
-#     The script then builds a small native loader stub from
-#     scripts/ps5/native/stub/ so the tile is complete, installable and
-#     validatable now, and prints a loud warning. Replace it with the real
-#     eboot.bin once the frontend is relinked natively (docs/native-title.md).
+# Inputs (defaults in brackets):
+#   native.elf   the UI linked as a native app, target prosperoweb_native
+#                [build-ps5/src/frontend/ps5/prosperoweb-native.elf]; checked
+#                (check-eboot.py), converted and signed into eboot.bin.
+#   payload.elf  the payload ELF the spawn broker and the children run,
+#                shipped as PRWB00001/prosperoweb.elf
+#                [dist/prosperoweb/prosperoweb.elf, from scripts/ps5/package.sh].
+#
+# Without a native ELF (no WebKit build) the script builds the small native
+# loader stub from scripts/ps5/native/stub/ instead, so the tile format can
+# still be checked, and says so loudly. NATIVE_ALLOW_STUB=0 makes that an
+# error (CI uses it once the native target is built).
 #
 # Host tools are built from vendored source (third_party/ps5-native-tool,
 # third_party/bc7enc_rdo); no Sony SDK or ISPC toolchain is used. Light builds
@@ -30,7 +30,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SDK="${PS5_PAYLOAD_SDK:-/opt/ps5-payload-sdk}"
 TITLE_ID="PRWB00001"
-INPUT_ELF="${1:-${ROOT}/dist/prosperoweb/prosperoweb.elf}"
+NATIVE_ELF="${1:-${ROOT}/build-ps5/src/frontend/ps5/prosperoweb-native.elf}"
+PAYLOAD_ELF="${2:-${ROOT}/dist/prosperoweb/prosperoweb.elf}"
+VIDEODEC2_STUB="${VIDEODEC2_STUB:-$(dirname "${NATIVE_ELF}")/libSceVideodec2.so}"
+LLVM_BIN="${LLVM_BIN:-$("${PS5_PAYLOAD_SDK:-/opt/ps5-payload-sdk}/bin/prospero-llvm-config" --bindir)}"
+# ProsperoStore's own asset validator, when a clone is at hand.
+PROSPEROSTORE_DIR="${PROSPEROSTORE_DIR:-}"
 
 NT="${ROOT}/third_party/ps5-native-tool"
 BC="${ROOT}/third_party/bc7enc_rdo"
@@ -159,17 +164,27 @@ make_param
 
 # --- 5. eboot.bin: convert the native-app ELF, else build the loader stub. --
 STUB_USED=0
+# Converts an LLVM PIE linked with the native layout and signs it; prints
+# what the converter and the signer say, and the converted ELF's header and
+# dynamic section (before signing).
 make_eboot() {
     local pie="$1" out="$2"
-    if "${HOST}/ps5-native-tool" link --in "${pie}" --out "${WORK}/eboot.elf" \
-        --stub-dir "${SDK}/target/lib" --module-sdk "${MODULE_SDK}" \
+    shift 2
+    local stubs=(--stub-dir "${SDK}/target/lib")
+    local extra
+    for extra in "$@"; do stubs+=(--stub "${extra}"); done
+    "${HOST}/ps5-native-tool" link --in "${pie}" --out "${WORK}/eboot.elf" \
+        "${stubs[@]}" --module-sdk "${MODULE_SDK}" \
         --companion-sdk "${COMPANION_SDK}" --heap-size 0xffffffffffffffff \
-        --file-name eboot.elf >/dev/null 2>&1; then
-        "${HOST}/ps5-native-tool" self --sign --in "${WORK}/eboot.elf" \
-            --out "${out}" --magic "${FSELF_MAGIC}" >/dev/null
-        return 0
-    fi
-    return 1
+        --file-name eboot.elf 2>&1 | sed 's/^/[native]   link: /'
+    [[ ${PIPESTATUS[0]} -eq 0 ]] || return 1
+    log "converted ELF (before signing):"
+    file "${WORK}/eboot.elf" | sed 's/^/[native]   /'
+    "${LLVM_BIN}/llvm-readelf" -h -d "${WORK}/eboot.elf" 2>&1 \
+        | grep -E 'Type:|Entry point|NEEDED|SONAME|INIT|FINI' | sed 's/^/[native]   /'
+    "${HOST}/ps5-native-tool" self --sign --in "${WORK}/eboot.elf" \
+        --out "${out}" --magic "${FSELF_MAGIC}" 2>&1 | sed 's/^/[native]   sign: /'
+    [[ ${PIPESTATUS[0]} -eq 0 ]]
 }
 
 build_stub() {
@@ -187,22 +202,40 @@ build_stub() {
         || die "could not convert the loader stub"
 }
 
+# The browser UI as a native app: checked first (no syscall instruction,
+# every import from a module the title gets or loads), then converted.
+build_native_eboot() {
+    [[ -f "${VIDEODEC2_STUB}" ]] || die "${VIDEODEC2_STUB} not found (built with prosperoweb_native)"
+    log "checking ${NATIVE_ELF}"
+    python3 -I "${ROOT}/scripts/ps5/native/check-eboot.py" "${LLVM_BIN}" "${NATIVE_ELF}" \
+        "${SDK}/target/lib" "${VIDEODEC2_STUB}" | sed 's/^/[native]   /'
+    [[ ${PIPESTATUS[0]} -eq 0 ]] || die "native ELF check failed"
+    make_eboot "${NATIVE_ELF}" "${APP}/eboot.bin" "${VIDEODEC2_STUB}" \
+        || die "could not convert ${NATIVE_ELF}"
+}
+
 PS5_PAYLOAD_SDK="${SDK}"; export PS5_PAYLOAD_SDK
 rm -rf -- "${APP}"
 mkdir -p "${APP}/sce_sys" "${APP}/sce_module"
 
-if [[ -f "${INPUT_ELF}" ]] && make_eboot "${INPUT_ELF}" "${APP}/eboot.bin"; then
-    log "eboot.bin: converted and signed ${INPUT_ELF}"
+if [[ -f "${NATIVE_ELF}" ]]; then
+    build_native_eboot
+    log "eboot.bin: the browser UI, converted and signed from ${NATIVE_ELF}"
 else
-    if [[ -f "${INPUT_ELF}" ]]; then
-        log "WARNING: ${INPUT_ELF} is not a native-app ELF (payload-SDK layout)."
-        log "WARNING: using a loader stub as eboot.bin so the tile is complete."
-        log "WARNING: relink the browser natively for the real eboot (docs/native-title.md)."
-    else
-        log "no input ELF; building the loader stub as eboot.bin"
-    fi
+    [[ "${NATIVE_ALLOW_STUB:-1}" == 1 ]] \
+        || die "${NATIVE_ELF} not found (cmake --build build-ps5 --target prosperoweb_native)"
+    log "WARNING: ${NATIVE_ELF} not found; eboot.bin is the LOADER STUB, not the browser."
+    log "WARNING: build the prosperoweb_native target for the real eboot (docs/native-title.md)."
     STUB_USED=1
     build_stub
+fi
+
+# The payload ELF the broker and the children run (docs/native-title.md,
+# "Launch chain"). Without it the UI starts but cannot open pages.
+if [[ "${STUB_USED}" == 0 ]]; then
+    [[ -f "${PAYLOAD_ELF}" ]] || die "${PAYLOAD_ELF} not found (run scripts/ps5/package.sh)"
+    cp -- "${PAYLOAD_ELF}" "${APP}/prosperoweb.elf"
+    log "prosperoweb.elf: the payload for the broker and children ($(stat -c %s "${APP}/prosperoweb.elf") bytes)"
 fi
 
 # --- 6. Assemble the title folder. ------------------------------------------
@@ -212,8 +245,9 @@ cp -- "${ROOT}/assets/sce_sys/icon0.png" "${APP}/sce_sys/icon0.png"
 cp -- "${WORK}/pic0.dds" "${APP}/sce_sys/pic0.dds"
 cp -- "${WORK}/pic1.dds" "${APP}/sce_sys/pic1.dds"
 
-# Read-only runtime data under the title (served as /app0/data/...). The
-# writable profile stays at /data/prosperoweb (ShadowMountPlus nullfs).
+# Read-only runtime data under the title (the UI reads it as /app0/data or
+# <install folder>/data, the children by the install folder). The writable
+# profile stays at /data/prosperoweb (ShadowMountPlus nullfs).
 # NATIVE_SKIP_DATA=1 leaves it out (smaller zip for a format-only check).
 if [[ "${NATIVE_SKIP_DATA:-0}" != 1 && -d "${DIST}" ]]; then
     mkdir -p "${APP}/data"
@@ -221,7 +255,26 @@ if [[ "${NATIVE_SKIP_DATA:-0}" != 1 && -d "${DIST}" ]]; then
     cp -a "${DIST}/fonts"  "${APP}/data/fonts"
     cp -a "${DIST}/LICENSES" "${APP}/data/LICENSES"
     [[ -f "${DIST}/cacert.pem" ]] && cp -- "${DIST}/cacert.pem" "${APP}/data/cacert.pem"
-    [[ -f "${DIST}/config.json.sample" ]] && cp -- "${DIST}/config.json.sample" "${APP}/data/config.json.sample"
+    # The install folder is not known here: fontconfig finds the fonts next
+    # to fonts.conf (prefix="relative"), its cache stays in the profile.
+    python3 -I - "${APP}/data/fonts/fonts.conf" <<'PY'
+import re, sys
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+text, n = re.subn(r"<dir>[^<]*</dir>", '<dir prefix="relative">.</dir>', text, count=1)
+assert n == 1, "fonts.conf has no <dir>"
+open(path, "w", encoding="utf-8").write(text)
+PY
+    # The sample without the websrv install's chrome_dir: the title uses its own.
+    [[ -f "${DIST}/config.json.sample" ]] && python3 -I - "${DIST}/config.json.sample" \
+        "${APP}/data/config.json.sample" <<'PY'
+import json, sys
+config = json.load(open(sys.argv[1], encoding="utf-8"))
+config.pop("chrome_dir", None)
+with open(sys.argv[2], "w", encoding="utf-8") as f:
+    json.dump(config, f, indent=2)
+    f.write("\n")
+PY
     log "staged read-only runtime data under ${TITLE_ID}/data/"
 else
     log "runtime data not staged (NATIVE_SKIP_DATA=1 or dist/ absent)"
@@ -247,6 +300,12 @@ for name in ("pic0.dds", "pic1.dds"):
     assert got == (124, 3840, 2160, 1, b"DX10", 98, 3, 1, exp), f"{name} bad DDS profile: {got}"
 print("presentation assets validated:", root)
 PY
+if [[ -n "${PROSPEROSTORE_DIR}" && -f "${PROSPEROSTORE_DIR}/tools/validate-assets.sh" ]]; then
+    bash "${PROSPEROSTORE_DIR}/tools/validate-assets.sh" "${APP}/sce_sys" | sed 's/^/[native]   ProsperoStore: /'
+    [[ ${PIPESTATUS[0]} -eq 0 ]] || die "ProsperoStore validate-assets.sh failed"
+else
+    log "ProsperoStore validate-assets.sh not run (set PROSPEROSTORE_DIR to a clone)"
+fi
 
 # --- 8. ProsperoStore catalog artifact: PRWB00001.zip, PRWB00001/ at top. ---
 ZIP="${ROOT}/build-dist/${TITLE_ID}.zip"
