@@ -173,7 +173,7 @@ GitHub Actions ([.github/workflows/](.github/workflows/)) runs on every push and
 - `host`: the core, shell, spawn helper, media and chrome UI unit tests (`ctest`, with node for the chrome test), and a compile of the GTK host frontend.
 - `ps5`: the full PS5 build from scratch as described above (SDK, dependencies, WebKit, frontend, `package.sh`, native title). The SDK tarball, the dependency prefix, downloads and a ccache of the WebKit build are cached; a cold WebKit build can exceed the runner's time limit, in which case the job fails after saving the ccache and a re-run finishes from it.
 
-The run's Summary page lists per-stage timings and the artifacts: `ProsperoWeb-<branch>-<sha>-data.zip` (the contents of `dist/`: unpack and copy both folders under `/data/` on the console) and `PRWB00001.zip` (the native title folder, still with the loader stub).
+The run's Summary page lists per-stage timings and the artifacts: `ProsperoWeb-<branch>-<sha>-data.zip` (the contents of `dist/`: unpack and copy both folders under `/data/` on the console) and `PRWB00001.zip` (the native title folder: the UI as `eboot.bin` plus the payload ELF, experimental).
 
 To cut a release, push a `v*` tag (`git tag v0.1.0 && git push origin v0.1.0`). The release workflow runs the same build and creates a draft GitHub release with `ProsperoWeb-<tag>-data.zip` and `PRWB00001.zip` attached; the notes come from the tag's section of `CHANGELOG.md` if there is one. Review the draft and publish it by hand. Tags with a `-` (`v0.2.0-rc1`) are marked as pre-releases.
 
