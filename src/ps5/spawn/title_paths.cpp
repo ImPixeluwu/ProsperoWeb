@@ -46,7 +46,10 @@ TitleLayout resolve_title_layout(
   }
   for (const std::string& dir : title_dir_candidates(title_id, nullptr)) {
     if (same_title(dir, app0)) {
-      layout.ui_root = layout.child_root = dir;
+      // The sandbox may stat the folder but not read it (console run 16:
+      // EPERM on chrome.html): the UI keeps reading app0.
+      layout.ui_root = app0;
+      layout.child_root = dir;
       layout.how = "install folder " + dir + " (same eboot.bin as " + app0 + ")";
       return layout;
     }

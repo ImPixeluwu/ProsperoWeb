@@ -9,14 +9,13 @@
 // payload ELF to run, the fonts, the CA bundle, the chrome page URL) must
 // therefore name the title folder by a path valid for them.
 //
-// ShadowMountPlus mounts /data (and /mnt/usbN, /mnt/extN) into a homebrew
-// title's sandbox with writable nullfs (README.md at 30c5a2b7, "Runtime
-// config"), so when the title is installed as a plain folder under one of
-// its scan paths the same path works on both sides. That folder is found
-// by looking for <scan path>/<title id> holding the same eboot.bin as
-// /app0. Otherwise (an image mount, an unknown folder) the helpers get the
-// sandbox's app0 seen from outside, /mnt/sandbox/<title id>_000/app0, and
-// the UI keeps reading /app0.
+// The helpers get the title folder by its real path: <scan path>/<title
+// id> (ShadowMountPlus README.md at 30c5a2b7, "Scan paths") holding the
+// same eboot.bin as /app0, or, if none matches (an image mount, an unknown
+// folder), the sandbox's app0 seen from outside,
+// /mnt/sandbox/<title id>_000/app0. The UI always reads /app0: the console
+// lets the title stat files under /data/homebrew/<title id> but not read
+// them (run 16: chrome.html "Operation not permitted").
 //
 // Platform-independent: compiled for the PS5 and the host (tests/ps5).
 #pragma once

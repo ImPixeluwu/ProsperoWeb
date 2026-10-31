@@ -753,8 +753,8 @@ TEST_SUITE("title_paths") {
           CHECK(app0 == "/app0");
           return dir == "/mnt/usb0/homebrew/PRWB00001";
         });
-    CHECK(layout.ui_root == "/mnt/usb0/homebrew/PRWB00001");
-    CHECK(layout.child_root == layout.ui_root);
+    CHECK(layout.ui_root == "/app0");
+    CHECK(layout.child_root == "/mnt/usb0/homebrew/PRWB00001");
   }
 
   TEST_CASE("the override wins without a check; nothing found means the sandbox path") {
