@@ -2,6 +2,9 @@
 //
 // The UI compositor's pixel work: the page cache with the chrome cache
 // blended over it inside the chrome rects, written into the window surface.
+// Video overlay frames sit under the page: where the page punched a hole
+// (alpha below 255) the video shows through, page pixels over it (controls,
+// captions) blend on top.
 //
 // Formats: the caches hold what WKPagePaint writes, premultiplied ARGB32
 // (0xAARRGGBB words); the PS5 SDL window surface is ABGR8888 (0xAABBGGRR
@@ -49,6 +52,8 @@ inline std::uint32_t blend_over(std::uint32_t src, std::uint32_t dst) {
 void copy_swap_row(const std::uint32_t* src, std::uint32_t* dst, int n);
 void blend_swap_row(const std::uint32_t* over, const std::uint32_t* under, std::uint32_t* dst,
                     int n);
+// dst[i] = blend_over(over[i], under[i]) (no swap).
+void blend_row(const std::uint32_t* over, const std::uint32_t* under, std::uint32_t* dst, int n);
 
 // The variants behind the dispatch, for the tests. The _avx2 ones must only
 // be called when has_avx2().
@@ -59,6 +64,19 @@ void blend_swap_row_scalar(const std::uint32_t* over, const std::uint32_t* under
 void copy_swap_row_avx2(const std::uint32_t* src, std::uint32_t* dst, int n);
 void blend_swap_row_avx2(const std::uint32_t* over, const std::uint32_t* under,
                          std::uint32_t* dst, int n);
+void blend_row_scalar(const std::uint32_t* over, const std::uint32_t* under, std::uint32_t* dst,
+                      int n);
+void blend_row_avx2(const std::uint32_t* over, const std::uint32_t* under, std::uint32_t* dst,
+                    int n);
+
+// A video frame already scaled to its rect (window coordinates), shown only
+// inside `clip` (the content area).
+struct VideoLayer {
+  const std::uint32_t* pixels = nullptr;
+  int stride = 0;  // in pixels
+  Rect rect;
+  Rect clip;
+};
 
 // The two caches, both width x height with a stride of width pixels.
 struct Layers {
@@ -69,9 +87,11 @@ struct Layers {
 };
 
 // Composes rect r (clipped to the layers) into dst (stride in pixels): the
-// page, with the chrome blended over it where a chrome rect covers it.
-// Overlapping chrome rects blend each pixel once.
+// videos (under the page, in order: a later one wins where they overlap),
+// the page over them, and the chrome blended over that where a chrome rect
+// covers it. Overlapping chrome rects blend each pixel once.
 void compose_rect(const Layers& layers, const std::vector<Rect>& chrome_rects, const Rect& r,
-                  std::uint32_t* dst, int dst_stride);
+                  std::uint32_t* dst, int dst_stride,
+                  const std::vector<VideoLayer>& videos = {});
 
 }  // namespace ps5browser::display

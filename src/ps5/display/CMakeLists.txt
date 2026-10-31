@@ -6,6 +6,7 @@ add_library(ps5browser_display STATIC
   compose.cpp
   damage_region.cpp
   frame_stats.cpp
+  scale.cpp
 )
 add_library(ps5browser::display ALIAS ps5browser_display)
 target_include_directories(ps5browser_display PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")

@@ -23,6 +23,13 @@ void blend_swap_row_scalar(const std::uint32_t* over, const std::uint32_t* under
   }
 }
 
+void blend_row_scalar(const std::uint32_t* over, const std::uint32_t* under, std::uint32_t* dst,
+                      int n) {
+  for (int i = 0; i < n; i++) {
+    dst[i] = blend_over(over[i], under[i]);
+  }
+}
+
 #if defined(__x86_64__)
 
 bool has_avx2() {
@@ -67,9 +74,12 @@ __attribute__((target("avx2"))) void copy_swap_row_avx2(const std::uint32_t* src
   copy_swap_row_scalar(src + i, dst + i, n - i);
 }
 
-__attribute__((target("avx2"))) void blend_swap_row_avx2(const std::uint32_t* over,
-                                                         const std::uint32_t* under,
-                                                         std::uint32_t* dst, int n) {
+// The blend of blend_swap_row_avx2() and blend_row_avx2(): Swap selects
+// whether the result is R/B-swapped on the way out.
+template <bool Swap>
+__attribute__((target("avx2"))) inline void blend_row_avx2_impl(const std::uint32_t* over,
+                                                                const std::uint32_t* under,
+                                                                std::uint32_t* dst, int n) {
   const __m256i swap = swap_rb_mask();
   const __m256i zero = _mm256_setzero_si256();
   const __m256i alpha_mask = _mm256_set1_epi32(static_cast<int>(0xFF000000u));
@@ -94,9 +104,28 @@ __attribute__((target("avx2"))) void blend_swap_row_avx2(const std::uint32_t* ov
       out = _mm256_adds_epu8(s, _mm256_packus_epi16(d_lo, d_hi));
       out = _mm256_blendv_epi8(out, d, transparent);
     }
-    _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), _mm256_shuffle_epi8(out, swap));
+    if constexpr (Swap) {
+      out = _mm256_shuffle_epi8(out, swap);
+    }
+    _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), out);
   }
-  blend_swap_row_scalar(over + i, under + i, dst + i, n - i);
+  if constexpr (Swap) {
+    blend_swap_row_scalar(over + i, under + i, dst + i, n - i);
+  } else {
+    blend_row_scalar(over + i, under + i, dst + i, n - i);
+  }
+}
+
+__attribute__((target("avx2"))) void blend_swap_row_avx2(const std::uint32_t* over,
+                                                         const std::uint32_t* under,
+                                                         std::uint32_t* dst, int n) {
+  blend_row_avx2_impl<true>(over, under, dst, n);
+}
+
+__attribute__((target("avx2"))) void blend_row_avx2(const std::uint32_t* over,
+                                                    const std::uint32_t* under,
+                                                    std::uint32_t* dst, int n) {
+  blend_row_avx2_impl<false>(over, under, dst, n);
 }
 
 #else  // !__x86_64__
@@ -108,6 +137,10 @@ void copy_swap_row_avx2(const std::uint32_t* src, std::uint32_t* dst, int n) {
 void blend_swap_row_avx2(const std::uint32_t* over, const std::uint32_t* under,
                          std::uint32_t* dst, int n) {
   blend_swap_row_scalar(over, under, dst, n);
+}
+void blend_row_avx2(const std::uint32_t* over, const std::uint32_t* under, std::uint32_t* dst,
+                    int n) {
+  blend_row_scalar(over, under, dst, n);
 }
 
 #endif
@@ -135,8 +168,19 @@ void blend_swap_row(const std::uint32_t* over, const std::uint32_t* under, std::
   }
 }
 
+void blend_row(const std::uint32_t* over, const std::uint32_t* under, std::uint32_t* dst, int n) {
+  if (n <= 0) {
+    return;
+  }
+  if (has_avx2()) {
+    blend_row_avx2(over, under, dst, n);
+  } else {
+    blend_row_scalar(over, under, dst, n);
+  }
+}
+
 void compose_rect(const Layers& layers, const std::vector<Rect>& chrome_rects, const Rect& r,
-                  std::uint32_t* dst, int dst_stride) {
+                  std::uint32_t* dst, int dst_stride, const std::vector<VideoLayer>& video_layers) {
   const Rect area = intersect(r, Rect{0, 0, layers.width, layers.height});
   if (area.empty()) {
     return;
@@ -149,10 +193,46 @@ void compose_rect(const Layers& layers, const std::vector<Rect>& chrome_rects, c
       chrome.push_back(clipped);
     }
   }
+  // The video layers that reach into the area (visible part only).
+  struct Video {
+    const VideoLayer* layer;
+    Rect visible;
+  };
+  std::vector<Video> videos;
+  for (const VideoLayer& v : video_layers) {
+    const Rect visible = intersect(intersect(v.rect, v.clip), area);
+    if (v.pixels && !visible.empty()) {
+      videos.push_back({&v, visible});
+    }
+  }
+  // Page over video, per row, where a video is under the page.
+  std::vector<std::uint32_t> base;
+  if (!videos.empty()) {
+    base.resize(static_cast<std::size_t>(layers.width));
+  }
   std::vector<std::pair<int, int>> spans;
   for (int y = area.y; y < area.bottom(); y++) {
     const std::size_t row = static_cast<std::size_t>(y) * static_cast<std::size_t>(layers.width);
     const std::uint32_t* page = layers.page + row;
+    bool row_has_video = false;
+    for (const Video& v : videos) {
+      if (y < v.visible.y || y >= v.visible.bottom()) {
+        continue;
+      }
+      if (!row_has_video) {
+        std::copy(page + area.x, page + area.right(), base.begin() + area.x);
+        row_has_video = true;
+      }
+      const VideoLayer& layer = *v.layer;
+      const std::uint32_t* under =
+          layer.pixels + static_cast<std::size_t>(y - layer.rect.y) * static_cast<std::size_t>(layer.stride) +
+          static_cast<std::size_t>(v.visible.x - layer.rect.x);
+      // The page as it was (not a previous video's result) goes on top.
+      blend_row(page + v.visible.x, under, base.data() + v.visible.x, v.visible.w);
+    }
+    if (row_has_video) {
+      page = base.data();
+    }
     const std::uint32_t* over = layers.chrome + row;
     std::uint32_t* out = dst + static_cast<std::size_t>(y) * static_cast<std::size_t>(dst_stride);
 

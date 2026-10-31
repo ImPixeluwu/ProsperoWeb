@@ -63,11 +63,12 @@ struct FrameStats {
   TimingStat present;              // SDL_UpdateWindowSurfaceRects (incl. vblank wait)
   std::uint32_t damage_rects = 0;  // rects handed to the presents
   std::uint32_t present_waits = 0; // frames whose damage waited for a busy presenter
+  AreaStat video_frames;           // new video overlay pictures composed (their visible area)
 
   // Whether anything moved through the pipeline (an idle UI is not logged).
   bool active() const {
     return page_needs_display.count || chrome_needs_display.count || page_paint.count ||
-           chrome_paint.count || present.count;
+           chrome_paint.count || present.count || video_frames.count;
   }
 
   // One log line for a window of `seconds`.
