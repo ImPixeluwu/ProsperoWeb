@@ -248,6 +248,21 @@ extern "C" __attribute__((noinline)) long prwb_unresolved_import() {
   return 0;
 }
 
+// Imports of the modules the UI loads with sceSysmoduleLoadModule.
+bool loaded_later(const char* symbol) {
+  static const char* const kPrefixes[] = {"sceVideodec2", "sceImeDialog"};
+  for (const char* prefix : kPrefixes) {
+    std::size_t i = 0;
+    while (prefix[i] && symbol[i] == prefix[i]) {
+      i++;
+    }
+    if (!prefix[i]) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Reports the import slots the system left at 0 and points the listed ones
 // at prwb_unresolved_import. Slots not in imports.txt that are 0 are weak
 // references resolved to 0 at link time (check-eboot.py lists them) and are
@@ -278,7 +293,11 @@ void check_imports() {
     Line line;
     line.add("[prosperoweb] crt: import slot image+").hex(offset).add(" is 0: ");
     line.add(symbol ? symbol : "(not an import: a weak reference)");
-    if (symbol) {
+    if (symbol && loaded_later(symbol)) {
+      // The UI loads that module itself; the system binds the slot then
+      // (run 16: the decoder answered after sceSysmoduleLoadModule).
+      line.add(" (its module is loaded later by the UI: left alone)");
+    } else if (symbol) {
       if (!writable && present(&sceKernelMprotect)) {
         // The GOT is in the RELRO range, read-only after relocation.
         const std::uintptr_t first =
