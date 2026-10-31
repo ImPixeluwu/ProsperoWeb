@@ -355,6 +355,8 @@ endless relaunches hammer websrv.
 | `PROSPEROWEB_VIDEO_SCALE` | `bilinear` | `nearest`: cheaper overlay scaling in the UI |
 | `PROSPEROWEB_VIDEO_DECODE` | `ui` | who decodes H.264/HEVC: `ui` (the UI's hardware decoder, falling back to the WebProcess) or `webprocess` (software only; the UI then does not load the decoder either); see [Hardware video decoding](#hardware-video-decoding) |
 | `PROSPEROWEB_HWDEC` | on | `0`: the UI does not load `libSceVideodec2` (every stream is refused) |
+| `PROSPEROWEB_HWDEC_PROBE` | on demand | `startup`: probe the hardware decoder right after the UI started instead of on the first video stream (in the background either way, 3 s watchdog per call) |
+| `PROSPEROWEB_HWDEC_AGC` | on | `0`: the probe does not load `libSceAgcDriver`/`libSceAgc` before the decoder |
 | `PROSPEROWEB_HWDEC_HEVC` | on | `0`: the UI refuses HEVC streams (H.264 only) |
 | `PROSPEROWEB_CPU_MONITOR` | on | `0`: no `cpu:` lines |
 | `PROSPEROWEB_CPU_WIDEN` | on | `0`: never try to widen a restricted CPU affinity |
@@ -871,7 +873,8 @@ reports `fw 0x13420000`):
 
 - Hardware video decoding ([Hardware video decoding](#hardware-video-decoding)):
   that `libSceVideodec2` loads and its compute queue is created in the UI
-  started by hbldr, the structure layouts, NV12 output and pts matching, the
+  started by hbldr (run 13 stopped inside the first decoder calls; they now
+  run in a watched background probe, the GPU libraries loaded first), the structure layouts, NV12 output and pts matching, the
   conversion cost, and the fallback to software.
 
 - `WKPagePaint` output alpha/premultiplication composites correctly against

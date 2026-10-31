@@ -127,17 +127,28 @@ Nothing official exists. The use follows four open-source (GPL) PS5 programs tha
 | Memory | Direct memory type 12, mapped CPU+GPU read/write (prot 0x33) in 16 KiB pages for the compute queue, `gpu`, `cpu_gpu`, the picture slots (16 up to 1080p, 10 for 4K) and a ring of 8 access-unit buffers of 4 MiB (the decoder may still read one after `Decode` returns, VLC `:464-468`); `cpu` is named flexible memory (prot 3), one block reused by successive decoders because released flexible memory did not come back (VLC `:231-271`). The memory is cleared before each decoder, pictures mid-grey (VLC `:1595-1614`). |
 | Output | Linear NV12: Y at `buffer`, interleaved CbCr at `buffer + pitch_bytes * height` with the output's own height (VLC `:1164-1170`), pitch in bytes; visible size cropped to the container's (1088 → 1080). 16-bit output (`pitch_bytes >= 2 * pitch`, 10-bit) is not converted and fails the stream. Pictures come back in a slot given to an earlier call; the slot is found from the buffer address (OpenNOW `:278`, VLC `:701-710`). |
 | Errors | `0x811D03xx` stream errors: reset, wait for a keyframe, at most 5 in a row (VLC `:1466-1480`); `0x811D01xx` is the chip itself (resources, state): no retry with another config (VLC `:1623-1626`); `error` set on a picture: dropped. |
-| Context | VLC saw the library (0x80020063), the compute queue (0x811D0111) and memory queries (0x811D0200) refused once the process had been given full access (`src/platform_ps5.c:168-174`, `ps5vdec.c:320-362`). `hwdec_prepare()` therefore runs first in the UI's `main()`, makes the queue and caches the memory answers for H.264/HEVC 1080p and 4K, depth 4 and 1, used when a later query is refused. |
+| Context | All four are native titles (an `eboot.bin`) with `libSceAgc` and `libSceAgcDriver` among their own imports, so both are loaded before the first decoder call: VLC makes the queue in `plat_init()` before any GPU work (`src/platform_ps5.c:530-541`, `src/main.cc:53`; stubs in `ps5/build-title.sh:76-81`), xbox-cloud-gaming-ps5 when a stream starts, on its video thread (`src/media/hw_decoder_ps5.cpp:115-133`, `src/app/stream_player.cpp:345`; `tools/ps5/link.sh`), Stremio per decoder (`src/hwdec_ps5.cpp:245-260`; `gl/build.sh:87-92`), OpenNOW per stream (`hardware_decoder.cpp:162-169`; `tools/gpu/build-app.sh:15`). None initialises the GPU, reserves a virtual range, sets a thread priority or loads another system module for it; the compute config is zero but its size everywhere. The UI process imports neither GPU library (its display is `sceVideoOut` through SDL, no AGC), so the probe loads both first (`PROSPEROWEB_HWDEC_AGC=0` skips that). VLC saw the library (0x80020063), the compute queue (0x811D0111) and memory queries (0x811D0200) refused once the process had been given full access (`src/platform_ps5.c:168-174`, `ps5vdec.c:320-362`); memory answers for H.264/HEVC 1080p and 4K, depth 4 and 1 are therefore cached by the probe and used when a later query is refused. |
+| Startup | The first console run (run 13) stopped the UI right after `functions resolved`, inside the first decoder or kernel-memory call (the kernel logged `mDBG: Sending signal(..., signo: 0xa0020101)` for the UI's thread there, then nothing). Nothing of the decoder runs on the startup path now: a background probe (`src/ps5/video/hwdec_probe.h`) runs on the first video stream (`PROSPEROWEB_HWDEC_PROBE=startup`: right after the shell started), logs every call before and after with its arguments and result, and a watchdog turns hardware decoding off for the session when one has not returned in 3 s (the thread is left alone, never joined). The first stream waits for the probe up to 4 s; refused streams decode in the WebProcess. |
 
-Uncertain until a console run: whether the library loads and the queue is created in a process hbldr started (it may already have full access); the tail of the decoder config (three zeroed u32 here vs. two bools and a pointer in VLC: zero either way); whether `accepted` is a byte or a u32 (only the byte is read, the struct is zeroed); the prot for GPU buffers (0x33 here, 0x32 in two projects: the CPU must read the pictures); the meaning of `frame_format`; whether pts matching by "smallest pending" drifts on streams with packets that produce no picture (stale entries are dropped beyond 64); the CPU cost of the NV12 conversion on the console's Zen 2.
+Uncertain until a console run: why the first decoder or memory call stopped the UI in run 13 and whether loading the GPU libraries first cures it; the tail of the decoder config (three zeroed u32 here vs. two bools and a pointer in VLC: zero either way); whether `accepted` is a byte or a u32 (only the byte is read, the struct is zeroed); the prot for GPU buffers (0x33 here, 0x32 in two projects: the CPU must read the pictures); the meaning of `frame_format`; whether pts matching by "smallest pending" drifts on streams with packets that produce no picture (stale entries are dropped beyond 64); the CPU cost of the NV12 conversion on the console's Zen 2.
 
 Log lines:
 
 ```
-[UI] hwdec: libSceVideodec2 loaded (sysmodule 207: 0), functions resolved
-[UI] hwdec: compute queue ready (0, N KiB)
-[UI] hwdec: memory h264 1920x1088 pipeline 4: cpu N / gpu N / cpu+gpu N KiB, frame N KiB (align N)
-[UI] video overlay: remote decoding on (sceVideodec2: h264, hevc)
+[UI] video overlay: remote decoding on (sceVideodec2: h264, hevc; probed on demand)
+[UI] hwdec: the hardware decoder is probed on the first video stream
+[UI] hwdec: probing the hardware decoder in the background (first video stream; 3 s per call)
+[UI] hwdec: dlopen(libSceAgcDriver.sprx) ...
+[UI] hwdec: dlopen(libSceAgcDriver.sprx) -> 0 [handle 0x...] (N ms)
+[UI] hwdec: sceSysmoduleLoadModule(207) -> 0 (N ms)
+[UI] hwdec: libSceVideodec2 functions resolved
+[UI] hwdec: sceVideodec2QueryComputeMemoryInfo(this_size 0x18) -> 0 [cpu_gpu_size 0x...] (N ms)
+[UI] hwdec: sceKernelAllocateDirectMemory(0, 0x..., len 0x..., align 0x4000, type 12) -> 0 [start 0x...] (N ms)
+[UI] hwdec: sceKernelMapDirectMemory(len 0x..., prot 0x33, start 0x..., align 0x4000) -> 0 [addr 0x...] (N ms)
+[UI] hwdec: sceVideodec2AllocateComputeQueue(config this_size 0x10 pipe 0 queue 0, memory 0x... size 0x...) -> 0 [queue 0x...] (N ms)
+[UI] hwdec: compute queue ready (N KiB)
+[UI] hwdec: sceVideodec2QueryDecoderMemoryInfo(h264 profile 100 level 52 1920x1088 pipeline 4, queue 0x...) -> 0 [cpu N / gpu N / cpu+gpu N KiB, frame N KiB, align N] (N ms)
+[UI] hwdec: probe done: hardware decoding ready
 [WebProcess] media: video overlay: player 1: asking the UI to decode h264 1920x1080 (stream 1)
 [WebProcess] media: video decoder h264: 1920x1080, asking the UI to decode it (stream 1)
 [UI] hwdec: open h264 1920x1080 -> hw ok (decoder mem N MiB: cpu ... KiB, 16 frames x N KiB; profile 100 level 52, pipeline 4, room 1920x1088, affinity 0x3f)
@@ -148,7 +159,7 @@ Log lines:
 [WebProcess] media: mse stats: ... (0 threads, ui hw) ...
 ```
 
-Fallbacks: `hwdec: player key N: reject vp9 1920x1080 (unsupported)`, `... (h264 profile 110)`, `... (no hardware decoder in this build)`, `... (busy: 2 streams decoding)`, `... (create failed 0x...)`, then `video decoder: the UI does not decode stream N (rejected: <why>), decoding in the WebProcess`; at run time `hwdec: stream N (player key N): <why>; the WebProcess decodes in software` and `video decoder: the UI stopped decoding stream N (<why>), decoding in the WebProcess from the next keyframe`; at startup `hwdec: unavailable: sysmodule 207 0x..., dlopen libSceVideodec2.sprx: ...` or `hwdec: compute queue FAILED (0x...)`, then `video overlay: remote decoding off`.
+Fallbacks: `hwdec: player key N: reject vp9 1920x1080 (unsupported)`, `... (h264 profile 110)`, `... (no hardware decoder in this build)`, `... (busy: 2 streams decoding)`, `... (create failed 0x...)`, then `video decoder: the UI does not decode stream N (rejected: <why>), decoding in the WebProcess`; at run time `hwdec: stream N (player key N): <why>; the WebProcess decodes in software` and `video decoder: the UI stopped decoding stream N (<why>), decoding in the WebProcess from the next keyframe`; from the probe `hwdec: <call> did not return in 3 s, hardware decoding disabled` (its `... ` line before it names the arguments; a late return adds `too late: hardware decoding stays off`) or `hwdec: probe done: hardware decoding off (<why>)`, then every stream `reject ... (hardware decoder unavailable: <why>)`; while the probe still runs after 4 s, `(hardware decoder still starting)`. `PROSPEROWEB_VIDEO_DECODE=webprocess` or `PROSPEROWEB_HWDEC=0`: `video overlay: remote decoding off`.
 
 ## Support
 
