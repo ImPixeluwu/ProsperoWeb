@@ -51,24 +51,72 @@
   }
 
   // ---- Rendering ---------------------------------------------------------
+  //
+  // render() runs whenever the shell state changes, so it patches the DOM
+  // instead of rebuilding it: an element whose state did not change is never
+  // recreated or written to. Recreating the tab spinners restarted their CSS
+  // animation on every render, which froze them while the pointer moved.
+
+  function setText(node, text) {
+    if (node.textContent !== text) node.textContent = text;
+  }
+
+  function setHidden(node, hidden) {
+    hidden = !!hidden;
+    if (node.hidden !== hidden) node.hidden = hidden;
+  }
+
+  function setClass(node, cls) {
+    if (node.className !== cls) node.className = cls;
+  }
+
+  function setTitle(node, title) {
+    if (node.title !== title) node.title = title;
+  }
+
+  // Tab nodes by tab id; each keeps its title, spinner and close button.
+  var tabNodes = {};
+
+  function makeTab(id) {
+    var node = el('div', 'tab');
+    node.dataset.id = id;
+    var entry = { node: node, title: el('span', 'tab-title'), spinner: null };
+    node.appendChild(entry.title);
+    var close = el('button', 'tab-close', '✕');
+    close.title = 'Close tab';
+    close.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      send({ type: 'tab_close', id: id });
+    });
+    node.appendChild(close);
+    node.addEventListener('click', function () { send({ type: 'tab_select', id: id }); });
+    return entry;
+  }
 
   function renderTabs(state) {
     var box = $('tabs');
-    box.textContent = '';
-    (state.tabs || []).forEach(function (tab) {
-      var node = el('div', 'tab' + (tab.active ? ' active' : ''));
-      node.dataset.id = tab.id;
-      if (tab.loading) node.appendChild(el('span', 'tab-spinner'));
-      node.appendChild(el('span', 'tab-title', tabLabel(tab)));
-      var close = el('button', 'tab-close', '✕');
-      close.title = 'Close tab';
-      close.addEventListener('click', function (ev) {
-        ev.stopPropagation();
-        send({ type: 'tab_close', id: tab.id });
-      });
-      node.appendChild(close);
-      node.addEventListener('click', function () { send({ type: 'tab_select', id: tab.id }); });
-      box.appendChild(node);
+    var seen = {};
+    (state.tabs || []).forEach(function (tab, index) {
+      var key = String(tab.id);
+      seen[key] = true;
+      var entry = tabNodes[key] || (tabNodes[key] = makeTab(tab.id));
+      setClass(entry.node, 'tab' + (tab.active ? ' active' : ''));
+      setText(entry.title, tabLabel(tab));
+      if (tab.loading && !entry.spinner) {
+        entry.spinner = el('span', 'tab-spinner');
+        entry.node.insertBefore(entry.spinner, entry.title);
+      } else if (!tab.loading && entry.spinner) {
+        entry.node.removeChild(entry.spinner);
+        entry.spinner = null;
+      }
+      var at = box.children[index] || null;
+      if (at !== entry.node) box.insertBefore(entry.node, at);
+    });
+    Object.keys(tabNodes).forEach(function (key) {
+      if (seen[key]) return;
+      var node = tabNodes[key].node;
+      if (node.parentNode) node.parentNode.removeChild(node);
+      delete tabNodes[key];
     });
   }
 
@@ -76,50 +124,73 @@
     var nav = state.nav || {};
     $('nav-back').classList.toggle('disabled', !nav.back);
     $('nav-fwd').classList.toggle('disabled', !nav.fwd);
-    $('nav-reload').innerHTML = nav.loading ? '&#x2715;' : '&#x21bb;';
-    $('nav-reload').title = nav.loading ? 'Stop' : 'Reload (Create)';
-    $('spinner').hidden = !nav.loading;
+    setText($('nav-reload'), nav.loading ? '✕' : '↻');
+    setTitle($('nav-reload'), nav.loading ? 'Stop' : 'Reload (Create)');
+    setHidden($('spinner'), !nav.loading);
 
     var address = state.address || {};
     var input = $('address');
     var typing = document.activeElement === input && state.focus === 'chrome';
-    if (!typing) input.value = address.text || '';
+    var text = address.text || '';
+    if (!typing && input.value !== text) input.value = text;
     $('address-form').classList.toggle('editing', !!address.editing);
-    var secure = /^https:/i.test(address.text || '') && !address.editing;
+    var secure = /^https:/i.test(text) && !address.editing;
     var lock = $('address-lock');
-    lock.textContent = secure ? '\u{1F512}︎' : '';
+    setText(lock, secure ? '\u{1F512}︎' : '');
     lock.classList.toggle('secure', secure);
   }
 
+  var menuKey = null;
+  var menuSelected = -1;
+
   function renderMenu(state) {
     var menu = state.menu || {};
-    $('menu').hidden = !menu.open;
-    if (!menu.open) return;
+    setHidden($('menu'), !menu.open);
+    if (!menu.open) {
+      menuKey = null;
+      return;
+    }
     var titles = { main: 'Menu', bookmarks: 'Bookmarks', history: 'History' };
-    $('menu-title').textContent = titles[menu.section] || 'Menu';
+    setText($('menu-title'), titles[menu.section] || 'Menu');
+    var items = menu.items || [];
     var list = $('menu-items');
-    list.textContent = '';
-    (menu.items || []).forEach(function (item, index) {
-      var li = el('li', 'menu-item' + (item.selected ? ' selected' : ''));
-      li.appendChild(el('span', 'label', item.label));
-      if (item.url) li.appendChild(el('span', 'url', item.url));
-      li.addEventListener('click', function () { send({ type: 'menu_select', index: index }); });
-      list.appendChild(li);
+    var key = JSON.stringify([menu.section, items.map(function (item) {
+      return [item.label, item.url || ''];
+    })]);
+    if (key !== menuKey) {
+      menuKey = key;
+      menuSelected = -1;
+      list.textContent = '';
+      items.forEach(function (item, index) {
+        var li = el('li', 'menu-item');
+        li.appendChild(el('span', 'label', item.label));
+        if (item.url) li.appendChild(el('span', 'url', item.url));
+        li.addEventListener('click', function () { send({ type: 'menu_select', index: index }); });
+        list.appendChild(li);
+      });
+    }
+    var selected = -1;
+    items.forEach(function (item, index) {
+      if (item.selected) selected = index;
+      setClass(list.children[index], 'menu-item' + (item.selected ? ' selected' : ''));
     });
-    var selected = list.querySelector('.selected');
-    if (selected && selected.scrollIntoView) selected.scrollIntoView({ block: 'nearest' });
+    if (selected !== menuSelected) {
+      menuSelected = selected;
+      var node = list.children[selected];
+      if (node && node.scrollIntoView) node.scrollIntoView({ block: 'nearest' });
+    }
   }
 
   function renderNotice(state) {
     var notice = state.notice || {};
     var open = !!notice.kind;
-    $('notice-backdrop').hidden = !open;
+    setHidden($('notice-backdrop'), !open);
     if (!open) return;
-    $('notice').className = 'notice ' + notice.kind;
-    $('notice-icon').textContent = notice.kind === 'info' ? 'i' : '!';
-    $('notice-title').textContent = notice.title || '';
-    $('notice-text').textContent = notice.text || '';
-    $('notice-cancel').hidden = notice.kind !== 'drm';
+    setClass($('notice'), 'notice ' + notice.kind);
+    setText($('notice-icon'), notice.kind === 'info' ? 'i' : '!');
+    setText($('notice-title'), notice.title || '');
+    setText($('notice-text'), notice.text || '');
+    setHidden($('notice-cancel'), notice.kind !== 'drm');
   }
 
   var OSK_SPECIAL = ['shift', 'layout', 'clear', 'left', 'space', 'right', 'backspace', 'enter'];
@@ -146,60 +217,106 @@
     }
   }
 
+  function oskKeyClass(osk, key) {
+    var cls = 'osk-key' + (OSK_SPECIAL.indexOf(key.code) >= 0 ? ' special' : '');
+    if (key.code === 'shift' && osk.shift) cls += ' shift-on';
+    if (key.code === 'clear') cls += ' clear';
+    return cls;
+  }
+
+  var oskTextKey = null;
+  var oskKeysKey = null;
+
   function renderOsk(state) {
     var osk = state.osk || {};
-    $('osk').hidden = !osk.open;
-    if (!osk.open) return;
-    $('osk-target').textContent = osk.target === 'address' ? 'Address' : 'Text field';
-    renderOskText($('osk-text'), osk.text || '', osk.caret_index);
+    setHidden($('osk'), !osk.open);
+    if (!osk.open) {
+      oskTextKey = null;
+      return;
+    }
+    setText($('osk-target'), osk.target === 'address' ? 'Address' : 'Text field');
+    // Redrawn only when it changed: redrawing restarts the caret blink.
+    var textKey = JSON.stringify([osk.text || '', osk.caret_index]);
+    if (textKey !== oskTextKey) {
+      oskTextKey = textKey;
+      renderOskText($('osk-text'), osk.text || '', osk.caret_index);
+    }
+    var rows = osk.rows || [];
     var keys = $('osk-keys');
-    keys.textContent = '';
-    var cursor = osk.cursor || { row: 0, col: 0 };
-    (osk.rows || []).forEach(function (row, r) {
-      var rowEl = el('div', 'osk-row');
-      row.forEach(function (key, c) {
-        var special = OSK_SPECIAL.indexOf(key.code) >= 0;
-        var cls = 'osk-key' + (special ? ' special' : '');
-        if (key.code === 'shift' && osk.shift) cls += ' shift-on';
-        if (r === cursor.row && c === cursor.col) cls += ' focused';
-        var label = key.label;
-        if (key.code === 'backspace') label = '⌫';
-        if (key.code === 'enter') label = 'Go';
-        if (key.code === 'shift') label = '⇧';
-        if (key.code === 'clear') cls += ' clear';
-        var b = el('button', cls, label);
-        b.style.flexGrow = String(key.width || 1);
-        b.style.maxWidth = (8 * (key.width || 1)) + 'rem';
-        b.addEventListener('click', function () { send({ type: 'osk_key', row: r, col: c }); });
-        rowEl.appendChild(b);
+    var keysKey = JSON.stringify(rows);
+    if (keysKey !== oskKeysKey) {
+      oskKeysKey = keysKey;
+      keys.textContent = '';
+      rows.forEach(function (row, r) {
+        var rowEl = el('div', 'osk-row');
+        row.forEach(function (key, c) {
+          var label = key.label;
+          if (key.code === 'backspace') label = '⌫';
+          if (key.code === 'enter') label = 'Go';
+          if (key.code === 'shift') label = '⇧';
+          var b = el('button', 'osk-key', label);
+          b.style.flexGrow = String(key.width || 1);
+          b.style.maxWidth = (8 * (key.width || 1)) + 'rem';
+          b.addEventListener('click', function () { send({ type: 'osk_key', row: r, col: c }); });
+          rowEl.appendChild(b);
+        });
+        keys.appendChild(rowEl);
       });
-      keys.appendChild(rowEl);
+    }
+    // Focus and Shift only change classes on the existing keys.
+    var cursor = osk.cursor || { row: 0, col: 0 };
+    rows.forEach(function (row, r) {
+      var rowEl = keys.children[r];
+      row.forEach(function (key, c) {
+        var focused = r === cursor.row && c === cursor.col;
+        setClass(rowEl.children[c], oskKeyClass(osk, key) + (focused ? ' focused' : ''));
+      });
     });
+  }
+
+  // The pointer ring. Moving it only sets a transform: the shell calls
+  // pointer() on every pointer move instead of a full render(). With
+  // native set the frontend draws the ring itself and this one stays hidden.
+  var pointerShown = { x: null, y: null, visible: false };
+
+  function pointer(x, y, visible) {
+    var node = $('pointer');
+    visible = !!visible;
+    setHidden(node, !visible);
+    if (!visible) return;
+    x = Math.round(x);
+    y = Math.round(y);
+    if (x === pointerShown.x && y === pointerShown.y) return;
+    pointerShown.x = x;
+    pointerShown.y = y;
+    node.style.transform = 'translate(' + x + 'px,' + y + 'px)';
   }
 
   function renderPointer(state) {
     var p = state.pointer || {};
-    var node = $('pointer');
-    node.hidden = !p.visible;
-    if (p.visible) {
-      node.style.transform = 'translate(' + Math.round(p.x) + 'px,' + Math.round(p.y) + 'px)';
-    }
+    pointer(p.x || 0, p.y || 0, p.visible && !p.native);
   }
+
+  var bandShown = null;
 
   function render(state) {
     if (typeof state === 'string') state = JSON.parse(state);
     lastState = state;
     var content = state.content || {};
     var band = state.chrome_visible ? (content.y || 96) : 0;
-    document.documentElement.style.setProperty('--band', band + 'px');
-    $('band').hidden = !state.chrome_visible;
+    if (band !== bandShown) {
+      bandShown = band;
+      document.documentElement.style.setProperty('--band', band + 'px');
+    }
+    setHidden($('band'), !state.chrome_visible);
     renderTabs(state);
     renderToolbar(state);
     renderMenu(state);
     renderNotice(state);
     renderOsk(state);
     renderPointer(state);
-    document.body.dataset.focus = state.focus || 'page';
+    var focus = state.focus || 'page';
+    if (document.body.dataset.focus !== focus) document.body.dataset.focus = focus;
   }
 
   // Gamepad Cross over the chrome: activate the element under the pointer.
@@ -258,7 +375,7 @@
     send({ type: 'notice_dismiss', proceed: false });
   });
 
-  window.ps5chrome = { render: render, click: click, send: send };
+  window.ps5chrome = { render: render, pointer: pointer, click: click, send: send };
 
   // ---- Demo states (chrome.html?demo=1|osk|notice|menu) --------------------
 
