@@ -13,6 +13,7 @@
 #include "FFmpegMSEPolicy.h"
 #include "FFmpegSupportTable.h"
 #include "FFmpegVideoDecoder.h"
+#include "FFmpegVideoOverlay.h"
 #include "GraphicsContext.h"
 #include "MediaPlayer.h"
 #include "MediaPlayerPrivateFFmpeg.h"
@@ -37,6 +38,8 @@ namespace {
 constexpr Seconds playingVideoTick = 8_ms;
 constexpr Seconds playingAudioTick = 50_ms;
 constexpr Seconds idleTick = 100_ms;
+// Paused with a video overlay: the overlay follows scrolling at this rate.
+constexpr Seconds overlayIdleTick = 33_ms;
 constexpr double audioWatchdogSeconds = 2.0;
 constexpr double statsIntervalSeconds = 5.0;
 // A seek whose first frame never shows (decode failure) still completes.
@@ -189,6 +192,13 @@ void MediaPlayerPrivateFFmpegMSE::stopPipelines()
         decoder->stop();
     if (RefPtr decoder = std::exchange(m_audioDecoder, nullptr))
         decoder->stop();
+    // The hole must not outlive the overlay.
+    if (m_overlay && m_overlay->punchesHole()) {
+        if (RefPtr player = m_player.get())
+            player->repaint();
+    }
+    m_overlay = nullptr;
+    m_overlayCreated = false;
     for (auto* pipeline : { &m_video, &m_audio }) {
         bool isVideo = pipeline->isVideo;
         *pipeline = Pipeline { };
@@ -779,6 +789,7 @@ void MediaPlayerPrivateFFmpegMSE::tick()
             sourceBuffer->provideMoreSamples(pipeline->trackID);
     }
 
+    updateOverlay();
     presentVideo(position);
     finishSeekIfReady(now);
 
@@ -806,7 +817,20 @@ void MediaPlayerPrivateFFmpegMSE::tick()
     else if (playing || m_seeking)
         scheduleTick(playingAudioTick);
     else
-        scheduleTick(idleTick);
+        scheduleTick(m_overlay && m_overlay->punchesHole() ? overlayIdleTick : idleTick);
+}
+
+void MediaPlayerPrivateFFmpegMSE::updateOverlay()
+{
+    if (!m_videoDecoder)
+        return;
+    if (!std::exchange(m_overlayCreated, true))
+        m_overlay = FFmpegVideoOverlay::createIfEnabled();
+    if (!m_overlay)
+        return;
+    RefPtr player = m_player.get();
+    if (player && m_overlay->update(*player, m_pageVisible, !!m_currentFrame))
+        player->repaint();
 }
 
 void MediaPlayerPrivateFFmpegMSE::presentVideo(double position)
@@ -852,10 +876,14 @@ void MediaPlayerPrivateFFmpegMSE::presentVideo(double position)
         m_loggedFirstFrameSerial = serial + 1;
         ffmpegMediaLog("mse: first video frame (serial %u): pts %.3f, %dx%d", serial, m_currentFrame->pts, m_currentFrame->width(), m_currentFrame->height());
     }
+    if (m_overlay)
+        m_overlay->submit(*m_currentFrame);
     if (player) {
         if (needFirstFrame)
             player->firstVideoFrameAvailable();
-        player->repaint();
+        // With the hole punched the overlay shows the frame: no page repaint.
+        if (!m_overlay || !m_overlay->punchesHole())
+            player->repaint();
     }
 }
 
@@ -990,6 +1018,8 @@ void MediaPlayerPrivateFFmpegMSE::logStats(double now, double position)
         videoLevel.packets, videoLevel.seconds, audioLevel.packets, audioLevel.seconds,
         m_audioSink ? m_audioSink->name() : "none", audioClock ? *audioClock : -1.0, audio ? audio->bufferedSeconds() : 0.0,
         ahead, static_cast<unsigned long long>(m_bytesAppended >> 10));
+    if (m_overlay)
+        m_overlay->logStats(statsIntervalSeconds);
 }
 
 // MARK: - States
@@ -1054,12 +1084,13 @@ RefPtr<NativeImage> MediaPlayerPrivateFFmpegMSE::currentNativeImage()
 
 void MediaPlayerPrivateFFmpegMSE::paint(GraphicsContext& context, const FloatRect& rect)
 {
-    if (context.paintingDisabled() || rect.isEmpty())
-        return;
-    RefPtr image = currentNativeImage();
-    if (!image)
-        return;
-    context.drawNativeImage(*image, rect, FloatRect { { }, image->size() });
+    MediaPlayerPrivateFFmpeg::paintVideo(context, rect, m_overlay.get(), true, m_overlay && m_overlay->punchesHole() ? nullptr : currentNativeImage());
+}
+
+void MediaPlayerPrivateFFmpegMSE::paintCurrentFrameInContext(GraphicsContext& context, const FloatRect& rect)
+{
+    // Canvas drawImage() and snapshots need the pixels, never the hole.
+    MediaPlayerPrivateFFmpeg::paintVideo(context, rect, nullptr, false, currentNativeImage());
 }
 
 RefPtr<NativeImage> MediaPlayerPrivateFFmpegMSE::nativeImageForCurrentTime()

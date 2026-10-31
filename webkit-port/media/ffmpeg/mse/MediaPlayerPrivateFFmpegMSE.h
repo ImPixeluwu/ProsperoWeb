@@ -33,6 +33,7 @@ class FFmpegMSETrackFormat;
 class FFmpegPacketQueue;
 class FFmpegVideoDecoder;
 class FFmpegVideoFrame;
+class FFmpegVideoOverlay;
 class MediaSampleFFmpeg;
 class MediaSourcePrivateFFmpeg;
 class SourceBufferPrivateFFmpeg;
@@ -116,6 +117,7 @@ private:
     bool didPassCORSAccessCheck() const final { return true; }
 
     void paint(GraphicsContext&, const FloatRect&) final;
+    void paintCurrentFrameInContext(GraphicsContext&, const FloatRect&) final;
     RefPtr<NativeImage> nativeImageForCurrentTime() final;
     ColorSpace colorSpace() final;
     bool hasAvailableVideoFrame() const final { return !!m_currentFrame; }
@@ -150,6 +152,7 @@ private:
     void stopPipelines();
     void createAudioSink(bool forceNull);
     void applyGain();
+    void updateOverlay();
 
     void tick();
     void scheduleTick(Seconds);
@@ -183,6 +186,9 @@ private:
 
     RefPtr<FFmpegVideoFrame> m_currentFrame;
     RefPtr<NativeImage> m_currentImage;
+    // Video overlay (FFmpegVideoOverlay.h), created with the video decoder.
+    std::unique_ptr<FFmpegVideoOverlay> m_overlay;
+    bool m_overlayCreated { false };
     FloatSize m_naturalSize;
 
     std::optional<MediaTimePromise::AutoRejectProducer> m_seekPromise;

@@ -36,6 +36,7 @@ class FFmpegAudioDecoder;
 class FFmpegDemuxer;
 class FFmpegVideoDecoder;
 class FFmpegVideoFrame;
+class FFmpegVideoOverlay;
 
 class MediaPlayerPrivateFFmpeg final
     : public MediaPlayerPrivateInterface
@@ -63,6 +64,9 @@ public:
     static void logSupportsType(const MediaEngineSupportParameters&, MediaPlayer::SupportsType);
     // Wraps the frame's pixels without copying; the image keeps the frame alive.
     static RefPtr<NativeImage> createNativeImage(FFmpegVideoFrame&);
+    // Shared painting: a hole while `overlay` shows the video (only for the
+    // element's own painting, `forElement`), otherwise the frame.
+    static void paintVideo(GraphicsContext&, const FloatRect&, FFmpegVideoOverlay*, bool forElement, const RefPtr<NativeImage>&);
 
     void load(const String&) final;
 #if ENABLE(MEDIA_SOURCE)
@@ -106,6 +110,7 @@ public:
     bool didPassCORSAccessCheck() const final;
 
     void paint(GraphicsContext&, const FloatRect&) final;
+    void paintCurrentFrameInContext(GraphicsContext&, const FloatRect&) final;
     RefPtr<NativeImage> nativeImageForCurrentTime() final;
     ColorSpace colorSpace() final { return ColorSpace::SRGB(); }
     bool hasAvailableVideoFrame() const final { return !!m_currentFrame; }
@@ -133,6 +138,7 @@ private:
     void checkAudioWatchdog(double now);
     void logStats(double now, double position, uint64_t bytesReceived, bool readerWaiting, bool endOfStream);
     void applyGain();
+    void updateOverlay();
 
     void setNetworkState(MediaPlayer::NetworkState);
     void setReadyState(MediaPlayer::ReadyState);
@@ -157,6 +163,9 @@ private:
     RefPtr<FFmpegVideoFrame> m_currentFrame;
     RefPtr<NativeImage> m_currentImage;
     FloatSize m_naturalSize;
+    // Video overlay (FFmpegVideoOverlay.h), created with the video pipeline.
+    std::unique_ptr<FFmpegVideoOverlay> m_overlay;
+    bool m_overlayCreated { false };
 
     std::optional<MediaTimePromise::AutoRejectProducer> m_seekPromise;
     double m_seekTime { 0 };

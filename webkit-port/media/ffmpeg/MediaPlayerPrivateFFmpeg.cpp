@@ -11,6 +11,7 @@
 #include "FFmpegLog.h"
 #include "FFmpegSupportTable.h"
 #include "FFmpegVideoDecoder.h"
+#include "FFmpegVideoOverlay.h"
 #include "GraphicsContext.h"
 #include "Logging.h"
 #include "MediaPlayer.h"
@@ -39,6 +40,8 @@ namespace {
 constexpr Seconds playingVideoTick = 8_ms;
 constexpr Seconds playingAudioTick = 50_ms;
 constexpr Seconds idleTick = 100_ms;
+// Paused with a video overlay: the overlay follows scrolling at this rate.
+constexpr Seconds overlayIdleTick = 33_ms;
 // Below this much demuxed data ahead the extrapolated clock stalls
 // (buffering) unless the stream has ended.
 constexpr double stallThreshold = 0.1;
@@ -283,6 +286,13 @@ void MediaPlayerPrivateFFmpeg::stopPipeline()
     m_videoDecoder = nullptr;
     m_audioDecoder = nullptr;
     m_demuxer = nullptr;
+    // The hole must not outlive the overlay.
+    if (m_overlay && m_overlay->punchesHole()) {
+        if (RefPtr player = m_player.get())
+            player->repaint();
+    }
+    m_overlay = nullptr;
+    m_overlayCreated = false;
     if (auto promise = std::exchange(m_seekPromise, std::nullopt))
         promise->reject(PlatformMediaError::Cancelled);
     m_seeking = false;
@@ -671,6 +681,7 @@ void MediaPlayerPrivateFFmpeg::tick()
         if (RefPtr decoder = m_audioDecoder)
             decoder->setSeekTarget(-1, m_serial);
     }
+    updateOverlay();
     presentVideo(m_seeking ? m_seekTime : position);
     finishSeekIfReady(now);
     logStats(now, position, status.bytesReceived, status.readerWaiting, status.endOfStream);
@@ -692,7 +703,20 @@ void MediaPlayerPrivateFFmpeg::tick()
     else if (playing || m_seeking)
         scheduleTick(playingAudioTick);
     else
-        scheduleTick(idleTick);
+        scheduleTick(m_overlay && m_overlay->punchesHole() ? overlayIdleTick : idleTick);
+}
+
+void MediaPlayerPrivateFFmpeg::updateOverlay()
+{
+    if (!m_hasVideo || !m_videoDecoder)
+        return;
+    if (!std::exchange(m_overlayCreated, true))
+        m_overlay = FFmpegVideoOverlay::createIfEnabled();
+    if (!m_overlay)
+        return;
+    RefPtr player = m_player.get();
+    if (player && m_overlay->update(*player, m_pageVisible, !!m_currentFrame))
+        player->repaint();
 }
 
 void MediaPlayerPrivateFFmpeg::presentVideo(double position)
@@ -740,10 +764,14 @@ void MediaPlayerPrivateFFmpeg::presentVideo(double position)
         m_loggedFirstFrameSerial = m_serial + 1;
         ffmpegMediaLog("first video frame%s: pts %.3f, %dx%d", m_serial ? " after seek" : "", m_currentFrame->pts, m_currentFrame->width(), m_currentFrame->height());
     }
+    if (m_overlay)
+        m_overlay->submit(*m_currentFrame);
     if (player) {
         if (needFirstFrame)
             player->firstVideoFrameAvailable();
-        player->repaint();
+        // With the hole punched the overlay shows the frame: no page repaint.
+        if (!m_overlay || !m_overlay->punchesHole())
+            player->repaint();
     }
 }
 
@@ -884,6 +912,8 @@ void MediaPlayerPrivateFFmpeg::logStats(double now, double position, uint64_t by
         demuxer ? (demuxer->videoQueue().bytes() + demuxer->audioQueue().bytes()) >> 10 : 0,
         m_audioSink ? m_audioSink->name() : "none", audioClock ? *audioClock : -1.0, audio ? audio->bufferedSeconds() : 0.0,
         static_cast<unsigned long long>(bytesReceived >> 10), readerWaiting ? " reader idle" : "", endOfStream ? " EOS" : "");
+    if (m_overlay)
+        m_overlay->logStats(statsIntervalSeconds);
 }
 
 // MARK: - States
@@ -973,14 +1003,29 @@ RefPtr<NativeImage> MediaPlayerPrivateFFmpeg::createNativeImage(FFmpegVideoFrame
     return NativeImage::create(WTF::move(image));
 }
 
-void MediaPlayerPrivateFFmpeg::paint(GraphicsContext& context, const FloatRect& rect)
+void MediaPlayerPrivateFFmpeg::paintVideo(GraphicsContext& context, const FloatRect& rect, FFmpegVideoOverlay* overlay, bool forElement, const RefPtr<NativeImage>& image)
 {
     if (context.paintingDisabled() || rect.isEmpty())
         return;
-    RefPtr image = currentNativeImage();
+    if (forElement && overlay && overlay->punchesHole()) {
+        // Transparent pixels: the UI composes the overlay under the page.
+        context.clearRect(rect);
+        return;
+    }
     if (!image)
         return;
     context.drawNativeImage(*image, rect, FloatRect { { }, image->size() });
+}
+
+void MediaPlayerPrivateFFmpeg::paint(GraphicsContext& context, const FloatRect& rect)
+{
+    paintVideo(context, rect, m_overlay.get(), true, m_overlay && m_overlay->punchesHole() ? nullptr : currentNativeImage());
+}
+
+void MediaPlayerPrivateFFmpeg::paintCurrentFrameInContext(GraphicsContext& context, const FloatRect& rect)
+{
+    // Canvas drawImage() and snapshots need the pixels, never the hole.
+    paintVideo(context, rect, nullptr, false, currentNativeImage());
 }
 
 RefPtr<NativeImage> MediaPlayerPrivateFFmpeg::nativeImageForCurrentTime()
