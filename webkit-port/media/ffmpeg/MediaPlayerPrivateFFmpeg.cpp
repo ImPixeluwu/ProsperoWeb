@@ -80,23 +80,6 @@ const char* supportName(MediaPlayer::SupportsType type)
     return "?";
 }
 
-// Logs each distinct canPlayType/source-selection query once (sites ask the
-// same questions over and over).
-void logSupportsType(const MediaEngineSupportParameters& parameters, MediaPlayer::SupportsType result)
-{
-    if (!ffmpegMediaLogEnabled())
-        return;
-    static Lock lock;
-    static NeverDestroyed<HashSet<String>> seen;
-    String key = makeString(parameters.type.raw(), parameters.platformType == PlatformMediaDecodingType::FileOrHLS ? ""_s : " (MSE/stream)"_s);
-    {
-        Locker locker { lock };
-        if (seen->size() >= 64 || !seen->add(key).isNewEntry)
-            return;
-    }
-    ffmpegMediaLog("supportsType %s -> %s", key.utf8().legacyCStringPointer(), supportName(result));
-}
-
 // av_malloc() relies on the SDK libc's posix_memalign() for libavcodec's
 // 64-byte SIMD alignment; check it once per process.
 void checkAllocatorAlignment()
@@ -116,27 +99,6 @@ void checkAllocatorAlignment()
 double monotonicNow()
 {
     return MonotonicTime::now().secondsSinceEpoch().seconds();
-}
-
-const FFmpegMedia::DecoderAvailability& decoderAvailability()
-{
-    static NeverDestroyed<FFmpegMedia::DecoderAvailability> decoders = [] {
-        FFmpegMedia::DecoderAvailability available;
-        available.h264 = findSoftwareDecoder(AV_CODEC_ID_H264);
-        available.hevc = findSoftwareDecoder(AV_CODEC_ID_HEVC);
-        available.vp8 = findSoftwareDecoder(AV_CODEC_ID_VP8);
-        available.vp9 = findSoftwareDecoder(AV_CODEC_ID_VP9);
-        available.av1 = findSoftwareDecoder(AV_CODEC_ID_AV1);
-        available.aac = findSoftwareDecoder(AV_CODEC_ID_AAC);
-        available.mp3 = findSoftwareDecoder(AV_CODEC_ID_MP3);
-        available.opus = findSoftwareDecoder(AV_CODEC_ID_OPUS);
-        available.vorbis = findSoftwareDecoder(AV_CODEC_ID_VORBIS);
-        available.flac = findSoftwareDecoder(AV_CODEC_ID_FLAC);
-        available.ac3 = findSoftwareDecoder(AV_CODEC_ID_AC3);
-        available.eac3 = findSoftwareDecoder(AV_CODEC_ID_EAC3);
-        return available;
-    }();
-    return decoders.get();
 }
 
 MediaPlayer::ReadyState toReadyState(FFmpegMedia::ReadyLevel level)
@@ -196,6 +158,44 @@ WTF_MAKE_TZONE_ALLOCATED_IMPL(MediaPlayerFactoryFFmpeg);
 void MediaPlayerPrivateFFmpeg::registerMediaEngine(MediaEngineRegistrar registrar)
 {
     registrar(makeUnique<MediaPlayerFactoryFFmpeg>());
+}
+
+// Logs each distinct canPlayType/source-selection query once (sites ask the
+// same questions over and over).
+void MediaPlayerPrivateFFmpeg::logSupportsType(const MediaEngineSupportParameters& parameters, MediaPlayer::SupportsType result)
+{
+    if (!ffmpegMediaLogEnabled())
+        return;
+    static Lock lock;
+    static NeverDestroyed<HashSet<String>> seen;
+    String key = makeString(parameters.type.raw(), parameters.platformType == PlatformMediaDecodingType::FileOrHLS ? ""_s : " (MSE/stream)"_s);
+    {
+        Locker locker { lock };
+        if (seen->size() >= 64 || !seen->add(key).isNewEntry)
+            return;
+    }
+    ffmpegMediaLog("supportsType %s -> %s", key.utf8().legacyCStringPointer(), supportName(result));
+}
+
+const FFmpegMedia::DecoderAvailability& MediaPlayerPrivateFFmpeg::decoderAvailability()
+{
+    static NeverDestroyed<FFmpegMedia::DecoderAvailability> decoders = [] {
+        FFmpegMedia::DecoderAvailability available;
+        available.h264 = findSoftwareDecoder(AV_CODEC_ID_H264);
+        available.hevc = findSoftwareDecoder(AV_CODEC_ID_HEVC);
+        available.vp8 = findSoftwareDecoder(AV_CODEC_ID_VP8);
+        available.vp9 = findSoftwareDecoder(AV_CODEC_ID_VP9);
+        available.av1 = findSoftwareDecoder(AV_CODEC_ID_AV1);
+        available.aac = findSoftwareDecoder(AV_CODEC_ID_AAC);
+        available.mp3 = findSoftwareDecoder(AV_CODEC_ID_MP3);
+        available.opus = findSoftwareDecoder(AV_CODEC_ID_OPUS);
+        available.vorbis = findSoftwareDecoder(AV_CODEC_ID_VORBIS);
+        available.flac = findSoftwareDecoder(AV_CODEC_ID_FLAC);
+        available.ac3 = findSoftwareDecoder(AV_CODEC_ID_AC3);
+        available.eac3 = findSoftwareDecoder(AV_CODEC_ID_EAC3);
+        return available;
+    }();
+    return decoders.get();
 }
 
 void MediaPlayerPrivateFFmpeg::getSupportedTypes(HashSet<String>& types)
@@ -318,7 +318,8 @@ void MediaPlayerPrivateFFmpeg::load(const String& urlString)
 #if ENABLE(MEDIA_SOURCE)
 void MediaPlayerPrivateFFmpeg::load(const URL&, const LoadOptions&, MediaSourcePrivateClient&)
 {
-    // MSE is not supported yet; supportsType() never selects this engine for it.
+    // MediaSource loads go to MediaPlayerPrivateFFmpegMSE; supportsType() never
+    // selects this engine for them.
     setNetworkState(MediaPlayer::NetworkState::FormatError);
 }
 #endif
@@ -933,9 +934,15 @@ RefPtr<NativeImage> MediaPlayerPrivateFFmpeg::currentNativeImage()
     if (m_currentImage || !m_currentFrame)
         return m_currentImage;
 
+    m_currentImage = createNativeImage(*m_currentFrame);
+    return m_currentImage;
+}
+
+RefPtr<NativeImage> MediaPlayerPrivateFFmpeg::createNativeImage(FFmpegVideoFrame& videoFrame)
+{
     // The SkImage wraps the frame's pixels without copying and keeps the
     // frame alive; the decoder's pool only reuses frames nobody references.
-    Ref frame = *m_currentFrame;
+    Ref frame = videoFrame;
     auto info = SkImageInfo::Make(frame->width(), frame->height(), kBGRA_8888_SkColorType, kOpaque_SkAlphaType, SkColorSpace::MakeSRGB());
     SkPixmap pixmap(info, frame->data(), frame->stride());
     auto image = SkImages::RasterFromPixmap(pixmap, [](const void*, void* context) {
@@ -945,8 +952,7 @@ RefPtr<NativeImage> MediaPlayerPrivateFFmpeg::currentNativeImage()
         return nullptr;
     // Owned by the SkImage from now on (released by the callback above).
     (void)frame.leakRef();
-    m_currentImage = NativeImage::create(WTF::move(image));
-    return m_currentImage;
+    return NativeImage::create(WTF::move(image));
 }
 
 void MediaPlayerPrivateFFmpeg::paint(GraphicsContext& context, const FloatRect& rect)

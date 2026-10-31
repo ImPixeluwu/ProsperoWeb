@@ -3,8 +3,8 @@
 // MediaPlayerPrivate backed by ffmpeg (libavformat/libavcodec/libswscale/
 // libswresample) with software decoding, for ports without a platform media
 // stack (the PS5 homebrew build). Plays progressive MP4/WebM/MP3/Ogg/FLAC/
-// WAV and HLS (libavformat's hls demuxer); no MSE, EME, WebAudio or
-// hardware decoding. Video is painted from BGRA frames through NativeImage,
+// WAV and HLS (libavformat's hls demuxer); MSE is MediaPlayerPrivateFFmpegMSE
+// (mse/). No EME, WebAudio or hardware decoding. Video is painted from BGRA frames through NativeImage,
 // audio goes to an AudioSink (SDL2, or a silent fallback).
 //
 // Threads: main (this object, a presentation/state tick), demuxer, video
@@ -17,6 +17,7 @@
 #include "ColorSpace.h"
 #include "FFmpegAVClock.h"
 #include "FFmpegPlaybackPolicy.h"
+#include "FFmpegSupportTable.h"
 #include "FFmpegTimeRanges.h"
 #include "MediaPlayerPrivate.h"
 #include <memory>
@@ -53,6 +54,12 @@ public:
     static void registerMediaEngine(MediaEngineRegistrar);
     static void getSupportedTypes(HashSet<String>&);
     static MediaPlayer::SupportsType supportsType(const MediaEngineSupportParameters&);
+
+    // Shared with the MSE player (MediaPlayerPrivateFFmpegMSE).
+    static const FFmpegMedia::DecoderAvailability& decoderAvailability();
+    static void logSupportsType(const MediaEngineSupportParameters&, MediaPlayer::SupportsType);
+    // Wraps the frame's pixels without copying; the image keeps the frame alive.
+    static RefPtr<NativeImage> createNativeImage(FFmpegVideoFrame&);
 
     void load(const String&) final;
 #if ENABLE(MEDIA_SOURCE)
