@@ -57,7 +57,7 @@ std::unique_ptr<Ps5VideoOverlay> Ps5VideoOverlay::start(std::function<void()> on
   // it (ps5_hwdec.h); without a factory every stream is refused.
   options.decoder_factory = hwdec_factory();
   log_line(options.decoder_factory
-               ? "video overlay: remote decoding on (sceVideodec2: h264, hevc)"
+               ? "video overlay: remote decoding on (sceVideodec2: h264, hevc; probed on demand)"
                : "video overlay: remote decoding off (no hardware decoder); players decode");
   std::unique_ptr<Ps5VideoOverlay> self(new Ps5VideoOverlay());
   self->server_ = std::make_unique<video::VideoServer>(std::move(options));

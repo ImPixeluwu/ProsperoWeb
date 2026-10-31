@@ -2,6 +2,7 @@
 #include "ps5_hwdec.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cinttypes>
 #include <cstddef>
 #include <cstdint>
@@ -15,6 +16,7 @@
 #include <sys/cpuset.h>
 
 #include "ps5_cpu_affinity.h"
+#include "hwdec_probe.h"
 #include "ps5_log.h"
 
 // libkernel (memory). Declared here: the payload SDK has no headers for them.
@@ -186,8 +188,6 @@ bool alloc_direct(Mem& m, std::size_t len, std::size_t align) {
 
 struct State {
   std::mutex lock;
-  bool prepared = false;
-  bool available = false;
   Api api;
   void* queue = nullptr;
   Mem queue_mem;
@@ -621,8 +621,87 @@ class Videodec2Backend final : public video::DecoderBackend {
   bool logged_format_ = false;
 };
 
-// Startup: memory for the usual configs, while queries are answered.
-void cache_memory_answers() {
+// --- the probe ----------------------------------------------------------------
+//
+// Off the startup path, every call through the probe (logged before and
+// after, watched: hwdec_probe.h).
+
+std::string hex(std::uint64_t value) {
+  char text[24];
+  std::snprintf(text, sizeof(text), "%#" PRIx64, value);
+  return text;
+}
+
+std::string ptr(const void* p) {
+  char text[24];
+  std::snprintf(text, sizeof(text), "%p", p);
+  return text;
+}
+
+// dlopen as a watched call.
+void* load_library(video::HwdecProbe& probe, const char* name) {
+  void* handle = nullptr;
+  probe.call("dlopen", name, [&](std::string& detail) {
+    handle = dlopen(name, RTLD_LAZY);
+    if (!handle) {
+      const char* error = dlerror();
+      detail = error ? error : "failed";
+      return -1;
+    }
+    detail = "handle " + ptr(handle);
+    return 0;
+  });
+  return handle;
+}
+
+// Direct memory for the compute queue, each kernel call watched.
+bool queue_memory(video::HwdecProbe& probe, Mem& m, std::size_t len) {
+  m = Mem{};
+  m.len = round_page(len);
+  std::int64_t size = 0;
+  probe.call("sceKernelGetDirectMemorySize", "", [&](std::string& detail) {
+    size = sceKernelGetDirectMemorySize();
+    detail = "size " + hex(static_cast<std::uint64_t>(size));
+    return 0;
+  });
+  std::int64_t start = 0;
+  int rc = probe.call(
+      "sceKernelAllocateDirectMemory",
+      "0, " + hex(static_cast<std::uint64_t>(size)) + ", len " + hex(m.len) + ", align " +
+          hex(kPage) + ", type " + std::to_string(kDirectMemoryType),
+      [&](std::string& detail) {
+        const int r = sceKernelAllocateDirectMemory(0, size, m.len, kPage, kDirectMemoryType,
+                                                    &start);
+        detail = "start " + hex(static_cast<std::uint64_t>(start));
+        return r;
+      });
+  if (rc != 0) {
+    return false;
+  }
+  void* addr = nullptr;
+  rc = probe.call("sceKernelMapDirectMemory",
+                  "len " + hex(m.len) + ", prot " + hex(kProtCpuRw | kProtGpuRw) + ", start " +
+                      hex(static_cast<std::uint64_t>(start)) + ", align " + hex(kPage),
+                  [&](std::string& detail) {
+                    const int r = sceKernelMapDirectMemory(&addr, m.len, kProtCpuRw | kProtGpuRw,
+                                                           0, start, kPage);
+                    detail = "addr " + ptr(addr);
+                    return r;
+                  });
+  if (rc != 0) {
+    if (rc != video::HwdecProbe::kAbandoned) {
+      sceKernelReleaseDirectMemory(start, m.len);
+    }
+    return false;
+  }
+  m.addr = addr;
+  m.start = start;
+  return true;
+}
+
+// Memory for the usual configs, asked while the probe runs (VLC found them
+// refused later in a process; a stream then uses these answers).
+bool cache_memory_answers(video::HwdecProbe& probe) {
   State& s = state();
   struct Size {
     std::uint32_t codec, profile, level;
@@ -636,101 +715,174 @@ void cache_memory_answers() {
                                              depth);
       DecoderMemoryInfo memory{};
       memory.this_size = sizeof(memory);
-      const int rc = s.api.query_decoder_memory(&config, &memory);
-      if (rc != 0) {
-        log_printf("hwdec: memory query %s %dx%d pipeline %u: %#x", codec_name(size.codec),
-                   size.w, size.h, depth, rc);
-        continue;
+      char args[128];
+      std::snprintf(args, sizeof(args), "%s profile %u level %u %dx%d pipeline %u, queue %p",
+                    codec_name(size.codec), size.profile, size.level, size.w, size.h, depth,
+                    config.compute_queue);
+      const int rc = probe.call(
+          "sceVideodec2QueryDecoderMemoryInfo", args, [&](std::string& detail) {
+            const int r = s.api.query_decoder_memory(&config, &memory);
+            char text[160];
+            std::snprintf(text, sizeof(text),
+                          "cpu %" PRIu64 " / gpu %" PRIu64 " / cpu+gpu %" PRIu64
+                          " KiB, frame %" PRIu64 " KiB, align %u",
+                          memory.cpu_size >> 10, memory.gpu_size >> 10,
+                          memory.cpu_gpu_size >> 10, memory.max_frame_size >> 10,
+                          memory.frame_alignment);
+            detail = text;
+            return r;
+          });
+      if (rc == video::HwdecProbe::kAbandoned) {
+        return false;
       }
-      if (depth == 4) {
-        log_printf("hwdec: memory %s %dx%d pipeline 4: cpu %" PRIu64 " / gpu %" PRIu64
-                   " / cpu+gpu %" PRIu64 " KiB, frame %" PRIu64 " KiB (align %u)",
-                   codec_name(size.codec), size.w, size.h, memory.cpu_size >> 10,
-                   memory.gpu_size >> 10, memory.cpu_gpu_size >> 10, memory.max_frame_size >> 10,
-                   memory.frame_alignment);
+      if (rc == 0) {
+        std::lock_guard<std::mutex> lock(s.lock);
+        s.cached.push_back({config, memory});
       }
-      std::lock_guard<std::mutex> lock(s.lock);
-      s.cached.push_back({config, memory});
     }
   }
+  return true;
+}
+
+// The probe body: the decoder's system module and library, its functions,
+// the shared compute queue, memory answers.
+bool probe_body(video::HwdecProbe& probe) {
+  State& s = state();
+  void* sysmodule = load_library(probe, "libSceSysmodule.sprx");
+  auto load_module = sysmodule ? reinterpret_cast<int (*)(std::uint16_t)>(
+                                     dlsym(sysmodule, "sceSysmoduleLoadModule"))
+                               : nullptr;
+  if (load_module) {
+    const int rc = probe.call("sceSysmoduleLoadModule", std::to_string(kSysmoduleVideodec2),
+                              [&](std::string&) { return load_module(kSysmoduleVideodec2); });
+    if (rc == video::HwdecProbe::kAbandoned) {
+      return false;
+    }
+  } else {
+    log_line("hwdec: sceSysmoduleLoadModule not found; loading the library directly");
+  }
+  void* lib = load_library(probe, "libSceVideodec2.sprx");
+  if (!lib) {
+    probe.fail("libSceVideodec2.sprx did not load");
+    return false;
+  }
+  Api& api = s.api;
+  const bool ok =
+      resolve(lib, "sceVideodec2QueryComputeMemoryInfo", api.query_compute_memory) &&
+      resolve(lib, "sceVideodec2AllocateComputeQueue", api.allocate_compute_queue) &&
+      resolve(lib, "sceVideodec2ReleaseComputeQueue", api.release_compute_queue) &&
+      resolve(lib, "sceVideodec2QueryDecoderMemoryInfo", api.query_decoder_memory) &&
+      resolve(lib, "sceVideodec2CreateDecoder", api.create_decoder) &&
+      resolve(lib, "sceVideodec2DeleteDecoder", api.delete_decoder) &&
+      resolve(lib, "sceVideodec2Decode", api.decode) &&
+      resolve(lib, "sceVideodec2Flush", api.flush) && resolve(lib, "sceVideodec2Reset", api.reset);
+  log_printf("hwdec: libSceVideodec2 functions %s", ok ? "resolved" : "MISSING");
+  if (!ok) {
+    probe.fail("libSceVideodec2 functions missing");
+    return false;
+  }
+  s.affinity = decoder_affinity();
+
+  // One compute queue for the process: every decoder shares it.
+  ComputeMemoryInfo info{};
+  info.this_size = sizeof(info);
+  int rc = probe.call("sceVideodec2QueryComputeMemoryInfo", "this_size " + hex(info.this_size),
+                      [&](std::string& detail) {
+                        const int r = api.query_compute_memory(&info);
+                        detail = "cpu_gpu_size " + hex(info.cpu_gpu_size);
+                        return r;
+                      });
+  if (rc != 0) {
+    probe.fail("compute memory query " + hex(static_cast<std::uint32_t>(rc)));
+    return false;
+  }
+  if (!queue_memory(probe, s.queue_mem, info.cpu_gpu_size)) {
+    probe.fail("no direct memory for the compute queue");
+    return false;
+  }
+  info.cpu_gpu = s.queue_mem.addr;
+  info.cpu_gpu_size = s.queue_mem.len;
+  ComputeConfigInfo config{};
+  config.this_size = sizeof(config);
+  void* queue = nullptr;
+  rc = probe.call("sceVideodec2AllocateComputeQueue",
+                  "config this_size " + hex(config.this_size) + " pipe 0 queue 0, memory " +
+                      ptr(info.cpu_gpu) + " size " + hex(info.cpu_gpu_size),
+                  [&](std::string& detail) {
+                    const int r = api.allocate_compute_queue(&config, &info, &queue);
+                    detail = "queue " + ptr(queue);
+                    return r;
+                  });
+  if (rc != 0 || !queue) {
+    if (rc != video::HwdecProbe::kAbandoned) {
+      release(s.queue_mem);
+    }
+    probe.fail("compute queue " + hex(static_cast<std::uint32_t>(rc)));
+    return false;
+  }
+  s.queue = queue;
+  log_printf("hwdec: compute queue ready (%" PRIu64 " KiB)",
+             static_cast<std::uint64_t>(info.cpu_gpu_size >> 10));
+  return cache_memory_answers(probe);
+}
+
+// How long the decoder factory waits for a probe still running before it
+// refuses the stream (the WebProcess decodes that one in software).
+constexpr std::chrono::milliseconds kOpenWait{4000};
+
+std::shared_ptr<video::HwdecProbe>& probe_slot() {
+  static auto* probe = new std::shared_ptr<video::HwdecProbe>();  // never destroyed
+  return *probe;
+}
+
+bool hwdec_disabled() {
+  return env_off("PROSPEROWEB_VIDEO_DECODE", "webprocess") || env_off("PROSPEROWEB_HWDEC", "0");
+}
+
+std::shared_ptr<video::HwdecProbe> ensure_probe(const char* why) {
+  static std::once_flag once;
+  std::call_once(once, [why] {
+    auto probe = video::HwdecProbe::create(video::kHwdecCallLimit,
+                                           [](const std::string& line) { log_line(line); });
+    log_printf("hwdec: probing the hardware decoder in the background (%s; %s per call)", why,
+               probe->limit_text().c_str());
+    probe->start(probe_body);
+    probe_slot() = probe;
+  });
+  return probe_slot();
 }
 
 }  // namespace
 
-void hwdec_prepare() {
-  State& s = state();
-  if (s.prepared) {
-    return;
-  }
-  s.prepared = true;
-  if (env_off("PROSPEROWEB_VIDEO_DECODE", "webprocess") || env_off("PROSPEROWEB_HWDEC", "0")) {
+void hwdec_startup_done() {
+  if (hwdec_disabled()) {
     log_line("hwdec: off (PROSPEROWEB_VIDEO_DECODE=webprocess or PROSPEROWEB_HWDEC=0)");
     return;
   }
-  int sysmodule_rc = -1;
-  if (void* sysmodule = dlopen("libSceSysmodule.sprx", RTLD_LAZY)) {
-    auto load = reinterpret_cast<int (*)(std::uint16_t)>(dlsym(sysmodule, "sceSysmoduleLoadModule"));
-    if (load) {
-      sysmodule_rc = load(kSysmoduleVideodec2);
-    }
+  const char* when = std::getenv("PROSPEROWEB_HWDEC_PROBE");
+  if (when && !std::strcmp(when, "startup")) {
+    ensure_probe("after startup, PROSPEROWEB_HWDEC_PROBE=startup");
+  } else {
+    log_line("hwdec: the hardware decoder is probed on the first video stream");
   }
-  void* lib = dlopen("libSceVideodec2.sprx", RTLD_LAZY);
-  if (!lib) {
-    const char* error = dlerror();
-    log_printf("hwdec: unavailable: sysmodule %u %#x, dlopen libSceVideodec2.sprx: %s",
-               kSysmoduleVideodec2, sysmodule_rc, error ? error : "failed");
-    return;
-  }
-  Api& api = s.api;
-  bool ok = resolve(lib, "sceVideodec2QueryComputeMemoryInfo", api.query_compute_memory) &&
-            resolve(lib, "sceVideodec2AllocateComputeQueue", api.allocate_compute_queue) &&
-            resolve(lib, "sceVideodec2ReleaseComputeQueue", api.release_compute_queue) &&
-            resolve(lib, "sceVideodec2QueryDecoderMemoryInfo", api.query_decoder_memory) &&
-            resolve(lib, "sceVideodec2CreateDecoder", api.create_decoder) &&
-            resolve(lib, "sceVideodec2DeleteDecoder", api.delete_decoder) &&
-            resolve(lib, "sceVideodec2Decode", api.decode) &&
-            resolve(lib, "sceVideodec2Flush", api.flush) &&
-            resolve(lib, "sceVideodec2Reset", api.reset);
-  log_printf("hwdec: libSceVideodec2 loaded (sysmodule %u: %#x), functions %s",
-             kSysmoduleVideodec2, sysmodule_rc, ok ? "resolved" : "MISSING");
-  if (!ok) {
-    return;
-  }
-  s.affinity = decoder_affinity();
-  // One compute queue for the process: every decoder shares it.
-  ComputeMemoryInfo info{};
-  info.this_size = sizeof(info);
-  int rc = api.query_compute_memory(&info);
-  if (rc == 0 && alloc_direct(s.queue_mem, info.cpu_gpu_size, kPage)) {
-    info.cpu_gpu = s.queue_mem.addr;
-    info.cpu_gpu_size = s.queue_mem.len;
-    ComputeConfigInfo config{};
-    config.this_size = sizeof(config);
-    rc = api.allocate_compute_queue(&config, &info, &s.queue);
-    if (rc != 0) {
-      s.queue = nullptr;
-      release(s.queue_mem);
-    }
-  } else if (rc == 0) {
-    rc = -1;
-  }
-  log_printf("hwdec: compute queue %s (%#x, %" PRIu64 " KiB)", s.queue ? "ready" : "FAILED", rc,
-             static_cast<std::uint64_t>(info.cpu_gpu_size >> 10));
-  if (!s.queue) {
-    return;
-  }
-  cache_memory_answers();
-  s.available = true;
 }
 
 video::DecoderFactory hwdec_factory() {
-  if (!state().available) {
+  if (hwdec_disabled()) {
     return {};
   }
   const bool allow_hevc = !env_off("PROSPEROWEB_HWDEC_HEVC", "0");
   return [allow_hevc](const video::DecoderRequest& request,
                       std::string& reason) -> std::unique_ptr<video::DecoderBackend> {
     if (!video::hardware_profile_supported(request.config, allow_hevc, reason)) {
+      return nullptr;
+    }
+    auto probe = ensure_probe("first video stream");
+    const auto state = probe->wait(kOpenWait);
+    if (state != video::HwdecProbe::State::Ready) {
+      reason = state == video::HwdecProbe::State::Probing
+                   ? "hardware decoder still starting"
+                   : "hardware decoder unavailable: " + probe->reason();
       return nullptr;
     }
     return Videodec2Backend::create(request, reason);

@@ -10,6 +10,7 @@ find_package(Threads REQUIRED)
 add_library(prosperoweb_video_server STATIC
   video_server.cpp
   hwdec_bitstream.cpp
+  hwdec_probe.cpp
   hwdec_stream.cpp
   nv12_convert.cpp
 )

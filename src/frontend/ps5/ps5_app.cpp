@@ -18,6 +18,7 @@
 #include "prosperoweb/core/gamepad.h"
 #include "prosperoweb/core/page_scripts.h"
 #include "ps5_diagnostics.h"
+#include "ps5_hwdec.h"
 #include "ps5_log.h"
 #include "ps5_runtime_env.h"
 #include "ps5_splash_text.h"
@@ -257,6 +258,8 @@ int Ps5App::run() {
   log_line("shell: starting");
   controller_->start();
   log_line("shell: started");
+  // The hardware decoder only now, and off this thread (ps5_hwdec.h).
+  hwdec_startup_done();
 
   running_ = true;
   last_frame_ticks_ = SDL_GetTicks64();

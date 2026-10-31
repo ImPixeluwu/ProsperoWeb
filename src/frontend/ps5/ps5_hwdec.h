@@ -16,23 +16,28 @@
 // ("Hardware decoding") for the structures and what is uncertain. The
 // library is loaded with dlopen, so the build needs no stub for it.
 //
-// hwdec_prepare() runs early in the UI's main(): VLC found the library and
-// the compute queue refused once the process had been given full access
-// (0x80020063, 0x811D0111) and decoder memory queries refused after it
-// (0x811D0200), so the library, the shared compute queue and the memory
-// answers for the usual sizes are obtained as early as possible.
+// Nothing of the decoder runs on the startup path: the first console run
+// stopped for good inside the decoder's first calls, before the splash. The
+// library, the compute queue and the memory answers are obtained by a
+// background probe (src/ps5/video/hwdec_probe.h) on the first video stream
+// (or right after startup with PROSPEROWEB_HWDEC_PROBE=startup), each call
+// logged before and after and watched: one that has not returned in 3 s
+// turns hardware decoding off for the session and streams fall back to the
+// WebProcess's software decoding.
 #pragma once
 
 #include "hwdec_stream.h"
 
 namespace prosperoweb::frontend {
 
-// Loads the library and makes the compute queue (logged). Idempotent.
-void hwdec_prepare();
+// Called once the UI is up (splash, WebKit, shell): logs the mode and, with
+// PROSPEROWEB_HWDEC_PROBE=startup, starts the probe. Never blocks.
+void hwdec_startup_done();
 
 // The overlay server's decoder factory; empty when hardware decoding is
-// unavailable (the library did not load, PROSPEROWEB_VIDEO_DECODE=webprocess
-// or PROSPEROWEB_HWDEC=0).
+// switched off (PROSPEROWEB_VIDEO_DECODE=webprocess or PROSPEROWEB_HWDEC=0).
+// The first stream starts the probe and waits for it a few seconds at most;
+// streams are refused while it runs too long or after it failed.
 video::DecoderFactory hwdec_factory();
 
 }  // namespace prosperoweb::frontend
