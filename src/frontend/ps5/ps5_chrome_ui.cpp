@@ -12,6 +12,8 @@ namespace ps5browser::frontend {
 
 namespace {
 
+constexpr int kClicksToLog = 8;
+
 // Shown when chrome.html is missing or fails to load: the active tab's title
 // and URL in the band, a pointer ring, and a hint to reinstall the chrome.
 // Gamepad shortcuts keep working; the controls of the real chrome do not.
@@ -58,9 +60,25 @@ Ps5ChromeUi::Ps5ChromeUi(WKContextRef context, WKWebsiteDataStoreRef data_store,
       return;
     }
     nlohmann::json doc = nlohmann::json::parse(json, nullptr, /*allow_exceptions=*/false);
-    if (!doc.is_discarded()) {
-      on_event_(doc);
+    if (doc.is_discarded()) {
+      return;
     }
+    const std::string type = doc.is_object() ? doc.value("type", std::string()) : std::string();
+    if (type == "click_trace") {
+      // chrome.js reports what a click activated; log the first few.
+      if (clicks_logged_ < kClicksToLog) {
+        ++clicks_logged_;
+        log_printf("chrome: click at %d,%d -> %s (%s)", doc.value("x", -1), doc.value("y", -1),
+                   doc.value("handler", std::string("?")).c_str(),
+                   doc.value("target", std::string("?")).c_str());
+      }
+      return;
+    }
+    if (!first_event_logged_) {
+      first_event_logged_ = true;
+      log_printf("chrome: first event from the chrome: %s", type.c_str());
+    }
+    on_event_(doc);
   };
   cb.load_finished = []() { log_line("chrome: navigation finished"); };
   cb.load_failed = [this](const std::string& url, const std::string& error) {
@@ -102,12 +120,19 @@ void Ps5ChromeUi::render(const nlohmann::json& state) {
 }
 
 void Ps5ChromeUi::click(int x, int y) {
-  // Window coordinates == chrome-local coordinates (the chrome view spans the
-  // whole surface). A synthesized click is acceptable here: this is our own UI
-  // and page input never goes through this path.
+  // Window coordinates == chrome-local CSS pixels (the chrome view spans the
+  // whole surface at scale 1). The trusted move keeps :hover right; the
+  // activation goes through chrome.js click(x, y) (elementFromPoint +
+  // element.click(), the path the host frontend uses), which does not depend
+  // on WebCore turning a synthesized press/release into a click and handles
+  // the address field. This is our own UI: user activation is not needed.
   web_->pointer_move(x, y);
-  web_->pointer_button(x, y, kWKEventMouseButtonLeftButton, true);
-  web_->pointer_button(x, y, kWKEventMouseButtonLeftButton, false);
+  web_->run_javascript("window.ps5chrome && window.ps5chrome.click(" + std::to_string(x) + "," +
+                       std::to_string(y) + ")");
+  if (clicks_logged_ < kClicksToLog && fallback_loaded_) {
+    ++clicks_logged_;
+    log_printf("chrome: click at %d,%d -> fallback chrome (no controls)", x, y);
+  }
 }
 
 }  // namespace ps5browser::frontend

@@ -20,6 +20,41 @@ namespace ps5browser::frontend {
 
 namespace {
 
+// Console diagnostics: reports the first DOM pointer events of each document
+// (type, target, detail, buttons, isTrusted, defaultPrevented) through the
+// "ps5browser" handler as {type: 'input_trace'}; Ps5EngineView logs them.
+// Shows whether a press/release pair became a click and what got focus.
+constexpr const char* kInputTraceScript = R"JS((function () {
+  'use strict';
+  if (window !== window.top) return;
+  var left = 24;
+  function desc(e) {
+    if (!e || !e.tagName) return String(e && e.nodeName);
+    var d = e.tagName.toLowerCase();
+    if (e.id) d += '#' + e.id;
+    return d;
+  }
+  ['pointerdown', 'mousedown', 'mouseup', 'click', 'dblclick', 'focusin'].forEach(function (t) {
+    document.addEventListener(t, function (ev) {
+      if (left <= 0) return;
+      left--;
+      var target = ev.target;
+      setTimeout(function () {
+        try {
+          window.webkit.messageHandlers.ps5browser.postMessage({
+            type: 'input_trace', ev: t, target: desc(target),
+            x: ev.clientX === undefined ? -1 : ev.clientX, y: ev.clientY === undefined ? -1 : ev.clientY,
+            detail: ev.detail === undefined ? -1 : ev.detail, buttons: ev.buttons === undefined ? -1 : ev.buttons,
+            trusted: ev.isTrusted, prevented: ev.defaultPrevented,
+            active: desc(document.activeElement)
+          });
+        } catch (e) {}
+      }, 0);
+    }, true);
+  });
+})();
+)JS";
+
 constexpr const char* kBaseDir = kPs5DataDir;
 constexpr std::uint32_t kFrameMs = 16;  // ~60 Hz
 
@@ -173,7 +208,8 @@ int Ps5App::run() {
 
   std::vector<std::string> user_scripts = {core::kEmeDetectorScript,
                                            core::kFocusReporterScript,
-                                           core::kGamepadKeyBridgeScript};
+                                           core::kGamepadKeyBridgeScript,
+                                           kInputTraceScript};
   factory_ = std::make_unique<Ps5EngineFactory>(kBaseDir, user_scripts,
                                                 config_.user_agent);
   log_line("WebKit: context and data store created");

@@ -12,11 +12,14 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ps5_log.h"
 #include "wk_helpers.h"
 
 namespace ps5browser::frontend {
 
 namespace {
+
+constexpr int kButtonsToLog = 16;
 
 int to_wk_mouse_button(shell::MouseButton b) {
   switch (b) {
@@ -118,7 +121,12 @@ Ps5EngineView::Ps5EngineView(shell::EngineViewClient& client, WKContextRef conte
     // everything else (EME reports, ...) goes to the shell as is.
     const auto msg = nlohmann::json::parse(json, nullptr, /*allow_exceptions=*/false);
     const auto type = msg.is_object() ? msg.find("type") : msg.end();
+    if (type != msg.end() && *type == "input_trace") {
+      log_printf("page: dom %s", json.c_str());
+      return;
+    }
     if (type != msg.end() && *type == "focus") {
+      log_printf("page: focus report %s", json.c_str());
       const auto editable = msg.find("editable");
       client_.text_input_focused(editable != msg.end() && editable->is_boolean() &&
                                  editable->get<bool>());
@@ -145,6 +153,10 @@ void Ps5EngineView::set_visible(bool v) { web_->set_visible(v); }
 void Ps5EngineView::pointer_move(int x, int y) { web_->pointer_move(x, y); }
 
 void Ps5EngineView::pointer_button(int x, int y, shell::MouseButton button, bool pressed) {
+  if (buttons_logged_ < kButtonsToLog) {
+    ++buttons_logged_;
+    log_printf("page: %s at %d,%d", pressed ? "press" : "release", x, y);
+  }
   web_->pointer_button(x, y, to_wk_mouse_button(button), pressed);
 }
 

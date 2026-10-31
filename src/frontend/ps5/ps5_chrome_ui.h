@@ -41,6 +41,8 @@ class Ps5ChromeUi final : public shell::ChromeUi {
   EventHandler on_event_;
   std::unique_ptr<WkWebView> web_;
   bool fallback_loaded_ = false;
+  int clicks_logged_ = 0;
+  bool first_event_logged_ = false;
 };
 
 }  // namespace ps5browser::frontend

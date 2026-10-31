@@ -47,6 +47,7 @@ class Ps5EngineView final : public shell::EngineView {
  private:
   shell::EngineViewClient& client_;
   std::unique_ptr<WkWebView> web_;
+  int buttons_logged_ = 0;  // console diagnostics: the first presses/releases
 };
 
 // Creates web-content views sharing one WKContext and website data store.

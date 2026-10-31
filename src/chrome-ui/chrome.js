@@ -180,14 +180,26 @@
   }
 
   // Gamepad Cross over the chrome: activate the element under the pointer.
+  function describe(el) {
+    if (!el) return 'nothing';
+    var d = el.tagName.toLowerCase();
+    if (el.id) d += '#' + el.id;
+    var owner = el.closest('[id]');
+    if (owner && owner !== el) d += ' in #' + owner.id;
+    return d;
+  }
+
   function click(x, y) {
     var target = document.elementFromPoint(x, y);
-    if (!target) return;
-    if (target === $('address') || target.closest('#address-form')) {
+    var handler = !target ? 'none'
+      : (target === $('address') || target.closest('#address-form')) ? 'address_focus' : 'click';
+    // Frontends may log this; the shell ignores the type.
+    send({ type: 'click_trace', x: x, y: y, target: describe(target), handler: handler });
+    if (handler === 'address_focus') {
       send({ type: 'address_focus' });
-      return;
+    } else if (target) {
+      target.click();
     }
-    target.click();
   }
 
   // ---- Wiring ------------------------------------------------------------
