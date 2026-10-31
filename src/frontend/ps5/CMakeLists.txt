@@ -70,6 +70,7 @@ set(_frontend_sources
   ps5_chrome_ui.cpp
   ps5_config.cpp
   ps5_engine_view.cpp
+  ps5_ime.cpp
   ps5_log.cpp
   ps5_runtime_env.cpp
   wk_web_view.cpp
@@ -106,7 +107,8 @@ target_link_libraries(ps5browser PRIVATE
   ps5browser::core
   ps5browser::spawn
   ${PS5WEBKIT_LINK_LIBRARIES}
-  ${SDL2_LIBRARIES})
+  ${SDL2_LIBRARIES}
+  SceImeDialog SceUserService)  # ps5_ime.cpp (also on SDL2's own link line)
 target_link_directories(ps5browser PRIVATE ${SDL2_LIBRARY_DIRS})
 # libWebKitPS5.a holds every WebKit object; drop what the browser never reaches.
 target_link_options(ps5browser PRIVATE -Wl,--gc-sections)

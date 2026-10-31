@@ -22,6 +22,9 @@ struct Ps5Config {
   std::string language = "en";  // "en" or "ru"
   // Directory where chrome.html and its assets are installed.
   std::string chrome_dir = "/data/ps5browser/chrome";
+  // Text entry: "system" (the PS5 keyboard dialog, built-in OSK as the
+  // fallback) or "builtin" (the HTML OSK only). PS5BROWSER_OSK overrides it.
+  std::string osk = "system";
   int width = 1920;
   int height = 1080;
 

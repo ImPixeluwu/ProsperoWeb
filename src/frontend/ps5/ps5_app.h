@@ -16,6 +16,7 @@
 #include "ps5_chrome_ui.h"
 #include "ps5_config.h"
 #include "ps5_engine_view.h"
+#include "ps5_ime.h"
 
 namespace ps5browser::frontend {
 
@@ -49,6 +50,9 @@ class Ps5App {
   std::unique_ptr<core::FileStorage> storage_;
   std::unique_ptr<Ps5EngineFactory> factory_;
   std::unique_ptr<Ps5ChromeUi> chrome_;
+  // The system keyboard dialog (nullptr with PS5BROWSER_OSK=builtin); the
+  // controller holds a pointer to it, so it is declared (and outlives) first.
+  std::unique_ptr<Ps5ImeTextInput> ime_input_;
   std::unique_ptr<shell::ShellController> controller_;
 
   // Content cache: ARGB32 (what WKPagePaint writes), the active view painted
@@ -66,6 +70,9 @@ class Ps5App {
   int width_ = 1920;
   int height_ = 1080;
 
+  // SDL's own dialog pump sends Return when it consumes our dialog's end;
+  // the matching auto-release must not reach the page either.
+  bool swallow_return_up_ = false;
   bool l2_down_ = false;
   bool r2_down_ = false;
   std::uint64_t last_frame_ticks_ = 0;

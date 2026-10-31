@@ -31,6 +31,9 @@ Ps5Config Ps5Config::load(core::Storage& storage) {
   if (auto it = doc.find("chrome_dir"); it != doc.end() && it->is_string()) {
     cfg.chrome_dir = it->get<std::string>();
   }
+  if (auto it = doc.find("osk"); it != doc.end() && it->is_string()) {
+    cfg.osk = it->get<std::string>();
+  }
   if (auto it = doc.find("width"); it != doc.end() && it->is_number_integer()) {
     cfg.width = it->get<int>();
   }

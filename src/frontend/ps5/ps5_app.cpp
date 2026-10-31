@@ -191,6 +191,10 @@ int Ps5App::run() {
   // WebKit painting (a WKPagePaint without a WebProcess leaves zeros).
   draw_splash();
   // Printable keyboard input arrives as SDL_TEXTINPUT (see pump_sdl_events).
+  // Without the hint SDL_StartTextInput() would also open the system
+  // keyboard dialog (SDL's PS5 driver implements the screen keyboard with
+  // sceImeDialog); Ps5ImeTextInput opens it on demand instead.
+  SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, "0");
   SDL_StartTextInput();
 
   page_buffer_.assign(static_cast<size_t>(width_) * height_, 0xFF000000u);
@@ -236,6 +240,13 @@ int Ps5App::run() {
   cfg.user_agent = config_.user_agent;
   cfg.language = config_.language;
   cfg.diagnostics_url = "file://" + config_.chrome_dir + "/diag.html";
+  if (use_system_ime(config_.osk)) {
+    ime_input_ = std::make_unique<Ps5ImeTextInput>();
+    cfg.text_input = ime_input_.get();
+    log_line("text input: system keyboard dialog (built-in OSK as fallback)");
+  } else {
+    log_line("text input: built-in OSK (PS5BROWSER_OSK / config osk = builtin)");
+  }
   controller_ = std::make_unique<shell::ShellController>(*factory_, *chrome_, *storage_,
                                                          cfg);
   log_line("shell: starting");
@@ -297,6 +308,11 @@ void Ps5App::frame() {
   float dt = static_cast<float>(now - last_frame_ticks_) / 1000.0f;
   last_frame_ticks_ = now;
 
+  // Before SDL_PollEvent(): SDL's PS5 driver watches the same dialog there
+  // and would otherwise consume its result first (see Ps5SystemIme).
+  if (ime_input_) {
+    ime_input_->poll();
+  }
   pump_sdl_events();
   handle_axis_motion();
   controller_->tick(dt);
@@ -344,6 +360,18 @@ void Ps5App::pump_sdl_events() {
         break;
       case SDL_KEYDOWN:
       case SDL_KEYUP: {
+        const bool is_return = e.key.keysym.sym == SDLK_RETURN;
+        if (ime_input_ && ime_input_->ime().is_open()) {
+          if (is_return && e.type == SDL_KEYDOWN) {
+            ime_input_->ime().note_sdl_return();
+            swallow_return_up_ = true;
+          }
+          break;  // the dialog owns text entry
+        }
+        if (is_return && e.type == SDL_KEYUP && swallow_return_up_) {
+          swallow_return_up_ = false;
+          break;
+        }
         // Key events carry no text: printable characters arrive separately
         // as SDL_TEXTINPUT and are inserted below, so they are not typed twice.
         std::uint32_t code = dom_key_code(e.key.keysym.sym);
@@ -355,6 +383,9 @@ void Ps5App::pump_sdl_events() {
         break;
       }
       case SDL_TEXTINPUT: {
+        if (ime_input_ && ime_input_->ime().is_open()) {
+          break;
+        }
         if (auto* view = controller_->active_view()) {
           view->insert_text(e.text.text);
         }
