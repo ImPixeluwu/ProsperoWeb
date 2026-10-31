@@ -32,6 +32,7 @@ class Ps5App {
   void pump_sdl_events();
   void handle_controller_button(const SDL_ControllerButtonEvent& e, bool pressed);
   void handle_axis_motion();
+  void paint_content();
   void composite_and_present();
   std::vector<SDL_Rect> derive_chrome_rects() const;
 
@@ -46,9 +47,12 @@ class Ps5App {
   std::unique_ptr<Ps5ChromeUi> chrome_;
   std::unique_ptr<shell::ShellController> controller_;
 
-  // ARGB32 backbuffer (what WKPagePaint writes); converted to the SDL window
-  // surface (ABGR8888) on present.
-  std::vector<std::uint32_t> backbuffer_;
+  // Content cache: ARGB32 (what WKPagePaint writes), the active view painted
+  // at y = content_top(); only dirty areas are repainted. The composed frame
+  // goes straight to the SDL window surface (ABGR8888), never back here.
+  std::vector<std::uint32_t> page_buffer_;
+  std::uint64_t painted_tab_ = ~std::uint64_t{0};  // tab id in page_buffer_
+  int painted_top_ = -1;
   std::vector<std::uint32_t> chrome_buffer_;
   int width_ = 1920;
   int height_ = 1080;

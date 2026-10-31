@@ -117,6 +117,10 @@ class ShellController {
   const core::FullscreenController& fullscreen() const { return fullscreen_; }
   const core::OnScreenKeyboard& osk() const { return osk_; }
   core::Vec2 pointer() const { return pointer_.position(); }
+  // Window y of the content view's top edge: the chrome band height while
+  // the chrome is visible, else 0. The content view is width x (height -
+  // content_top()) and page coordinates are window coordinates minus this.
+  int content_top() const;
   EngineView* active_view();
   EngineView* view_for(std::uint64_t tab_id);
   bool quit_requested() const { return quit_requested_; }

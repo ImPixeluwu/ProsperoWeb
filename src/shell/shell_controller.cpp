@@ -289,8 +289,7 @@ void ShellController::sync_visibility() {
 }
 
 void ShellController::apply_geometry() {
-  const int top = fullscreen_.chrome_visible() ? kChromeBandHeight : 0;
-  const int height = std::max(1, config_.height - top);
+  const int height = std::max(1, config_.height - content_top());
   for (auto& [id, entry] : entries_) {
     entry.view->set_size(config_.width, height);
   }
@@ -521,9 +520,12 @@ void ShellController::tick(float dt_seconds) {
   }
 }
 
+int ShellController::content_top() const {
+  return fullscreen_.chrome_visible() ? kChromeBandHeight : 0;
+}
+
 core::Vec2 ShellController::to_view(core::Vec2 window_pos) const {
-  const float top = fullscreen_.chrome_visible() ? static_cast<float>(kChromeBandHeight) : 0.0f;
-  return {window_pos.x, window_pos.y - top};
+  return {window_pos.x, window_pos.y - static_cast<float>(content_top())};
 }
 
 void ShellController::click_at_pointer() {
@@ -571,7 +573,7 @@ void ShellController::run_action(Action action) {
 void ShellController::run_page_action(Action action) {
   auto* view = active_view();
   const int page = static_cast<int>(
-      static_cast<float>(config_.height - (fullscreen_.chrome_visible() ? kChromeBandHeight : 0)) *
+      static_cast<float>(config_.height - content_top()) *
       kPageScrollFraction);
   switch (action) {
     case Action::Click: click_at_pointer(); break;
@@ -1015,7 +1017,7 @@ json ShellController::chrome_state() const {
                   {"loading", tab && tab->loading}};
   state["chrome_visible"] = fullscreen_.chrome_visible();
   state["fullscreen_state"] = fullscreen_name(fullscreen_.state());
-  const int top = fullscreen_.chrome_visible() ? kChromeBandHeight : 0;
+  const int top = content_top();
   state["content"] = {{"x", 0}, {"y", top}, {"width", config_.width},
                       {"height", std::max(1, config_.height - top)}};
 

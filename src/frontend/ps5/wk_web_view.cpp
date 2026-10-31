@@ -202,7 +202,11 @@ void WkWebView::s_needs_display(WKViewRef, WKRect rect, const void* ci) {
   auto* self = self_of(ci);
   DirtyRect d{true, static_cast<int>(rect.origin.x), static_cast<int>(rect.origin.y),
               static_cast<int>(rect.size.width), static_cast<int>(rect.size.height)};
-  self->dirty_ = d;
+  if (d.width <= 0 || d.height <= 0) {
+    return;
+  }
+  // Several invalidations can arrive between two frames; keep their union.
+  self->dirty_ = union_of(self->dirty_, d);
   if (self->cb_.needs_display) {
     self->cb_.needs_display(d);
   }

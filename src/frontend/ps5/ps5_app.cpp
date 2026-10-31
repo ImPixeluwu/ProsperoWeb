@@ -112,7 +112,7 @@ int Ps5App::run() {
     return 1;
   }
 
-  backbuffer_.assign(static_cast<size_t>(width_) * height_, 0xFF000000u);
+  page_buffer_.assign(static_cast<size_t>(width_) * height_, 0xFF000000u);
   chrome_buffer_.assign(static_cast<size_t>(width_) * height_, 0u);
 
   // fontconfig, TLS roots and language for WebKit; must precede WebKit
@@ -291,54 +291,77 @@ std::vector<SDL_Rect> Ps5App::derive_chrome_rects() const {
   return rects;
 }
 
+void Ps5App::paint_content() {
+  auto* view = static_cast<Ps5EngineView*>(controller_->active_view());
+  const std::uint64_t tab = controller_->tabs().active_id().value_or(0);
+  const int top = std::clamp(controller_->content_top(), 0, height_);
+  const int content_height = height_ - top;
+  DirtyRect dirty = view ? view->web().take_dirty() : DirtyRect{};
+
+  // A different view or geometry invalidates the whole cache; otherwise only
+  // what WebKit reported changed is repainted (nothing on an idle page).
+  const bool full = tab != painted_tab_ || top != painted_top_;
+  if (full) {
+    std::fill(page_buffer_.begin(), page_buffer_.end(), 0xFF000000u);
+    painted_tab_ = tab;
+    painted_top_ = top;
+    dirty = DirtyRect{true, 0, 0, width_, content_height};
+  }
+  if (!view || !dirty.valid || content_height <= 0) {
+    return;
+  }
+  // The view is width_ x content_height and sits at window y = top, the same
+  // offset ShellController::to_view() removes from pointer coordinates.
+  auto* origin = reinterpret_cast<unsigned char*>(page_buffer_.data() +
+                                                  static_cast<size_t>(top) * width_);
+  view->web().paint(origin, width_, content_height, dirty);
+}
+
 void Ps5App::composite_and_present() {
   SDL_Surface* surface = SDL_GetWindowSurface(window_);
   if (!surface) {
     return;
   }
 
-  // 1. Paint the active content view into the backbuffer.
-  if (auto* view = controller_->active_view()) {
-    auto* ev = static_cast<Ps5EngineView*>(view);
-    DirtyRect dirty = ev->web().take_dirty();
-    ev->web().paint(reinterpret_cast<unsigned char*>(backbuffer_.data()), width_,
-                    height_, dirty.valid ? dirty : DirtyRect{true, 0, 0, width_, height_});
-  }
+  // 1. Bring the content cache up to date.
+  paint_content();
 
-  // 2. Paint the chrome view into its own buffer and overlay declared rects.
+  // 2. Paint the chrome view into its own buffer.
   std::vector<SDL_Rect> chrome_rects = derive_chrome_rects();
   if (!chrome_rects.empty()) {
     chrome_->web().paint(reinterpret_cast<unsigned char*>(chrome_buffer_.data()), width_,
                          height_, DirtyRect{true, 0, 0, width_, height_});
-    for (const auto& r : chrome_rects) {
-      int x0 = std::max(0, r.x);
-      int y0 = std::max(0, r.y);
-      int x1 = std::min(width_, r.x + r.w);
-      int y1 = std::min(height_, r.y + r.h);
-      for (int y = y0; y < y1; y++) {
-        std::uint32_t* src = &chrome_buffer_[static_cast<size_t>(y) * width_];
-        std::uint32_t* dst = &backbuffer_[static_cast<size_t>(y) * width_];
-        for (int x = x0; x < x1; x++) {
-          std::uint32_t px = src[x];
-          if ((px >> 24) != 0) {  // only over non-transparent chrome pixels
-            dst[x] = px;
-          }
-        }
-      }
-    }
   }
 
-  // 3. Convert the ARGB32 backbuffer into the ABGR8888 window surface.
+  // 3. Compose content and chrome into the ABGR8888 window surface. The
+  //    content cache itself is never written here, so overlays leave no
+  //    trace in it.
   if (SDL_MUSTLOCK(surface)) {
     SDL_LockSurface(surface);
   }
   auto* out = static_cast<std::uint32_t*>(surface->pixels);
   int stride = surface->pitch / 4;
   for (int y = 0; y < height_; y++) {
-    const std::uint32_t* row = &backbuffer_[static_cast<size_t>(y) * width_];
+    const std::uint32_t* row = &page_buffer_[static_cast<size_t>(y) * width_];
     std::uint32_t* orow = &out[static_cast<size_t>(y) * stride];
     for (int x = 0; x < width_; x++) {
       orow[x] = argb_to_abgr(row[x]);
+    }
+  }
+  for (const auto& r : chrome_rects) {
+    int x0 = std::max(0, r.x);
+    int y0 = std::max(0, r.y);
+    int x1 = std::min(width_, r.x + r.w);
+    int y1 = std::min(height_, r.y + r.h);
+    for (int y = y0; y < y1; y++) {
+      const std::uint32_t* src = &chrome_buffer_[static_cast<size_t>(y) * width_];
+      std::uint32_t* orow = &out[static_cast<size_t>(y) * stride];
+      for (int x = x0; x < x1; x++) {
+        std::uint32_t px = src[x];
+        if ((px >> 24) != 0) {  // only over non-transparent chrome pixels
+          orow[x] = argb_to_abgr(px);
+        }
+      }
     }
   }
   if (SDL_MUSTLOCK(surface)) {

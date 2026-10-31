@@ -28,6 +28,21 @@ struct DirtyRect {
   int height = 0;
 };
 
+// Smallest rectangle covering both a and b (an invalid rect is empty).
+inline DirtyRect union_of(const DirtyRect& a, const DirtyRect& b) {
+  if (!a.valid) {
+    return b;
+  }
+  if (!b.valid) {
+    return a;
+  }
+  const int x0 = a.x < b.x ? a.x : b.x;
+  const int y0 = a.y < b.y ? a.y : b.y;
+  const int x1 = (a.x + a.width) > (b.x + b.width) ? a.x + a.width : b.x + b.width;
+  const int y1 = (a.y + a.height) > (b.y + b.height) ? a.y + a.height : b.y + b.height;
+  return DirtyRect{true, x0, y0, x1 - x0, y1 - y0};
+}
+
 class WkWebView {
  public:
   struct Callbacks {
@@ -90,7 +105,8 @@ class WkWebView {
   // of size width*height*4. rect is clamped to the surface by WebKit.
   void paint(unsigned char* argb, int width, int height, const DirtyRect& rect);
 
-  // Returns and clears the pending dirty rect (set via needs_display).
+  // Returns and clears the pending dirty rect: the union of every
+  // needs_display rect since the last call.
   DirtyRect take_dirty();
 
  private:
