@@ -199,6 +199,7 @@ int Ps5App::run() {
   cfg.home_url = config_.home_url;
   cfg.user_agent = config_.user_agent;
   cfg.language = config_.language;
+  cfg.diagnostics_url = "file://" + config_.chrome_dir + "/diag.html";
   controller_ = std::make_unique<shell::ShellController>(*factory_, *chrome_, *storage_,
                                                          cfg);
   log_line("shell: starting");

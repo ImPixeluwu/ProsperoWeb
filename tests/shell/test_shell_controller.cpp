@@ -27,9 +27,11 @@ struct Fixture {
   FakeEngineFactory factory;
   FakeChromeUi chrome;
   std::unique_ptr<ShellController> shell;
+  std::string diagnostics_url;
 
   void make(bool start = true) {
     ShellController::Config config;
+    config.diagnostics_url = diagnostics_url;
     config.width = 1920;
     config.height = 1080;
     config.home_url = kHome;
@@ -751,6 +753,31 @@ TEST_SUITE("shell.chrome_events") {
     f.shell->on_chrome_event(json::array());  // ignored
     f.shell->on_chrome_event({{"type", "unknown"}});
     CHECK(f.shell->tabs().size() == 2);
+  }
+
+  TEST_CASE("Diagnostics menu item opens the probe page in a new tab") {
+    Fixture f;
+    f.diagnostics_url = "file:///data/ps5browser/chrome/diag.html";
+    f.make();
+    f.press(Button::Options);
+    f.frame();
+    REQUIRE(f.chrome.last["menu"]["items"].size() == 10);
+    CHECK(f.chrome.last["menu"]["items"][7]["label"] == "Diagnostics");
+    CHECK(f.chrome.last["menu"]["items"][9]["label"] == "Quit");
+    f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 7}});
+    CHECK(f.shell->tabs().size() == 2);
+    CHECK(f.active().called("load file:///data/ps5browser/chrome/diag.html"));
+    CHECK(f.shell->focus() == Focus::Page);
+  }
+
+  TEST_CASE("no Diagnostics menu item without a diagnostics URL") {
+    Fixture f;
+    f.make();
+    f.press(Button::Options);
+    f.frame();
+    for (const auto& item : f.chrome.last["menu"]["items"]) {
+      CHECK(item["label"] != "Diagnostics");
+    }
   }
 
   TEST_CASE("Quit menu item requests exit") {

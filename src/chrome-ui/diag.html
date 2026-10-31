@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>ps5browser diag</title>
+<style>body{background:#111;color:#eee;font:28px/1.4 sans-serif;margin:24px}#js{color:#f44}.ok{color:#4f4}#log{font-size:22px;white-space:pre-wrap;height:420px;overflow:hidden;border:1px solid #444;padding:8px}button{font-size:28px;padding:12px 24px;margin:8px}input{font-size:28px;padding:8px;width:600px}</style></head>
+<body>
+<div id="js">JavaScript: NOT RUNNING</div>
+<div>Ticks: <span id="t">0</span> &nbsp; UA: <span id="ua"></span></div>
+<div>MSE: <span id="mse"></span> &nbsp; EME: <span id="eme"></span> &nbsp; Fullscreen: <span id="fs"></span> &nbsp; Gamepad API: <span id="gp"></span></div>
+<div><button id="b1">Click me</button> <input id="i1" placeholder="type here"> <a href="https://example.com/">link to example.com</a></div>
+<div id="log">events:
+</div>
+<script>
+(function(){
+  var js=document.getElementById('js'); js.textContent='JavaScript: OK'; js.className='ok';
+  document.getElementById('ua').textContent=navigator.userAgent;
+  document.getElementById('mse').textContent=('MediaSource' in window)?'yes':'no';
+  document.getElementById('eme').textContent=(navigator.requestMediaKeySystemAccess)?'present':'absent';
+  document.getElementById('fs').textContent=document.fullscreenEnabled||document.webkitFullscreenEnabled?'enabled':'disabled';
+  document.getElementById('gp').textContent=(navigator.getGamepads)?'yes':'no';
+  var n=0; setInterval(function(){document.getElementById('t').textContent=++n;},1000);
+  var log=document.getElementById('log'), c=0;
+  function add(s){ if(++c>14){log.textContent='events:\n';c=1;} log.textContent+=s+'\n'; }
+  ['mousemove','mousedown','mouseup','click','keydown','keyup','wheel','input','focus','blur','touchstart'].forEach(function(ev){
+    document.addEventListener(ev,function(e){
+      var d=ev; if(e.clientX!==undefined)d+=' '+e.clientX+','+e.clientY; if(e.key!==undefined)d+=' key='+e.key+' code='+e.keyCode; if(e.deltaY!==undefined)d+=' dy='+e.deltaY; if(ev==='input')d+=' value='+e.target.value;
+      if(ev!=='mousemove'||n%1===0) add(d);
+    },true);
+  });
+  document.getElementById('b1').addEventListener('click',function(){ this.textContent='Clicked '+(++this.n||(this.n=1)); });
+})();
+</script></body></html>

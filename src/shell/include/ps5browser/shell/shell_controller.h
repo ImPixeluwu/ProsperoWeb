@@ -56,6 +56,9 @@ class ShellController {
     std::string home_url = "about:blank";
     std::string user_agent;
     std::string language = "en";  // "en" or "ru"
+    // Input/feature probe page, offered as "Diagnostics" in the main menu
+    // (opens in a new tab); no menu item when empty.
+    std::string diagnostics_url;
     // Unix time source for history/bookmarks; defaults to time(nullptr).
     std::function<std::int64_t()> now;
   };

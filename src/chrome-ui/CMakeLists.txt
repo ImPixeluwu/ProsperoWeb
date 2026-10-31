@@ -4,7 +4,7 @@ include(GNUInstallDirs)
 set(PS5BROWSER_CHROME_INSTALL_DIR "${CMAKE_INSTALL_DATADIR}/ps5browser/chrome-ui"
     CACHE STRING "Install location of the HTML chrome, relative to the prefix")
 
-install(FILES chrome.html chrome.css chrome.js
+install(FILES chrome.html chrome.css chrome.js diag.html
         DESTINATION "${PS5BROWSER_CHROME_INSTALL_DIR}")
 
 # Frontends link this to learn where the chrome lives: the installed copy

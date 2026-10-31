@@ -856,6 +856,12 @@ void ShellController::show_menu_section(MenuSection section) {
                                close_menu();
                                if (auto* view = active_view()) view->reload();
                              }});
+      if (!config_.diagnostics_url.empty()) {
+        menu_items_.push_back({"Diagnostics", "", [this] {
+                                 close_menu();
+                                 open_tab(config_.diagnostics_url, true);
+                               }});
+      }
       menu_items_.push_back({"Settings", "", [this] {
                                close_menu();
                                show_notice({"info", "Settings", "Settings are not available yet."});

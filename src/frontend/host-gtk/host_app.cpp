@@ -193,6 +193,13 @@ int HostApp::run() {
   config.home_url = options_.demo.empty() ? "https://duckduckgo.com/" : "about:blank";
   config.user_agent = options_.user_agent;
   config.language = options_.language;
+  if (file_exists(chrome_dir + "/diag.html")) {
+    gchar* diag = g_filename_to_uri((chrome_dir + "/diag.html").c_str(), nullptr, nullptr);
+    if (diag) {
+      config.diagnostics_url = diag;
+      g_free(diag);
+    }
+  }
   shell_ = std::make_unique<shell::ShellController>(*this, *this, *storage_, config);
   shell_->start();
   build_chrome_view(chrome_dir);
