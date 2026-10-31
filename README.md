@@ -16,7 +16,7 @@ ProsperoBrowser is an independent homebrew project and is not affiliated with or
 
 - Tabs, address bar with URL/search normalisation, back/forward/reload, bookmarks and history, session restore.
 - 10-foot HTML chrome with an on-screen keyboard (Latin, Cyrillic, symbols) for the address bar and page text fields; English and Russian UI.
-- DualSense: virtual pointer on the left stick, trusted clicks and scrolling, tab switching, menu; USB keyboard.
+- DualSense: virtual pointer on the left stick or the touchpad (trackpad-style: slide, tap, two-finger scroll, press and slide to drag), trusted clicks and scrolling, tab switching, menu; USB keyboard.
 - HTML5 Fullscreen API and a chrome-hiding fullscreen mode.
 - HTML5 `<video>`/`<audio>` through an ffmpeg engine: progressive MP4/WebM and native HLS, software decoding (H.264, HEVC, VP8, VP9; AAC, MP3, Opus and others).
 - DRM notice: known DRM-only sites and pages that request EME get a clear message instead of a broken player.
@@ -115,15 +115,20 @@ The keyboard stands in for a DualSense; an SDL2 game controller, if connected, w
 | F11 | R3 | Fullscreen (hide the chrome; leaves page fullscreen) |
 | F9 | Options | Menu |
 | F8 | Share (Create) | Reload |
-| F7 | Touchpad | New tab |
+| F7 | Touchpad button | Click at the pointer, held while pressed (press and slide drags) |
 | W A S D (held) | Left stick | Move the pointer |
 | I J K L (held) | Right stick | Scroll |
+| (none) | Touchpad surface | One finger moves the pointer (relative, accelerated), a quick tap clicks, two fingers scroll (the content follows the fingers) |
+
+New tab: Options menu → New tab, or `+` in the tab strip (the touchpad button opened one before it became the mouse button; in chrome focus it still does).
+
+The touchpad works on the host only with a DualSense connected through SDL2; there is no keyboard or mouse emulation of it (the real mouse already goes to the page).
 
 On the PS5, Triangle, Square and a click into a text field open the console's own keyboard dialog, pre-filled with the URL or the field's value; confirming navigates or replaces the field's value, cancelling changes nothing. The built-in OSK below is the fallback when the dialog fails, and the only keyboard with `PROSPEROBROWSER_OSK=builtin` (or `"osk": "builtin"` in `config.json`) and on the host; see docs/ps5-runtime.md, "Text input".
 
 In the OSK: D-pad moves between keys, Cross types the key at the caret, L1/R1 move the caret, Square deletes before the caret, Triangle inserts a space, L2 is Shift, Touchpad (or the on-screen layout key) switches the layout, Options commits, Circle cancels. Holding the D-pad, Square, L1 or R1 repeats; the on-screen Clear key empties the text. In the menu: D-pad up/down selects, Cross activates, Circle goes back.
 
-While a text field in the page or the HTML address bar has focus, only the function keys stay mapped, so typing reaches the field. The real mouse goes straight to the page; moving it hides the gamepad pointer until a stick moves again.
+While a text field in the page or the HTML address bar has focus, only the function keys stay mapped, so typing reaches the field. The real mouse goes straight to the page; moving it hides the gamepad pointer until a stick or the touchpad moves it again.
 
 Host limitations:
 

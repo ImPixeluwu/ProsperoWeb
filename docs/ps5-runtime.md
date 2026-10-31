@@ -424,8 +424,17 @@ Phase 1 uses the non-accelerated raster path (no EGL/GLES at runtime):
   `chrome.html`, transparent background via `WKPageSetDrawsTransparentBackground`,
   patch 0011) has its own cache and is alpha-blended (premultiplied
   source-over) over the page into the window surface, only inside
-  `ShellController::chrome_rects()` (band, OSK panel, pointer, whole window
-  under a menu/notice) of the last few frames; see `Ps5App::composite_and_present`.
+  `ShellController::chrome_rects()` (band, OSK panel, whole window under a
+  menu/notice) of the last few frames; see `Ps5App::composite_and_present`.
+- The gamepad pointer is not part of the chrome on the console
+  (`Config::native_pointer`): the compositor blends a ring sprite
+  (`src/ps5/display/pointer.*`) over the composed frame and recomposes only
+  its old and new rects when it moves, so pointer motion repaints neither
+  WKView. The page gets at most one mouse move per frame, only when the
+  pointer's integer position changed.
+- The chrome renders incrementally (`chrome.js` patches the DOM): a state
+  push that changes nothing visible repaints nothing, and running CSS
+  animations (tab spinners) are not restarted.
 - Damage flows end to end as a small coalesced region
   (`display::Region`, at most 8 rects): `setViewNeedsDisplay` rects →
   `WKPagePaint` per rect → compose those rects (plus chrome rects that
@@ -606,6 +615,24 @@ widen its affinity (`cpuset_setaffinity`, CPU_LEVEL_WHICH; the SDK has no
 `PROSPEROBROWSER_CPU_WIDEN=0` skips that, `PROSPEROBROWSER_CPU_MONITOR=0` disables
 the monitor. A per-thread list needs the kernel's `kinfo_proc` to match the
 SDK's; otherwise the line says `threads 0: unavailable (kinfo_proc size ...)`.
+
+## Touchpad
+
+The DualSense touchpad is a trackpad (`core::TouchpadModel`): one finger
+moves the pointer relatively with acceleration, a quick still tap clicks
+(under 180 ms and 2% of the pad width), two fingers scroll the page with the
+content following the fingers, and the pad's button is the mouse button,
+held while pressed (press and slide drags). SDL's PS5 joystick driver does
+not report the touchpad (`SDL_ps5joystick.c` sets no touchpads and never
+calls `SDL_PrivateJoystickTouchpad`), so `Ps5Touchpad`
+(`src/frontend/ps5/ps5_touchpad.*`) reads the fingers with
+`scePadReadState()` on the pad handle SDL opened (`scePadGetHandle()`),
+in the `PS5_PadData` layout SDL passes to the same call. The resolution
+comes from `scePadGetControllerInformation()` when it returns a sane value,
+else 1920x1080, and grows if a finger reports a larger coordinate.
+`log.txt` says which source is used once: `touchpad: source scePad,
+resolution WxH (controller info|default)`, or `source sdl` should SDL ever
+report a touchpad.
 
 ## Text input
 
