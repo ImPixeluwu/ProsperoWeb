@@ -37,6 +37,10 @@ W=https://en.wikipedia.org/wiki/PlayStation_5
 | `host-video-mp4.png` | `shot host-video-mp4 15000 --url "$P/video.html?src=https://archive.org/download/BigBuckBunny_124/Content/big_buck_bunny_720p_surround.mp4"` | Progressive MP4 (H.264/AAC) plays through GStreamer: `readyState 4`, `currentTime` about 12 s, no error. |
 | `host-video-hls.png` | `shot host-video-hls 15000 --url "$P/video.html?src=https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8"` | HLS plays natively (`<video src=.m3u8>`, no hls.js): 1920x1080, `currentTime` about 11 s. Needs `WEBKIT_GST_ENABLE_HLS_SUPPORT=1`, which the host sets by default; without it `canPlayType()` is empty and playback fails with `MEDIA_ERR_SRC_NOT_SUPPORTED` (code 4). |
 
+## Store artwork previews
+
+`store-icon-preview.png` (the launch icon at 512 and 128 px) and `store-background-preview.png` (the home screen background at 1280x720) are written by `scripts/assets/render.sh` from `assets/*.svg`; see docs/store-submission.md.
+
 ## Probe pages
 
 `pages/` holds the local test pages used above:

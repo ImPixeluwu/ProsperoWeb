@@ -1,0 +1,14 @@
+{
+  "titleid": "PRSB00001",
+  "name": "ProsperoBrowser",
+  "kind": "app",
+  "category": "utilities",
+  "description": "A WebKit web browser for the PS5, driven by the controller, with tabs, bookmarks and video playback.",
+  "license": "GPL-3.0-or-later",
+  "author": "kvaps",
+  "version": null,
+  "source_repo": null,
+  "artifact_url": null,
+  "sha256": null,
+  "icon_url": null
+}
