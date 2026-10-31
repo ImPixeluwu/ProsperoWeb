@@ -6,9 +6,11 @@
 #if ENABLE(VIDEO) && USE(FFMPEG)
 
 #include "FFmpegLog.h"
+#include "FFmpegRemoteAudioClient.h"
 #include "Logging.h"
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <wtf/Condition.h>
 #include <wtf/Lock.h>
 #include <wtf/MonotonicTime.h>
@@ -103,6 +105,115 @@ private:
     MonotonicTime m_lastTick WTF_GUARDED_BY_LOCK(m_lock);
 };
 
+// Forwards samples to the UI process's audio server (FFmpegAudioWire.h).
+// A writer thread pulls from the render callback whenever less than the
+// target (100 ms, PS5BROWSER_AUDIO_AHEAD_MS) is queued on the server, so the
+// main thread never touches the socket. latency() follows the server's
+// played reports, which makes the engine's audio clock track what is heard.
+class RemoteAudioSink final : public AudioSink {
+    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(RemoteAudioSink);
+public:
+    static std::unique_ptr<AudioSink> create(RenderCallback& render, int port)
+    {
+        auto sink = std::unique_ptr<RemoteAudioSink>(new RemoteAudioSink(WTF::move(render)));
+        if (const char* ahead = getenv("PS5BROWSER_AUDIO_AHEAD_MS"); ahead && atoi(ahead) > 0)
+            sink->m_client.setTargetAhead(atoi(ahead) / 1000.0);
+        std::string error;
+        if (!sink->m_client.connect(port, 300, error)) {
+            ffmpegMediaLog("audio sink: remote 127.0.0.1:%d failed: %s", port, error.c_str());
+            render = WTF::move(sink->m_render);
+            return nullptr;
+        }
+        const auto& accepted = sink->m_client.accepted();
+        ffmpegMediaLog("audio sink: remote 127.0.0.1:%d connected (stream %u, output latency %u frames, %.0f ms ahead)",
+            port, accepted.streamId, accepted.outputLatencyFrames, sink->m_client.targetAhead() * 1000);
+        sink->m_port = port;
+        sink->m_thread = Thread::create("FFmpegRemoteAudio"_s, [sink = sink.get()] {
+            sink->run();
+        });
+        return sink;
+    }
+
+    ~RemoteAudioSink() final
+    {
+        m_client.requestClose();
+        {
+            Locker locker { m_lock };
+            m_quit = true;
+            m_condition.notifyAll();
+        }
+        m_thread->waitForCompletion();
+    }
+
+    void play() final
+    {
+        m_client.setPlaying(true);
+        wake();
+    }
+
+    void pause() final
+    {
+        m_client.setPlaying(false);
+        wake();
+    }
+
+    void flush() final
+    {
+        m_client.requestFlush();
+        wake();
+    }
+
+    double latency() const final { return m_client.latencySeconds(); }
+    bool isNull() const final { return false; }
+    const char* name() const final { return "remote"; }
+
+private:
+    explicit RemoteAudioSink(RenderCallback&& render)
+        : m_render(WTF::move(render))
+    {
+    }
+
+    void wake()
+    {
+        Locker locker { m_lock };
+        m_condition.notifyAll();
+    }
+
+    void run()
+    {
+        auto pull = [this](float* interleaved, size_t frames) {
+            m_render(std::span<float>(interleaved, frames * channels));
+        };
+        bool loggedFailure = false;
+        while (true) {
+            {
+                Locker locker { m_lock };
+                if (m_quit)
+                    break;
+            }
+            if (!m_client.pump(pull) && !loggedFailure) {
+                loggedFailure = true;
+                ffmpegMediaLog("audio sink: remote 127.0.0.1:%d %s, continuing without sound",
+                    m_port, m_client.failure().c_str());
+            }
+            Locker locker { m_lock };
+            if (!m_quit)
+                m_condition.waitFor(m_lock, 5_ms);
+        }
+        // Sends the close message.
+        if (!m_client.failed())
+            m_client.pump(pull);
+    }
+
+    RenderCallback m_render;
+    mutable FFmpegMedia::AudioWire::RemoteAudioClient m_client;
+    RefPtr<Thread> m_thread;
+    int m_port { 0 };
+    Lock m_lock;
+    Condition m_condition;
+    bool m_quit WTF_GUARDED_BY_LOCK(m_lock) { false };
+};
+
 #if defined(FFMPEG_MEDIA_SDL_AUDIO) && FFMPEG_MEDIA_SDL_AUDIO
 class SDLAudioSink final : public AudioSink {
 public:
@@ -176,12 +287,24 @@ private:
     double m_latency { 0 };
 };
 
-bool nullSinkRequested()
-{
-    const char* value = getenv("PS5BROWSER_MEDIA_AUDIO");
-    return value && !strcmp(value, "null");
-}
 #endif
+
+// The audio server's port: PS5BROWSER_AUDIO_PORT (the UI exports it), else
+// the default on PlayStation. 0 when forwarding is off.
+int remotePort()
+{
+    const char* value = getenv("PS5BROWSER_AUDIO_PORT");
+    if (!value || !*value) {
+#if PLATFORM(PLAYSTATION)
+        return FFmpegMedia::AudioWire::defaultPort;
+#else
+        return 0;
+#endif
+    }
+    char* end = nullptr;
+    long port = strtol(value, &end, 10);
+    return (!*end && port > 0 && port <= 65535) ? static_cast<int>(port) : 0;
+}
 
 } // namespace
 
@@ -192,13 +315,28 @@ std::unique_ptr<AudioSink> AudioSink::createNull(RenderCallback&& render)
 
 std::unique_ptr<AudioSink> AudioSink::create(RenderCallback&& render)
 {
-#if defined(FFMPEG_MEDIA_SDL_AUDIO) && FFMPEG_MEDIA_SDL_AUDIO
-    if (!nullSinkRequested()) {
-        if (auto sink = SDLAudioSink::create(render))
-            return sink;
-        ffmpegMediaLog("audio sink: falling back to the null sink (no sound, the clock keeps running)");
-    } else
+    const char* requested = getenv("PS5BROWSER_MEDIA_AUDIO");
+    std::string mode = requested ? requested : "";
+    if (mode == "null") {
         ffmpegMediaLog("audio sink: PS5BROWSER_MEDIA_AUDIO=null, using the null sink");
+        return createNull(WTF::move(render));
+    }
+    if (!mode.empty() && mode != "remote" && mode != "sdl")
+        ffmpegMediaLog("audio sink: unknown PS5BROWSER_MEDIA_AUDIO=%s, using the default order", mode.c_str());
+
+    int port = remotePort();
+    if (mode == "remote" && !port)
+        port = FFmpegMedia::AudioWire::defaultPort;
+    if (mode != "sdl" && port) {
+        if (auto sink = RemoteAudioSink::create(render, port))
+            return sink;
+        ffmpegMediaLog("audio sink: remote unavailable, trying the local SDL output (inaudible from the WebProcess on the PS5)");
+    }
+
+#if defined(FFMPEG_MEDIA_SDL_AUDIO) && FFMPEG_MEDIA_SDL_AUDIO
+    if (auto sink = SDLAudioSink::create(render))
+        return sink;
+    ffmpegMediaLog("audio sink: falling back to the null sink (no sound, the clock keeps running)");
 #else
     ffmpegMediaLog("audio sink: built without SDL audio, using the null sink");
 #endif

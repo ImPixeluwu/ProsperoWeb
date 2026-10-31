@@ -569,6 +569,8 @@ Ref<MediaTimePromise> MediaPlayerPrivateFFmpeg::seekToTarget(const SeekTarget& t
         decoder->setSeekTarget(time, m_serial);
     if (RefPtr decoder = m_audioDecoder)
         decoder->setSeekTarget(time, m_serial);
+    if (m_audioSink)
+        m_audioSink->flush();
     demuxer->seek(time, m_serial);
     m_clock.reset(time, monotonicNow());
     updatePlaybackRunning();
