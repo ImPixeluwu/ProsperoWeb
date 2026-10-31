@@ -504,6 +504,18 @@ void ShellController::on_button(Button button, bool pressed) {
   if (text_request_) {
     return;  // the text input provider owns the gamepad meanwhile
   }
+  if (button == Button::Touchpad) {
+    touchpad_.set_pressed(pressed);
+    if (!pressed && pressed_tab_) {
+      release_pointer_press();
+      return;
+    }
+    // On the page the pad's button is the mouse button: held, it drags.
+    if (pressed && focus_ == Focus::Page && mapper_.map(button, true, mode()) == Action::Click) {
+      press_at_pointer();
+      return;
+    }
+  }
   if (!pressed) {
     if (held_button_ == button) {
       stop_repeat();
@@ -540,6 +552,31 @@ void ShellController::on_mouse_move(float x, float y) {
   if (!pointer_hidden_by_mouse_) {
     pointer_hidden_by_mouse_ = true;
     mark_dirty();
+  }
+}
+
+void ShellController::on_touchpad(std::span<const core::TouchContact> contacts,
+                                  std::uint64_t now_ms) {
+  if (text_request_ || focus_ != Focus::Page) {
+    touchpad_.reset();
+    return;
+  }
+  touchpad_.update(contacts, now_ms);
+  const core::TouchpadModel::Output out = touchpad_.take();
+  if (out.pointer.x != 0.0f || out.pointer.y != 0.0f) {
+    const core::Vec2 p = pointer_.position();
+    pointer_.set_position({p.x + out.pointer.x, p.y + out.pointer.y});
+    pointer_moved_ = true;
+    if (pointer_hidden_by_mouse_) {
+      pointer_hidden_by_mouse_ = false;
+      mark_dirty();
+    }
+  }
+  // Scrolled from tick(), with the right stick's carry.
+  scroll_carry_.x += out.scroll.x;
+  scroll_carry_.y += out.scroll.y;
+  for (int i = 0; i < out.clicks; ++i) {
+    click_at_pointer();
   }
 }
 
@@ -667,6 +704,42 @@ void ShellController::click_at_pointer() {
   view->pointer_button(x, y, MouseButton::Left, true);
   view->pointer_button(x, y, MouseButton::Left, false);
   since_click_ = 0.0f;
+}
+
+void ShellController::press_at_pointer() {
+  const core::Vec2 w = pointer_.position();
+  const core::Vec2 p = to_view(w);
+  if (p.y < 0.0f) {
+    chrome_.click(static_cast<int>(w.x), static_cast<int>(w.y));
+    return;
+  }
+  auto* view = active_view();
+  const auto tab_id = tabs_.active_id();
+  if (!view || !tab_id) {
+    return;
+  }
+  const int x = static_cast<int>(p.x);
+  const int y = static_cast<int>(p.y);
+  view->pointer_move(x, y);
+  note_page_pointer(*tab_id, x, y);
+  view->pointer_button(x, y, MouseButton::Left, true);
+  pressed_tab_ = *tab_id;
+  since_click_ = 0.0f;
+}
+
+void ShellController::release_pointer_press() {
+  const std::uint64_t tab_id = *pressed_tab_;
+  pressed_tab_.reset();
+  if (tabs_.active_id() != tab_id) {
+    return;  // the tab changed meanwhile: its view saw no more moves
+  }
+  auto* view = active_view();
+  if (!view) {
+    return;
+  }
+  core::Vec2 p = to_view(pointer_.position());
+  p.y = std::max(0.0f, p.y);
+  view->pointer_button(static_cast<int>(p.x), static_cast<int>(p.y), MouseButton::Left, false);
 }
 
 void ShellController::scroll_active(int dx, int dy) {

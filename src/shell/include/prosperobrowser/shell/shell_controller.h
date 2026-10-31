@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,7 @@
 #include "prosperobrowser/core/session.h"
 #include "prosperobrowser/core/storage.h"
 #include "prosperobrowser/core/tab_manager.h"
+#include "prosperobrowser/core/touchpad_model.h"
 #include "prosperobrowser/shell/chrome_ui.h"
 #include "prosperobrowser/shell/engine_view.h"
 #include "prosperobrowser/shell/text_input.h"
@@ -94,6 +96,15 @@ class ShellController {
   void on_button(core::Button button, bool pressed);
   // Left stick moves the pointer, right stick scrolls; values in [-1, 1].
   void on_sticks(float lx, float ly, float rx, float ry);
+  // Touchpad as a trackpad (core::TouchpadModel): every finger now on the
+  // pad, once per frame before tick(); now_ms is a monotonic clock. One
+  // finger moves the pointer, a tap clicks, two fingers scroll the page.
+  // Only while the page has focus. The pad's button arrives through
+  // on_button(Button::Touchpad): on the page it is a mouse press held
+  // until the button is released (press and slide = drag).
+  void on_touchpad(std::span<const core::TouchContact> contacts, std::uint64_t now_ms);
+  // Pad height / width (its resolution), see TouchpadModel::set_aspect().
+  void set_touchpad_aspect(float aspect) { touchpad_.set_aspect(aspect); }
   // Advances pointer motion, scrolling and key repeat; renders the chrome
   // if anything changed.
   void tick(float dt_seconds);
@@ -244,6 +255,9 @@ class ShellController {
 
   // Input helpers.
   void click_at_pointer();
+  // The pad's button on the page: mouse down now, up on release.
+  void press_at_pointer();
+  void release_pointer_press();
   // Sends the pointer position to the page if its integer position changed
   // since the last move sent to the active tab (see tick()).
   void send_page_pointer_move();
@@ -294,6 +308,9 @@ class ShellController {
   core::Bookmarks bookmarks_;
   core::GamepadMapper mapper_;
   core::PointerModel pointer_;
+  core::TouchpadModel touchpad_;
+  // The tab holding a mouse press from the pad's button (see on_button()).
+  std::optional<std::uint64_t> pressed_tab_;
   core::RepeatTimer repeat_;
   core::RepeatTimer osk_repeat_{kOskRepeatDelayMs, kOskRepeatIntervalMs};
   core::OnScreenKeyboard osk_;

@@ -3,8 +3,10 @@
 
 #include <functional>
 #include <memory>
+#include <vector>
 
 #include "prosperobrowser/core/gamepad.h"
+#include "prosperobrowser/core/touchpad_model.h"
 
 namespace prosperobrowser::host {
 
@@ -23,11 +25,15 @@ class Gamepad {
   void poll(const std::function<void(core::Button, bool)>& on_button);
   bool connected() const;
   const float* sticks() const { return sticks_; }
+  // Fingers on the controller's touchpad after the last poll() (SDL reports
+  // them normalized; a DualSense over USB or Bluetooth has one touchpad).
+  const std::vector<core::TouchContact>& touch() const { return touch_; }
 
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
   float sticks_[4] = {0, 0, 0, 0};
+  std::vector<core::TouchContact> touch_;
 };
 
 }  // namespace prosperobrowser::host

@@ -46,6 +46,7 @@ struct Gamepad::Impl {
   SDL_GameController* controller = nullptr;
   bool l2 = false;
   bool r2 = false;
+  bool touch_logged = false;
 };
 
 Gamepad::Gamepad() : impl_(std::make_unique<Impl>()) {
@@ -105,9 +106,26 @@ void Gamepad::poll(const std::function<void(core::Button, bool)>& on_button) {
     }
   }
   auto* c = impl_->controller;
+  touch_.clear();
   if (!c) {
     for (float& s : sticks_) s = 0.0f;
     return;
+  }
+  if (SDL_GameControllerGetNumTouchpads(c) > 0) {
+    if (!impl_->touch_logged) {
+      impl_->touch_logged = true;
+      std::fprintf(stderr, "prosperobrowser-host: touchpad: source sdl, resolution normalized\n");
+    }
+    const int fingers = SDL_GameControllerGetNumTouchpadFingers(c, 0);
+    for (int i = 0; i < fingers; ++i) {
+      Uint8 state = 0;
+      float x = 0.0f;
+      float y = 0.0f;
+      float pressure = 0.0f;
+      if (SDL_GameControllerGetTouchpadFinger(c, 0, i, &state, &x, &y, &pressure) == 0 && state) {
+        touch_.push_back({i, x, y});
+      }
+    }
   }
   sticks_[0] = axis(c, SDL_CONTROLLER_AXIS_LEFTX);
   sticks_[1] = axis(c, SDL_CONTROLLER_AXIS_LEFTY);

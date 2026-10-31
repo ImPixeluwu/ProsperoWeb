@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "fakes.h"
 #include "prosperobrowser/core/in_memory_storage.h"
@@ -268,11 +269,11 @@ TEST_SUITE("shell.tabs") {
     Fixture f;
     f.make();
     for (std::size_t i = 1; i < core::TabManager::kMaxTabs; ++i) {
-      f.press(Button::Touchpad);
+      f.shell->on_chrome_event({{"type", "tab_new"}});
     }
     CHECK(f.shell->tabs().size() == core::TabManager::kMaxTabs);
     CHECK(f.shell->focus() == Focus::Page);
-    f.press(Button::Touchpad);
+    f.shell->on_chrome_event({{"type", "tab_new"}});
     f.frame();
     CHECK(f.shell->tabs().size() == core::TabManager::kMaxTabs);
     CHECK(f.chrome.last["notice"]["title"] == "Tab limit reached");
@@ -547,6 +548,99 @@ TEST_SUITE("shell.pointer") {
     CHECK_FALSE(f.shell->pointer_visible());
     CHECK(f.chrome.last["pointer"]["visible"] == false);
     CHECK(f.chrome.pointer_calls.empty());  // the render carried it
+  }
+}
+
+TEST_SUITE("shell.touchpad") {
+  using core::TouchContact;
+
+  void touch(Fixture& f, std::vector<TouchContact> contacts, std::uint64_t t) {
+    f.shell->on_touchpad(contacts, t);
+    f.frame();
+  }
+
+  TEST_CASE("a one-finger slide moves the pointer and hovers the page") {
+    Fixture f;
+    f.make();
+    f.frame();
+    const auto start = f.shell->pointer();
+    f.view(0).calls.clear();
+    touch(f, {{0, 0.3f, 0.5f}}, 0);
+    for (int i = 1; i <= 10; ++i) {
+      touch(f, {{0, 0.3f + 0.02f * static_cast<float>(i), 0.5f}}, static_cast<std::uint64_t>(i) * 50);
+    }
+    const auto p = f.shell->pointer();
+    CHECK(p.x > start.x + 100.0f);
+    CHECK(p.y == doctest::Approx(start.y));
+    CHECK(f.view(0).called_prefix("pointer_move "));
+    CHECK_FALSE(f.view(0).called_prefix("pointer_button "));
+  }
+
+  TEST_CASE("a tap clicks at the pointer") {
+    Fixture f;
+    f.make();
+    f.view(0).calls.clear();
+    touch(f, {{0, 0.5f, 0.5f}}, 1000);
+    touch(f, {}, 1080);
+    CHECK(f.view(0).called_prefix("pointer_button "));
+    CHECK(f.view(0).count("pointer_button 960,444 1 down") == 1);
+    CHECK(f.view(0).count("pointer_button 960,444 1 up") == 1);
+  }
+
+  TEST_CASE("two fingers scroll the page") {
+    Fixture f;
+    f.make();
+    f.view(0).calls.clear();
+    touch(f, {{0, 0.4f, 0.7f}, {1, 0.6f, 0.7f}}, 0);
+    touch(f, {{0, 0.4f, 0.5f}, {1, 0.6f, 0.5f}}, 16);
+    CHECK(f.view(0).called_prefix("scroll 0,"));
+    CHECK_FALSE(f.view(0).called_prefix("scroll 0,-"));  // fingers up: content up
+    touch(f, {}, 100);
+    CHECK_FALSE(f.view(0).called_prefix("pointer_button "));
+  }
+
+  TEST_CASE("the pad's button presses, drags and releases on the page") {
+    Fixture f;
+    f.make();
+    f.frame();
+    f.view(0).calls.clear();
+    touch(f, {{0, 0.5f, 0.5f}}, 0);
+    f.shell->on_button(Button::Touchpad, true);
+    CHECK(f.view(0).called("pointer_button 960,444 1 down"));
+    CHECK_FALSE(f.view(0).called_prefix("pointer_button 960,444 1 up"));
+    touch(f, {{0, 0.6f, 0.5f}}, 100);  // drag
+    f.shell->on_button(Button::Touchpad, false);
+    const auto p = f.shell->pointer();
+    const std::string at = std::to_string(static_cast<int>(p.x)) + "," +
+                           std::to_string(static_cast<int>(p.y) - ShellController::kChromeBandHeight);
+    CHECK(p.x > 960.0f);
+    CHECK(f.view(0).called("pointer_move " + at));
+    CHECK(f.view(0).called("pointer_button " + at + " 1 up"));
+    touch(f, {}, 200);  // lifting after a press is not another click
+    CHECK(f.view(0).count("pointer_button " + at + " 1 down") == 0);
+    CHECK(f.shell->tabs().size() == 1);  // no longer opens a new tab
+  }
+
+  TEST_CASE("the touchpad is ignored outside the page") {
+    Fixture f;
+    f.make();
+    f.press(Button::Options);  // menu
+    const auto before = f.shell->pointer();
+    touch(f, {{0, 0.2f, 0.5f}}, 0);
+    touch(f, {{0, 0.8f, 0.5f}}, 50);
+    touch(f, {}, 100);
+    CHECK(f.shell->pointer().x == doctest::Approx(before.x));
+    CHECK(f.shell->focus() == Focus::Menu);
+  }
+
+  TEST_CASE("the touchpad button still switches the OSK layout") {
+    Fixture f;
+    f.make();
+    f.press(Button::Triangle);
+    REQUIRE(f.shell->focus() == Focus::Osk);
+    const std::string layout = f.shell->chrome_state()["osk"]["layout"];
+    f.press(Button::Touchpad);
+    CHECK(f.shell->chrome_state()["osk"]["layout"] != layout);
   }
 }
 

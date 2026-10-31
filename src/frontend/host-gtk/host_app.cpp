@@ -405,6 +405,9 @@ gboolean HostApp::on_tick(gpointer self) {
   me->last_tick_us_ = now;
 
   me->gamepad_->poll([me](Button b, bool pressed) { me->shell_->on_button(b, pressed); });
+  // A DualSense touchpad drives the pointer as on the console. There is no
+  // host mouse emulation of it: the real mouse already goes to the page.
+  me->shell_->on_touchpad(me->gamepad_->touch(), static_cast<std::uint64_t>(now / 1000));
   if (me->input_release_) {
     me->shell_->on_button(*me->input_release_, false);
     me->input_release_.reset();

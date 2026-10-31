@@ -40,7 +40,7 @@ TEST_SUITE("gamepad_mapper") {
                                  {Button::Share, Action::Reload},
                                  {Button::L3, Action::ToggleChrome},
                                  {Button::R3, Action::ToggleFullscreen},
-                                 {Button::Touchpad, Action::NewTab},
+                                 {Button::Touchpad, Action::Click},
                                  {Button::PS, Action::None},
                              });
   }
@@ -90,7 +90,7 @@ TEST_SUITE("gamepad_mapper") {
     const GamepadMapper m;
     CHECK(m.map(Button::L1, true, Mode::Page) == Action::PrevTab);
     CHECK(m.map(Button::R1, true, Mode::Page) == Action::NextTab);
-    CHECK(m.map(Button::Touchpad, true, Mode::Page) == Action::NewTab);
+    CHECK(m.map(Button::Touchpad, true, Mode::Page) == Action::Click);
     CHECK(m.map(Button::L1, true, Mode::Chrome) == Action::PrevTab);
     CHECK(m.map(Button::Touchpad, true, Mode::Chrome) == Action::NewTab);
     CHECK(m.map(Button::L2, true, Mode::Osk) == Action::OskShift);

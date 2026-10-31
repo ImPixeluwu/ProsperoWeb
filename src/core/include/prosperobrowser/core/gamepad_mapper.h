@@ -14,7 +14,12 @@ namespace prosperobrowser::core {
 //   Cross=Click  Circle=Back  Triangle=FocusAddressBar  Square=OpenOsk
 //   L1=PrevTab  R1=NextTab  L2=PageUp  R2=PageDown
 //   D-pad=Scroll{Up,Down,Left,Right}  Options=OpenMenu  Share=Reload
-//   L3=ToggleChrome  R3=ToggleFullscreen  Touchpad=NewTab
+//   L3=ToggleChrome  R3=ToggleFullscreen
+//   Touchpad (the pad's button) = Click: the shell holds the mouse button
+//   down while it is pressed, so press and slide drags. The pad's surface is
+//   a trackpad (core::TouchpadModel: slide = pointer, tap = click, two
+//   fingers = scroll). New tab: Options menu -> New tab, or "+" in the tab
+//   strip (it used to be the touchpad button).
 //
 // Chrome mode (address bar / tab strip / menus):
 //   D-pad=Navigate{Up,Down,Left,Right}  Cross=Activate

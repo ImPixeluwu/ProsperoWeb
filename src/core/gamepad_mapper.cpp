@@ -36,7 +36,7 @@ Action GamepadMapper::map_page(Button button) {
     case Button::Right: return Action::ScrollRight;
     case Button::Options: return Action::OpenMenu;
     case Button::Share: return Action::Reload;
-    case Button::Touchpad: return Action::NewTab;
+    case Button::Touchpad: return Action::Click;
     case Button::PS: return Action::None;
   }
   return Action::None;
