@@ -34,10 +34,10 @@ index b0fa88487..16fd4012c 100644
      ${WEBCORE_DIR}/platform/generic
 diff --git a/Source/WebCore/platform/FFmpeg.cmake b/Source/WebCore/platform/FFmpeg.cmake
 new file mode 100644
-index 000000000..404c079ac
+index 000000000..6ec2a03c2
 --- /dev/null
 +++ b/Source/WebCore/platform/FFmpeg.cmake
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,60 @@
 +# ffmpeg media engine (USE_FFMPEG): software playback of progressive media
 +# and HLS through libavformat/libavcodec, and Media Source Extensions
 +# (platform/graphics/ffmpeg/mse, compiled to nothing without
@@ -56,6 +56,7 @@ index 000000000..404c079ac
 +    platform/graphics/ffmpeg/FFmpegResourceIO.cpp
 +    platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp
 +    platform/graphics/ffmpeg/FFmpegVideoOverlay.cpp
++    platform/graphics/ffmpeg/FFmpegVideoPresenter.cpp
 +    platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp
 +    platform/graphics/ffmpeg/mse/FFmpegAppendParser.cpp
 +    platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.cpp
@@ -1607,10 +1608,10 @@ index 000000000..68b6e1d69
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegDemuxer.cpp b/Source/WebCore/platform/graphics/ffmpeg/FFmpegDemuxer.cpp
 new file mode 100644
-index 000000000..d53935536
+index 000000000..9972f628a
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegDemuxer.cpp
-@@ -0,0 +1,612 @@
+@@ -0,0 +1,613 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -2134,7 +2135,8 @@ index 000000000..d53935536
 +            Locker locker { m_lock };
 +            seekRequest = std::exchange(m_pendingSeek, std::nullopt);
 +            shouldWait = !seekRequest && (m_endOfStream
-+                || FFmpegMedia::demuxerShouldWait(m_videoQueue.bytes() + m_audioQueue.bytes(), m_videoQueue.level(), m_audioQueue.level()));
++                || FFmpegMedia::demuxerShouldWait(m_videoQueue.bytes() + m_audioQueue.bytes(), m_videoQueue.level(), m_audioQueue.level(),
++                    m_isHLS ? FFmpegMedia::hlsQueuedSeconds : FFmpegMedia::maxQueuedSeconds));
 +            m_readerWaiting = shouldWait;
 +            if (shouldWait) {
 +                m_condition.waitFor(m_lock, idlePollInterval);
@@ -2449,10 +2451,10 @@ index 000000000..bef2fb676
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegPlaybackPolicy.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegPlaybackPolicy.h
 new file mode 100644
-index 000000000..8938a131b
+index 000000000..92ea7d596
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegPlaybackPolicy.h
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,217 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Buffering thresholds and the HTML readyState/networkState decisions of the
@@ -2472,6 +2474,9 @@ index 000000000..8938a131b
 +// least maxQueuedSeconds queued; it resumes once that is no longer true.
 +inline constexpr size_t maxQueuedBytes = 24u << 20;
 +inline constexpr double maxQueuedSeconds = 10.0;
++// HLS reads further ahead: segment servers stall for many seconds at a time
++// (rezka: 17 s without a segment), and the byte cap above still bounds it.
++inline constexpr double hlsQueuedSeconds = 30.0;
 +// A stream with fewer packets than this is never considered "full" (sparse
 +// streams or broken durations must not stall the other stream).
 +inline constexpr size_t minQueuedPackets = 25;
@@ -2482,18 +2487,18 @@ index 000000000..8938a131b
 +    double seconds { 0 };
 +};
 +
-+inline bool streamHasEnough(const QueueLevel& queue)
++inline bool streamHasEnough(const QueueLevel& queue, double targetSeconds = maxQueuedSeconds)
 +{
-+    return !queue.enabled || (queue.packets >= minQueuedPackets && queue.seconds >= maxQueuedSeconds);
++    return !queue.enabled || (queue.packets >= minQueuedPackets && queue.seconds >= targetSeconds);
 +}
 +
-+inline bool demuxerShouldWait(size_t totalBytes, const QueueLevel& video, const QueueLevel& audio)
++inline bool demuxerShouldWait(size_t totalBytes, const QueueLevel& video, const QueueLevel& audio, double targetSeconds = maxQueuedSeconds)
 +{
 +    if (totalBytes >= maxQueuedBytes)
 +        return true;
 +    if (!video.enabled && !audio.enabled)
 +        return false;
-+    return streamHasEnough(video) && streamHasEnough(audio);
++    return streamHasEnough(video, targetSeconds) && streamHasEnough(audio, targetSeconds);
 +}
 +
 +// Network read-ahead per stream: a request is suspended above the high water
@@ -2520,6 +2525,56 @@ index 000000000..8938a131b
 +{
 +    return unreadBytes < networkLowWaterBytes;
 +}
++
++// Stalled or failed media requests (FFmpegResourceIO.cpp). A request that
++// delivers no bytes for networkStallSeconds while the demuxer waits for
++// them, or that fails with a network error or a retryable HTTP status, is
++// cancelled and issued again from the current offset (a Range request),
++// after a backoff of 0.5, 1 and 2 s. After networkMaxRetries the stream
++// fails as before. Bytes arriving reset the count: each stall of a long
++// download gets its own retries.
++inline constexpr double networkStallSeconds = 8.0;
++inline constexpr unsigned networkMaxRetries = 3;
++
++inline bool networkStalled(double lastProgressAt, double now)
++{
++    return now - lastProgressAt >= networkStallSeconds;
++}
++
++// HTTP status of a failed response worth retrying: server errors, 408 and
++// 429. Other 4xx are final. 0 stands for a network failure (no response).
++inline bool networkStatusIsRetryable(int status)
++{
++    return !status || status == 408 || status == 429 || (status >= 500 && status <= 599);
++}
++
++class NetworkRetry {
++public:
++    struct Decision {
++        bool retry { false };
++        unsigned attempt { 0 }; // 1-based, when retry
++        double delaySeconds { 0 };
++    };
++
++    // A stall or a retryable failure: retry after the next backoff, or give up.
++    Decision onFailure()
++    {
++        Decision decision;
++        if (m_attempts >= networkMaxRetries)
++            return decision;
++        decision.retry = true;
++        decision.attempt = ++m_attempts;
++        decision.delaySeconds = 0.5 * static_cast<double>(1u << (decision.attempt - 1));
++        return decision;
++    }
++
++    // Bytes arrived: the connection works again.
++    void onProgress() { m_attempts = 0; }
++    unsigned attempts() const { return m_attempts; }
++
++private:
++    unsigned m_attempts { 0 };
++};
 +
 +// Layout of a decoded BGRA video frame. libswscale's x86 output loops store
 +// 8 pixels per iteration (REAL_WRITEBGR32 in libswscale/x86/
@@ -2614,6 +2669,156 @@ index 000000000..8938a131b
 +        return NetworkLevel::Idle;
 +    return NetworkLevel::Loading;
 +}
++
++} // namespace FFmpegMedia
++} // namespace WebCore
+diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegPresenterPolicy.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegPresenterPolicy.h
+new file mode 100644
+index 000000000..d966fbf06
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegPresenterPolicy.h
+@@ -0,0 +1,144 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++//
++// Frame presentation rules of the ffmpeg media engine's presenter thread
++// (FFmpegVideoPresenter.h). Engine-independent (no WebCore/WTF/ffmpeg):
++// callers pass the clock time, so the host tests drive it with a fake clock.
++//
++//  - a frame is due once the clock reached its pts (5 ms early tolerance);
++//    the presenter sleeps until then, at most maxWaitSeconds at a time,
++//    because an audio-driven clock can jump;
++//  - a due frame is shown even when it is late, unless it is more than
++//    1.5 frame intervals late and a newer frame is already decoded: then it
++//    is dropped and the newer one is considered instead;
++//  - paused or seeking, the first frame of a new position is shown at once.
++
++#pragma once
++
++#include <algorithm>
++#include <cstdio>
++#include <optional>
++#include <string>
++
++namespace WebCore {
++namespace FFmpegMedia {
++
++constexpr double presenterEarlyTolerance = 0.005;
++constexpr double presenterLateIntervals = 1.5;
++constexpr double presenterDefaultInterval = 1.0 / 30;
++constexpr double presenterMinWaitSeconds = 0.001;
++constexpr double presenterMaxWaitSeconds = 0.010;
++// No frame decoded yet while playing: poll the decoder's output this often.
++constexpr double presenterPollSeconds = 0.004;
++// Paused, nothing to show: the main thread wakes the presenter on changes.
++constexpr double presenterIdleSeconds = 0.020;
++
++enum class PresentAction { Wait, Show, Drop };
++
++struct PresentDecision {
++    PresentAction action { PresentAction::Wait };
++    // Wait: seconds of media time until the frame is due.
++    double untilDue { 0 };
++    // Show/Drop: how late the frame is (never negative).
++    double lateness { 0 };
++};
++
++// Frame duration, else the distance to the next frame, else 30 fps; bounded
++// so a broken timestamp neither drops everything nor nothing.
++inline double presentationInterval(double framePts, double frameDuration, std::optional<double> nextPts)
++{
++    double interval = frameDuration;
++    if (!(interval > 0) && nextPts && *nextPts > framePts)
++        interval = *nextPts - framePts;
++    if (!(interval > 0))
++        interval = presenterDefaultInterval;
++    return std::clamp(interval, 1.0 / 240, 0.25);
++}
++
++inline PresentDecision decidePresentation(double framePts, double frameDuration, std::optional<double> nextPts, double clock, bool showAtOnce)
++{
++    PresentDecision decision;
++    if (showAtOnce) {
++        decision.action = PresentAction::Show;
++        decision.lateness = std::max(0.0, clock - framePts);
++        return decision;
++    }
++    if (framePts > clock + presenterEarlyTolerance) {
++        decision.action = PresentAction::Wait;
++        decision.untilDue = framePts - clock;
++        return decision;
++    }
++    decision.lateness = std::max(0.0, clock - framePts);
++    double interval = presentationInterval(framePts, frameDuration, nextPts);
++    decision.action = decision.lateness > presenterLateIntervals * interval && nextPts ? PresentAction::Drop : PresentAction::Show;
++    return decision;
++}
++
++// Wall-clock seconds to sleep before the next decision. `untilDue` is media
++// time; at playback rate r it passes r times faster.
++inline double presenterWaitSeconds(std::optional<double> untilDue, double rate, bool running)
++{
++    if (!running)
++        return presenterIdleSeconds;
++    if (!untilDue)
++        return presenterPollSeconds;
++    double wall = rate > 0 ? *untilDue / rate : *untilDue;
++    return std::clamp(wall, presenterMinWaitSeconds, presenterMaxWaitSeconds);
++}
++
++// Per-interval counters for the "presenter:" log line.
++class PresenterStats {
++public:
++    void record(const PresentDecision& decision)
++    {
++        if (decision.action == PresentAction::Wait)
++            return;
++        ++m_due;
++        if (decision.action == PresentAction::Show) {
++            ++m_shown;
++            m_maxLateness = std::max(m_maxLateness, decision.lateness);
++        } else
++            ++m_lateDropped;
++    }
++
++    unsigned due() const { return m_due; }
++    unsigned shown() const { return m_shown; }
++    unsigned lateDropped() const { return m_lateDropped; }
++    double maxLatenessMilliseconds() const { return m_maxLateness * 1000; }
++
++    // True once `interval` seconds passed since the first call (which only
++    // starts the interval); the caller then logs line() and calls reset().
++    bool intervalElapsed(double now, double interval)
++    {
++        if (!m_started) {
++            m_started = true;
++            m_intervalStart = now;
++            return false;
++        }
++        return now - m_intervalStart >= interval;
++    }
++
++    std::string line() const
++    {
++        char text[128];
++        snprintf(text, sizeof(text), "presenter: due %u shown %u late-dropped %u max lateness %.1f ms", m_due, m_shown, m_lateDropped, maxLatenessMilliseconds());
++        return text;
++    }
++
++    void reset(double now)
++    {
++        m_due = m_shown = m_lateDropped = 0;
++        m_maxLateness = 0;
++        m_intervalStart = now;
++    }
++
++private:
++    unsigned m_due { 0 };
++    unsigned m_shown { 0 };
++    unsigned m_lateDropped { 0 };
++    double m_maxLateness { 0 };
++    double m_intervalStart { 0 };
++    bool m_started { false };
++};
 +
 +} // namespace FFmpegMedia
 +} // namespace WebCore
@@ -2994,10 +3199,10 @@ index 000000000..7fc925774
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegResourceIO.cpp b/Source/WebCore/platform/graphics/ffmpeg/FFmpegResourceIO.cpp
 new file mode 100644
-index 000000000..a4113b6f8
+index 000000000..5f3ba90f6
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegResourceIO.cpp
-@@ -0,0 +1,517 @@
+@@ -0,0 +1,602 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -3015,6 +3220,7 @@ index 000000000..a4113b6f8
 +#include "ResourceResponse.h"
 +#include "SharedBuffer.h"
 +#include <wtf/MainThread.h>
++#include <wtf/MonotonicTime.h>
 +#include <wtf/text/MakeString.h>
 +#include <wtf/text/StringToIntegerConversion.h>
 +
@@ -3079,6 +3285,11 @@ index 000000000..a4113b6f8
 +        return -1;
 +    auto total = parseIntegerAllowingTrailingJunk<uint64_t>(StringView(contentRange).substring(slash + 1));
 +    return total ? static_cast<int64_t>(*total) : -1;
++}
++
++double monotonicSeconds()
++{
++    return MonotonicTime::now().secondsSinceEpoch().seconds();
 +}
 +
 +int readPacketCallback(void* opaque, uint8_t* buffer, int size)
@@ -3158,16 +3369,21 @@ index 000000000..a4113b6f8
 +    Locker locker { m_lock };
 +    m_readPosition = offset;
 +    m_rangeEnd = endOffset > offset ? endOffset : 0;
++    m_byteRangeEnd = m_rangeEnd;
++}
++
++std::string FFmpegResourceStream::hostForLog() const
++{
++    return m_url.host().utf8().legacyCStringPointer();
 +}
 +
 +int FFmpegResourceStream::open()
 +{
 +    Locker locker { m_lock };
 +    startRequestLocked(m_readPosition, false);
-+    while (m_state == RequestState::Pending) {
-+        if (m_shared->aborted || m_closed)
++    while (m_state == RequestState::Pending || m_state == RequestState::RetryWait) {
++        if (!waitLocked())
 +            return AVERROR_EXIT;
-+        m_condition.waitFor(m_lock, pollInterval);
 +    }
 +    if (m_state == RequestState::Failed)
 +        return AVERROR(EIO);
@@ -3212,7 +3428,58 @@ index 000000000..a4113b6f8
 +    if (m_shared->aborted || m_closed)
 +        return false;
 +    m_condition.waitFor(m_lock, pollInterval);
-+    return !(m_shared->aborted || m_closed);
++    if (m_shared->aborted || m_closed)
++        return false;
++    checkRequestLocked();
++    return true;
++}
++
++void FFmpegResourceStream::checkRequestLocked()
++{
++    double now = monotonicSeconds();
++    if (m_state == RequestState::RetryWait) {
++        if (now >= m_retryAt)
++            restartRequestLocked();
++        return;
++    }
++    if ((m_state == RequestState::Pending || m_state == RequestState::Receiving) && FFmpegMedia::networkStalled(m_lastProgressAt, now))
++        retryOrFailLocked("stall 8s");
++}
++
++void FFmpegResourceStream::retryOrFailLocked(const char* reason)
++{
++    unsigned long long at = m_requestPosition + m_receivedInRequest;
++    // Whatever the current request still delivers is ignored from now on.
++    ++m_requestId;
++    stopResourceLocked();
++    auto decision = m_retry.onFailure();
++    if (!decision.retry) {
++        ffmpegMediaLog("net: %s on %s at byte %llu, giving up after %u retries", reason, hostForLog().c_str(), at, FFmpegMedia::networkMaxRetries);
++        m_state = RequestState::Failed;
++        m_shared->networkError = true;
++        m_condition.notifyAll();
++        return;
++    }
++    ffmpegMediaLog("net: %s on %s at byte %llu, retry %u/%u in %.1f s", reason, hostForLog().c_str(), at, decision.attempt,
++        FFmpegMedia::networkMaxRetries, decision.delaySeconds);
++    m_state = RequestState::RetryWait;
++    m_retryAt = monotonicSeconds() + decision.delaySeconds;
++    m_condition.notifyAll();
++}
++
++void FFmpegResourceStream::restartRequestLocked()
++{
++    // From the end of the received data when the reader is inside it (the
++    // buffer stays), else from the read position.
++    uint64_t start = bufferStartLocked();
++    uint64_t end = bufferEndLocked();
++    bool continueBuffer = !m_chunks.isEmpty() && m_readPosition >= start && m_readPosition <= end;
++    uint64_t position = continueBuffer ? end : m_readPosition;
++    if (m_byteRangeEnd > position)
++        m_rangeEnd = m_byteRangeEnd;
++    ffmpegMediaLog("net: retry %u/%u: requesting %s from byte %llu", m_retry.attempts(), FFmpegMedia::networkMaxRetries, hostForLog().c_str(),
++        static_cast<unsigned long long>(position));
++    startRequestLocked(position, continueBuffer);
 +}
 +
 +int FFmpegResourceStream::read(uint8_t* buffer, int size)
@@ -3257,6 +3524,8 @@ index 000000000..a4113b6f8
 +        case RequestState::Suspended:
 +            startRequestLocked(m_readPosition, m_readPosition == end);
 +            break;
++        case RequestState::RetryWait:
++            break;
 +        }
 +        if (m_interruptibleBySeek && m_shared->seekPending)
 +            return AVERROR(EINTR);
@@ -3269,7 +3538,7 @@ index 000000000..a4113b6f8
 +{
 +    Locker locker { m_lock };
 +    if (whence & AVSEEK_SIZE) {
-+        while (m_state == RequestState::Pending || m_state == RequestState::None) {
++        while (m_state == RequestState::Pending || m_state == RequestState::None || m_state == RequestState::RetryWait) {
 +            if (m_state == RequestState::None)
 +                startRequestLocked(m_readPosition, false);
 +            if (!waitLocked())
@@ -3320,6 +3589,7 @@ index 000000000..a4113b6f8
 +    m_receivedInRequest = 0;
 +    m_skipBytes = 0;
 +    m_state = RequestState::Pending;
++    m_lastProgressAt = monotonicSeconds();
 +    unsigned requestId = ++m_requestId;
 +    // The byte range end only bounds the first request (a segment); later
 +    // requests (resumes, seeks) are open-ended.
@@ -3409,14 +3679,24 @@ index 000000000..a4113b6f8
 +
 +    bool isHTTP = response.url().protocolIsInHTTPFamily() || m_url.protocolIsInHTTPFamily();
 +    int status = response.httpStatusCode();
++    m_lastProgressAt = monotonicSeconds();
 +    if (isHTTP && status >= httpStatus400BadRequest) {
-+        ffmpegMediaLog("net: HTTP %d for %s://%s", status, m_url.protocol().utf8().legacyCStringPointer(), m_url.host().utf8().legacyCStringPointer());
++        ffmpegMediaLog("net: HTTP %d for %s://%s at byte %llu", status, m_url.protocol().utf8().legacyCStringPointer(), hostForLog().c_str(),
++            static_cast<unsigned long long>(m_requestPosition));
++        shouldContinue = false;
++        if (FFmpegMedia::networkStatusIsRetryable(status)) {
++            char reason[16];
++            snprintf(reason, sizeof(reason), "HTTP %d", status);
++            retryOrFailLocked(reason);
++            return;
++        }
 +        m_state = RequestState::Failed;
 +        m_shared->networkError = true;
 +        m_condition.notifyAll();
-+        shouldContinue = false;
 +        return;
 +    }
++    if (m_retry.attempts())
++        ffmpegMediaLog("net: retry %u/%u: HTTP %d from %s", m_retry.attempts(), FFmpegMedia::networkMaxRetries, status, hostForLog().c_str());
 +
 +    m_shared->sawResponse = true;
 +    if (isHTTP && !passedAccessControlCheck)
@@ -3457,6 +3737,12 @@ index 000000000..a4113b6f8
 +        return;
 +
 +    m_shared->bytesReceived += data.size();
++    m_lastProgressAt = monotonicSeconds();
++    if (m_retry.attempts()) {
++        ffmpegMediaLog("net: %s recovered at byte %llu after %u retries", hostForLog().c_str(),
++            static_cast<unsigned long long>(m_requestPosition + m_receivedInRequest), m_retry.attempts());
++        m_retry.onProgress();
++    }
 +    if (m_skipBytes) {
 +        size_t skipped = static_cast<size_t>(std::min<uint64_t>(m_skipBytes, data.size()));
 +        m_skipBytes -= skipped;
@@ -3503,8 +3789,12 @@ index 000000000..a4113b6f8
 +    if (m_closed || requestId != m_requestId)
 +        return;
 +    ffmpegMediaLog("net: load failed%s for %s://%s at byte %llu", isAccessControlFailure ? " (CORS)" : "",
-+        m_url.protocol().utf8().legacyCStringPointer(), m_url.host().utf8().legacyCStringPointer(),
++        m_url.protocol().utf8().legacyCStringPointer(), hostForLog().c_str(),
 +        static_cast<unsigned long long>(m_requestPosition + m_receivedInRequest));
++    if (!isAccessControlFailure) {
++        retryOrFailLocked("load failed");
++        return;
++    }
 +    m_state = RequestState::Failed;
 +    m_shared->networkError = true;
 +    if (isAccessControlFailure)
@@ -3517,10 +3807,10 @@ index 000000000..a4113b6f8
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegResourceIO.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegResourceIO.h
 new file mode 100644
-index 000000000..267ce18c5
+index 000000000..605135cd9
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegResourceIO.h
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,158 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Byte-stream input for libavformat backed by WebCore's media resource
@@ -3534,13 +3824,21 @@ index 000000000..267ce18c5
 +// abort flag every 50 ms); requests are started on the main thread and the
 +// PlatformMediaResourceClient callbacks arrive there. The main thread never
 +// waits for the demuxer thread, so the two cannot deadlock.
++//
++// Stalls and failures: a request that delivers nothing for 8 s while the
++// demuxer waits, a network failure or a 5xx/408/429 response is cancelled
++// and issued again from the current offset (Range), after 0.5, 1 and 2 s;
++// then the stream fails (NetworkRetry in FFmpegPlaybackPolicy.h). The
++// waits of the demuxer thread drive the stall check and the backoff.
 +
 +#pragma once
 +
 +#if ENABLE(VIDEO) && USE(FFMPEG)
 +
++#include "FFmpegPlaybackPolicy.h"
 +#include <atomic>
 +#include <span>
++#include <string>
 +#include <wtf/Condition.h>
 +#include <wtf/Deque.h>
 +#include <wtf/Lock.h>
@@ -3615,7 +3913,7 @@ index 000000000..267ce18c5
 +private:
 +    FFmpegResourceStream(Ref<PlatformMediaResourceLoader>&&, const URL&, Ref<FFmpegIOShared>&&);
 +
-+    enum class RequestState : uint8_t { None, Pending, Receiving, Finished, Failed, Suspended };
++    enum class RequestState : uint8_t { None, Pending, Receiving, Finished, Failed, Suspended, RetryWait };
 +
 +    struct Chunk {
 +        uint64_t position { 0 };
@@ -3632,6 +3930,12 @@ index 000000000..267ce18c5
 +    size_t copyOutLocked(uint8_t*, size_t) WTF_REQUIRES_LOCK(m_lock);
 +    void trimHistoryLocked() WTF_REQUIRES_LOCK(m_lock);
 +    bool waitLocked() WTF_REQUIRES_LOCK(m_lock);
++    // Stall detection and the retry backoff (demuxer thread, from the waits).
++    void checkRequestLocked() WTF_REQUIRES_LOCK(m_lock);
++    // A stall or a retryable failure: schedules the next retry or fails.
++    void retryOrFailLocked(const char* reason) WTF_REQUIRES_LOCK(m_lock);
++    void restartRequestLocked() WTF_REQUIRES_LOCK(m_lock);
++    std::string hostForLog() const;
 +
 +    const Ref<PlatformMediaResourceLoader> m_loader;
 +    const URL m_url;
@@ -3652,6 +3956,12 @@ index 000000000..267ce18c5
 +    bool m_closed WTF_GUARDED_BY_LOCK(m_lock) { false };
 +    // Exclusive end of the first request's Range (0: open-ended).
 +    uint64_t m_rangeEnd WTF_GUARDED_BY_LOCK(m_lock) { 0 };
++    // The byte range of setByteRange(), for retries of the first request.
++    uint64_t m_byteRangeEnd WTF_GUARDED_BY_LOCK(m_lock) { 0 };
++    // Monotonic seconds of the last request start, response or data.
++    double m_lastProgressAt WTF_GUARDED_BY_LOCK(m_lock) { 0 };
++    double m_retryAt WTF_GUARDED_BY_LOCK(m_lock) { 0 };
++    FFmpegMedia::NetworkRetry m_retry WTF_GUARDED_BY_LOCK(m_lock);
 +    bool m_interruptibleBySeek { false };
 +    RefPtr<PlatformMediaResource> m_resource WTF_GUARDED_BY_LOCK(m_lock);
 +};
@@ -5052,10 +5362,10 @@ index 000000000..669e290a6
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.cpp b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.cpp
 new file mode 100644
-index 000000000..ed994c536
+index 000000000..4e0ac1e32
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.cpp
-@@ -0,0 +1,238 @@
+@@ -0,0 +1,239 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -5234,11 +5544,12 @@ index 000000000..ed994c536
 +        m_geometry = geometry;
 +        m_client->setGeometry(geometry);
 +    }
++    m_acceptsFrames = m_geometry && m_geometry->visible;
 +    if (m_client->state() == Wire::VideoOverlayClient::State::Failed && !std::exchange(m_loggedFailure, true))
 +        ffmpegMediaLog("video overlay: player %u: no overlay server, painting video into the page", m_player);
 +
 +    bool punch = m_client->usable() && geometry.visible && hasFrame;
-+    if (punch == m_punching)
++    if (punch == m_punching.load())
 +        return false;
 +    m_punching = punch;
 +    ffmpegMediaLog("video overlay: player %u: hole punch %s", m_player, punch ? "on" : "off");
@@ -5247,7 +5558,7 @@ index 000000000..ed994c536
 +
 +void FFmpegVideoOverlay::submit(FFmpegVideoFrame& frame)
 +{
-+    if (!m_client->usable() || !m_geometry || !m_geometry->visible)
++    if (!m_client->usable() || !m_acceptsFrames)
 +        return;
 +    Ref protectedFrame = frame;
 +    FFmpegVideoFrame* held = &protectedFrame.leakRef();
@@ -5287,7 +5598,7 @@ index 000000000..ed994c536
 +    }
 +    Wire::Geometry geometry = m_geometry.value_or(Wire::Geometry { });
 +    ffmpegMediaLog("video overlay: player %u: %s sent %.1f/s replaced %u copy %.2f ms | hole %s rect %d,%d %dx%d%s", m_player, state,
-+        seconds > 0 ? stats.sent / seconds : 0.0, stats.replaced, stats.copyMilliseconds, m_punching ? "on" : "off",
++        seconds > 0 ? stats.sent / seconds : 0.0, stats.replaced, stats.copyMilliseconds, m_punching.load() ? "on" : "off",
 +        geometry.x, geometry.y, geometry.width, geometry.height, geometry.visible ? "" : " hidden");
 +}
 +
@@ -5296,10 +5607,10 @@ index 000000000..ed994c536
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.h
 new file mode 100644
-index 000000000..05f0dc586
+index 000000000..6915ee6c1
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.h
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,82 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Video overlay of the ffmpeg media engine ("hole punch"). Accelerated
@@ -5319,14 +5630,16 @@ index 000000000..05f0dc586
 +// the page would: not connected, a rotated/skewed box, a hidden page or
 +// element, or no frame yet. In that case paint() draws the frame as before.
 +//
-+// Main thread only, except that frames are copied and sent on the client's
-+// sender thread.
++// Main thread only, except submit() and punchesHole(), which the player's
++// presenter thread (FFmpegVideoPresenter.h) calls; frames are copied and
++// sent on the client's sender thread.
 +
 +#pragma once
 +
 +#if ENABLE(VIDEO) && USE(FFMPEG)
 +
 +#include "FFmpegVideoOverlayWire.h"
++#include <atomic>
 +#include <memory>
 +#include <optional>
 +#include <wtf/TZoneMalloc.h>
@@ -5355,7 +5668,7 @@ index 000000000..05f0dc586
 +    bool update(MediaPlayer&, bool pageVisible, bool hasFrame);
 +    // paint() clears the video box instead of drawing the frame.
 +    bool punchesHole() const { return m_punching; }
-+    // The frame to show now (the player's A/V clock decided).
++    // The frame to show now (the player's A/V clock decided). Any thread.
 +    void submit(FFmpegVideoFrame&);
 +    // The picture is gone (new load, decoder reset).
 +    void clear();
@@ -5370,7 +5683,9 @@ index 000000000..05f0dc586
 +    unsigned m_player;
 +    std::optional<FFmpegMedia::VideoWire::Geometry> m_geometry;
 +    bool m_rectilinear { true };
-+    bool m_punching { false };
++    std::atomic<bool> m_punching { false };
++    // The geometry is visible: submitted frames are sent.
++    std::atomic<bool> m_acceptsFrames { false };
 +    bool m_loggedFailure { false };
 +    bool m_loggedSkew { false };
 +};
@@ -6607,12 +6922,488 @@ index 000000000..f6c28e0dc
 +} // namespace VideoWire
 +} // namespace FFmpegMedia
 +} // namespace WebCore
+diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoPresenter.cpp b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoPresenter.cpp
+new file mode 100644
+index 000000000..c712e1d95
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoPresenter.cpp
+@@ -0,0 +1,307 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "config.h"
++#include "FFmpegVideoPresenter.h"
++
++#if ENABLE(VIDEO) && USE(FFMPEG)
++
++#include "AudioSink.h"
++#include "FFmpegAudioDecoder.h"
++#include "FFmpegLog.h"
++#include "FFmpegVideoDecoder.h"
++#include "FFmpegVideoOverlay.h"
++#include <wtf/MainThread.h>
++#include <wtf/MonotonicTime.h>
++
++namespace WebCore {
++
++namespace {
++
++constexpr double statsIntervalSeconds = 5.0;
++
++double monotonicNow()
++{
++    return MonotonicTime::now().secondsSinceEpoch().seconds();
++}
++
++} // namespace
++
++// MARK: - FFmpegPlaybackClock
++
++Ref<FFmpegPlaybackClock> FFmpegPlaybackClock::create()
++{
++    return adoptRef(*new FFmpegPlaybackClock);
++}
++
++FFmpegPlaybackClock::FFmpegPlaybackClock() = default;
++FFmpegPlaybackClock::~FFmpegPlaybackClock() = default;
++
++void FFmpegPlaybackClock::reset(double mediaTime, double now)
++{
++    Locker locker { m_lock };
++    m_clock.reset(mediaTime, now);
++}
++
++void FFmpegPlaybackClock::setRunning(bool running, double now)
++{
++    Locker locker { m_lock };
++    m_clock.setRunning(running, now);
++}
++
++void FFmpegPlaybackClock::setStalled(bool stalled, double now)
++{
++    Locker locker { m_lock };
++    m_clock.setStalled(stalled, now);
++}
++
++void FFmpegPlaybackClock::setRate(double rate, double now)
++{
++    Locker locker { m_lock };
++    m_clock.setRate(rate, now);
++}
++
++double FFmpegPlaybackClock::rate() const
++{
++    Locker locker { m_lock };
++    return m_clock.rate();
++}
++
++bool FFmpegPlaybackClock::running() const
++{
++    Locker locker { m_lock };
++    return m_clock.running();
++}
++
++bool FFmpegPlaybackClock::stalled() const
++{
++    Locker locker { m_lock };
++    return m_clock.stalled();
++}
++
++void FFmpegPlaybackClock::setAudioDecoder(RefPtr<FFmpegAudioDecoder>&& decoder)
++{
++    Locker locker { m_lock };
++    m_audioDecoder = WTF::move(decoder);
++}
++
++void FFmpegPlaybackClock::setAudioSink(AudioSink* sink)
++{
++    Locker locker { m_lock };
++    m_audioSink = sink;
++}
++
++void FFmpegPlaybackClock::setAudioSerial(unsigned serial)
++{
++    Locker locker { m_lock };
++    m_audioSerial = serial;
++}
++
++double FFmpegPlaybackClock::time(double now)
++{
++    // Lock order: this lock, then the sink's and the decoder's (taken one
++    // after the other, never nested); nothing takes this one under them.
++    Locker locker { m_lock };
++    std::optional<double> audioTime;
++    if (RefPtr decoder = m_audioDecoder; decoder && m_audioSink && !decoder->drained(m_audioSerial)) {
++        double latency = m_audioSink->latency();
++        audioTime = decoder->clockTime(latency);
++    }
++    return m_clock.time(now, audioTime);
++}
++
++// MARK: - FFmpegVideoPresenter
++
++Ref<FFmpegVideoPresenter> FFmpegVideoPresenter::create(Ref<FFmpegPlaybackClock>&& clock, Ref<FFmpegVideoDecoder>&& decoder, unsigned serial, const char* logTag, EventHandler&& handler)
++{
++    return adoptRef(*new FFmpegVideoPresenter(WTF::move(clock), WTF::move(decoder), serial, logTag, WTF::move(handler)));
++}
++
++FFmpegVideoPresenter::FFmpegVideoPresenter(Ref<FFmpegPlaybackClock>&& clock, Ref<FFmpegVideoDecoder>&& decoder, unsigned serial, const char* logTag, EventHandler&& handler)
++    : m_clock(WTF::move(clock))
++    , m_decoder(WTF::move(decoder))
++    , m_logTag(logTag)
++    , m_handler(WTF::move(handler))
++{
++    Locker locker { m_lock };
++    m_serial = serial;
++}
++
++FFmpegVideoPresenter::~FFmpegVideoPresenter()
++{
++    ASSERT(!m_thread);
++}
++
++void FFmpegVideoPresenter::start()
++{
++    if (m_thread)
++        return;
++    m_thread = Thread::create("FFmpegPresenter"_s, [protectedThis = Ref { *this }] {
++        protectedThis->run();
++    }, ThreadType::Graphics, Thread::QOS::UserInteractive);
++}
++
++void FFmpegVideoPresenter::stop()
++{
++    m_handler = nullptr;
++    {
++        Locker locker { m_lock };
++        m_stopping = true;
++        m_overlay = nullptr;
++        m_condition.notifyAll();
++    }
++    if (RefPtr thread = std::exchange(m_thread, nullptr))
++        thread->waitForCompletion();
++}
++
++void FFmpegVideoPresenter::setOverlay(FFmpegVideoOverlay* overlay)
++{
++    Locker locker { m_lock };
++    m_overlay = overlay;
++}
++
++void FFmpegVideoPresenter::resubmitToOverlay()
++{
++    Locker locker { m_lock };
++    if (m_overlay && m_current)
++        m_overlay->submit(*m_current);
++}
++
++void FFmpegVideoPresenter::setSerial(unsigned serial)
++{
++    // Taken while present() runs, so the presenter never peeks the decoder
++    // with a stale serial (peekFrame() discards frames of other serials).
++    Locker locker { m_lock };
++    m_serial = serial;
++    m_woken = true;
++    m_condition.notifyAll();
++}
++
++void FFmpegVideoPresenter::setSeeking(bool seeking, double seekTime)
++{
++    Locker locker { m_lock };
++    m_seeking = seeking;
++    m_seekTime = seekTime;
++    m_woken = true;
++    m_condition.notifyAll();
++}
++
++void FFmpegVideoPresenter::wake()
++{
++    Locker locker { m_lock };
++    m_woken = true;
++    m_condition.notifyAll();
++}
++
++RefPtr<FFmpegVideoFrame> FFmpegVideoPresenter::currentFrame() const
++{
++    Locker locker { m_lock };
++    return m_current;
++}
++
++void FFmpegVideoPresenter::run()
++{
++    while (true) {
++        double now = monotonicNow();
++        double wait = present(now);
++        if (m_stats.intervalElapsed(now, statsIntervalSeconds)) {
++            if (m_stats.due())
++                ffmpegMediaLog("%s%s", m_stats.line().c_str(), m_logTag);
++            m_stats.reset(now);
++        }
++        Locker locker { m_lock };
++        if (m_stopping)
++            return;
++        if (!m_woken)
++            m_condition.waitFor(m_lock, Seconds(wait));
++        m_woken = false;
++        if (m_stopping)
++            return;
++    }
++}
++
++double FFmpegVideoPresenter::present(double now)
++{
++    unsigned events = 0;
++    double wait;
++    {
++        Locker locker { m_lock };
++        if (m_stopping)
++            return 0;
++        unsigned serial = m_serial;
++        bool seeking = m_seeking;
++        double seekTime = m_seekTime;
++        bool running = m_clock->running();
++        double rate = m_clock->rate();
++        auto position = [&](double at) {
++            return seeking ? seekTime : m_clock->time(at);
++        };
++        double clock = position(now);
++        m_decoder->setClockHint(clock);
++        bool needFirstFrame = !m_current || m_current->serial != serial;
++        std::optional<double> untilDue;
++        while (RefPtr frame = m_decoder->peekFrame(serial)) {
++            RefPtr next = m_decoder->peekFrame(serial, 1);
++            std::optional<double> nextPts;
++            if (next)
++                nextPts = next->pts;
++            // Paused or seeking: the first frame at the new position shows at
++            // once, even though the clock has not reached it.
++            bool showAtOnce = needFirstFrame && (seeking || !running);
++            auto decision = FFmpegMedia::decidePresentation(frame->pts, frame->duration, nextPts, clock, showAtOnce);
++            if (decision.action == FFmpegMedia::PresentAction::Wait) {
++                untilDue = decision.untilDue;
++                break;
++            }
++            m_decoder->popFrame();
++            if (running && !seeking)
++                m_stats.record(decision);
++            if (decision.action == FFmpegMedia::PresentAction::Drop) {
++                ++m_dropped;
++                continue;
++            }
++            m_current = frame;
++            if (m_overlay)
++                m_overlay->submit(*frame);
++            events |= FrameShown;
++            if (needFirstFrame)
++                events |= FirstFrame;
++            if (needFirstFrame && !running) {
++                needFirstFrame = false;
++                break;
++            }
++            needFirstFrame = false;
++            // The next frame is judged against a fresh clock reading.
++            clock = position(monotonicNow());
++        }
++        if (running && m_decoder->reachedEnd(serial) && !(m_endPosted && m_endSerialPosted == serial)) {
++            m_endPosted = true;
++            m_endSerialPosted = serial;
++            events |= ReachedEnd;
++        }
++        // Still waiting for the first frame of a seek: keep polling.
++        wait = FFmpegMedia::presenterWaitSeconds(untilDue, rate, running || needFirstFrame);
++    }
++    if (events)
++        post(events);
++    return wait;
++}
++
++void FFmpegVideoPresenter::post(unsigned events)
++{
++    if (m_pendingEvents.fetch_or(events))
++        return;
++    callOnMainThread([protectedThis = Ref { *this }] {
++        protectedThis->deliver();
++    });
++}
++
++void FFmpegVideoPresenter::deliver()
++{
++    unsigned events = m_pendingEvents.exchange(0);
++    if (events && m_handler)
++        m_handler(events);
++}
++
++} // namespace WebCore
++
++#endif // ENABLE(VIDEO) && USE(FFMPEG)
+diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoPresenter.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoPresenter.h
+new file mode 100644
+index 000000000..08b72aa6d
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoPresenter.h
+@@ -0,0 +1,157 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++//
++// Video presentation off the main thread for both ffmpeg players.
++//
++// The players used to pick and show frames from an 8 ms RunLoop timer on
++// the WebProcess main thread. On the console that thread also lays out and
++// paints the page, and while YouTube repainted its UI the tick was starved:
++// 26 frames per second were decoded but 10 reached the screen. Now:
++//
++//  - FFmpegPlaybackClock is the player's AVClock behind a lock, with the
++//    audio master (decoder + sink) attached, so any thread can read the
++//    playback position.
++//  - FFmpegVideoPresenter runs one thread per video pipeline. It reads the
++//    clock, takes the due frame from the decoder's output queue
++//    (FFmpegPresenterPolicy.h: drop only beyond 1.5 frame intervals late),
++//    and hands it to the video overlay itself, which copies it to the UI
++//    process (shm/file/tcp). It sleeps until the next frame is due.
++//  - The main thread hears about presented frames through coalesced
++//    callOnMainThread() events: a repaint when the page paints the video
++//    (overlay off or not punching), and the first frame of each position
++//    (seek completion, readyState, firstVideoFrameAvailable). Everything else
++//    (readyState, ended, buffered) stays on the player's low-rate tick.
++//
++// Threading: create/start/stop/set* on the main thread, currentFrame() and
++// droppedFrames() from any thread, events are delivered on the main thread
++// until stop().
++
++#pragma once
++
++#if ENABLE(VIDEO) && USE(FFMPEG)
++
++#include "FFmpegAVClock.h"
++#include "FFmpegPresenterPolicy.h"
++#include <atomic>
++#include <optional>
++#include <wtf/Condition.h>
++#include <wtf/Function.h>
++#include <wtf/Lock.h>
++#include <wtf/ThreadSafeRefCounted.h>
++#include <wtf/Threading.h>
++
++namespace WebCore {
++
++class AudioSink;
++class FFmpegAudioDecoder;
++class FFmpegVideoDecoder;
++class FFmpegVideoFrame;
++class FFmpegVideoOverlay;
++
++class FFmpegPlaybackClock final : public ThreadSafeRefCounted<FFmpegPlaybackClock> {
++public:
++    static Ref<FFmpegPlaybackClock> create();
++    ~FFmpegPlaybackClock();
++
++    void reset(double mediaTime, double now);
++    void setRunning(bool, double now);
++    void setStalled(bool, double now);
++    void setRate(double, double now);
++    double rate() const;
++    bool running() const;
++    bool stalled() const;
++
++    // The audio master. The sink pointer must be cleared (setAudioSink(nullptr))
++    // before the sink is destroyed; `serial` is the audio pipeline's serial.
++    void setAudioDecoder(RefPtr<FFmpegAudioDecoder>&&);
++    void setAudioSink(AudioSink*);
++    void setAudioSerial(unsigned);
++
++    // Media time now: the audio position while audio drives the clock,
++    // otherwise extrapolated (FFmpegAVClock.h).
++    double time(double now);
++
++private:
++    FFmpegPlaybackClock();
++
++    mutable Lock m_lock;
++    FFmpegMedia::AVClock m_clock WTF_GUARDED_BY_LOCK(m_lock);
++    RefPtr<FFmpegAudioDecoder> m_audioDecoder WTF_GUARDED_BY_LOCK(m_lock);
++    AudioSink* m_audioSink WTF_GUARDED_BY_LOCK(m_lock) { nullptr };
++    unsigned m_audioSerial WTF_GUARDED_BY_LOCK(m_lock) { 0 };
++};
++
++class FFmpegVideoPresenter final : public ThreadSafeRefCounted<FFmpegVideoPresenter> {
++public:
++    enum Event : unsigned {
++        // A frame was presented: repaint the element unless the overlay
++        // shows it.
++        FrameShown = 1 << 0,
++        // The first frame of the current serial was presented.
++        FirstFrame = 1 << 1,
++        // The decoder drained the stream for the current serial.
++        ReachedEnd = 1 << 2,
++    };
++    using EventHandler = Function<void(unsigned events)>;
++
++    // `logTag` is appended to the "presenter:" log line (" [mse]").
++    static Ref<FFmpegVideoPresenter> create(Ref<FFmpegPlaybackClock>&&, Ref<FFmpegVideoDecoder>&&, unsigned serial, const char* logTag, EventHandler&&);
++    ~FFmpegVideoPresenter();
++
++    void start();
++    // Joins the thread; no event is delivered afterwards.
++    void stop();
++
++    // The overlay receives presented frames; nullptr detaches it. The
++    // overlay must outlive the presenter or be detached first.
++    void setOverlay(FFmpegVideoOverlay*);
++    // Sends the current frame to the overlay again (the hole was just punched).
++    void resubmitToOverlay();
++    // A seek or flush moved the decoder to `serial`.
++    void setSerial(unsigned);
++    // While seeking the position is the seek target, and the first frame of
++    // the new serial is shown as soon as it is decoded.
++    void setSeeking(bool seeking, double seekTime);
++    // The clock started, stopped or was reset: re-evaluate now.
++    void wake();
++
++    RefPtr<FFmpegVideoFrame> currentFrame() const;
++    unsigned droppedFrames() const { return m_dropped; }
++
++private:
++    FFmpegVideoPresenter(Ref<FFmpegPlaybackClock>&&, Ref<FFmpegVideoDecoder>&&, unsigned serial, const char* logTag, EventHandler&&);
++
++    void run();
++    // One pass: presents what is due, returns the seconds to sleep.
++    double present(double now);
++    void post(unsigned events);
++    void deliver();
++
++    const Ref<FFmpegPlaybackClock> m_clock;
++    const Ref<FFmpegVideoDecoder> m_decoder;
++    const char* const m_logTag;
++    RefPtr<Thread> m_thread;
++    // Main thread only.
++    EventHandler m_handler;
++
++    mutable Lock m_lock;
++    Condition m_condition;
++    bool m_stopping WTF_GUARDED_BY_LOCK(m_lock) { false };
++    bool m_woken WTF_GUARDED_BY_LOCK(m_lock) { false };
++    unsigned m_serial WTF_GUARDED_BY_LOCK(m_lock) { 0 };
++    bool m_seeking WTF_GUARDED_BY_LOCK(m_lock) { false };
++    double m_seekTime WTF_GUARDED_BY_LOCK(m_lock) { 0 };
++    RefPtr<FFmpegVideoFrame> m_current WTF_GUARDED_BY_LOCK(m_lock);
++    FFmpegVideoOverlay* m_overlay WTF_GUARDED_BY_LOCK(m_lock) { nullptr };
++
++    // Presenter thread only.
++    FFmpegMedia::PresenterStats m_stats;
++    unsigned m_endSerialPosted { 0 };
++    bool m_endPosted { false };
++
++    std::atomic<unsigned> m_dropped { 0 };
++    std::atomic<unsigned> m_pendingEvents { 0 };
++};
++
++} // namespace WebCore
++
++#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp
 new file mode 100644
-index 000000000..720256bf4
+index 000000000..985692f04
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp
-@@ -0,0 +1,1038 @@
+@@ -0,0 +1,1090 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -6650,13 +7441,6 @@ index 000000000..720256bf4
 +
 +namespace {
 +
-+// Presentation tick: fast enough to hit 60 fps frame boundaries while
-+// playing video, slow otherwise.
-+constexpr Seconds playingVideoTick = 8_ms;
-+constexpr Seconds playingAudioTick = 50_ms;
-+constexpr Seconds idleTick = 100_ms;
-+// Paused with a video overlay: the overlay follows scrolling at this rate.
-+constexpr Seconds overlayIdleTick = 33_ms;
 +// Below this much demuxed data ahead the extrapolated clock stalls
 +// (buffering) unless the stream has ended.
 +constexpr double stallThreshold = 0.1;
@@ -6878,6 +7662,8 @@ index 000000000..720256bf4
 +MediaPlayerPrivateFFmpeg::MediaPlayerPrivateFFmpeg(MediaPlayer& player)
 +    : m_player(player)
 +    , m_tickTimer(RunLoop::mainSingleton(), "MediaPlayerPrivateFFmpeg::Tick"_s, this, &MediaPlayerPrivateFFmpeg::tick)
++    , m_overlayTimer(RunLoop::mainSingleton(), "MediaPlayerPrivateFFmpeg::OverlayTick"_s, this, &MediaPlayerPrivateFFmpeg::overlayTick)
++    , m_clock(FFmpegPlaybackClock::create())
 +{
 +}
 +
@@ -6889,9 +7675,13 @@ index 000000000..720256bf4
 +void MediaPlayerPrivateFFmpeg::stopPipeline()
 +{
 +    m_tickTimer.stop();
-+    // Order matters: the sink calls into the audio decoder, the demuxer owns
-+    // the packet queues the decoders read (stopping it aborts them).
-+    m_audioSink = nullptr;
++    m_overlayTimer.stop();
++    // Order matters: the presenter reads the decoders and the overlay, the
++    // sink calls into the audio decoder, the demuxer owns the packet queues
++    // the decoders read (stopping it aborts them).
++    stopPresenter();
++    setAudioSink(nullptr);
++    m_clock->setAudioDecoder(nullptr);
 +    if (RefPtr demuxer = m_demuxer)
 +        demuxer->stop();
 +    if (RefPtr decoder = m_videoDecoder)
@@ -6937,7 +7727,8 @@ index 000000000..720256bf4
 +    m_failed = false;
 +    m_ended = false;
 +    m_hasVideo = m_hasAudio = false;
-+    m_currentFrame = nullptr;
++    m_retainedFrame = nullptr;
++    m_imageFrame = nullptr;
 +    m_currentImage = nullptr;
 +    m_buffered = { };
 +
@@ -7041,12 +7832,15 @@ index 000000000..720256bf4
 +    }
 +    if (RefPtr decoder = m_audioDecoder) {
 +        decoder->start();
++        m_clock->setAudioDecoder(decoder.copyRef());
++        m_clock->setAudioSerial(m_serial);
 +        createAudioSink(false);
 +        applyGain();
 +        decoder->setDiscard(m_rate != 1);
 +    }
-+    m_clock.reset(0, monotonicNow());
-+    m_clock.setRate(m_rate, monotonicNow());
++    m_clock->reset(0, monotonicNow());
++    m_clock->setRate(m_rate, monotonicNow());
++    startPresenter();
 +
 +    player->durationChanged();
 +    player->sizeChanged();
@@ -7060,13 +7854,21 @@ index 000000000..720256bf4
 +    RefPtr decoder = m_audioDecoder;
 +    if (!decoder)
 +        return;
-+    m_audioSink = nullptr;
++    setAudioSink(nullptr);
 +    auto render = [decoder](std::span<float> out) {
 +        decoder->render(out);
 +    };
-+    m_audioSink = forceNull ? AudioSink::createNull(WTF::move(render)) : AudioSink::create(WTF::move(render));
++    setAudioSink(forceNull ? AudioSink::createNull(WTF::move(render)) : AudioSink::create(WTF::move(render)));
 +    m_lastAudioClock.reset();
 +    ffmpegMediaLog("audio sink: using %s, latency %.0f ms", m_audioSink->name(), m_audioSink->latency() * 1000);
++}
++
++void MediaPlayerPrivateFFmpeg::setAudioSink(std::unique_ptr<AudioSink>&& sink)
++{
++    // The clock (read by the presenter thread) lets go of the old sink first.
++    m_clock->setAudioSink(nullptr);
++    m_audioSink = WTF::move(sink);
++    m_clock->setAudioSink(m_audioSink.get());
 +}
 +
 +// MARK: - Playback control
@@ -7089,13 +7891,15 @@ index 000000000..720256bf4
 +{
 +    double now = monotonicNow();
 +    bool running = !m_paused && m_metadataLoaded && !m_seeking && !m_ended;
-+    m_clock.setRunning(running, now);
++    m_clock->setRunning(running, now);
 +    if (m_audioSink) {
 +        if (running && m_rate == 1)
 +            m_audioSink->play();
 +        else
 +            m_audioSink->pause();
 +    }
++    if (RefPtr presenter = m_presenter)
++        presenter->wake();
 +    if (m_demuxer)
 +        scheduleTick(0_s);
 +}
@@ -7105,7 +7909,7 @@ index 000000000..720256bf4
 +    if (!(rate > 0) || rate == m_rate)
 +        return;
 +    m_rate = rate;
-+    m_clock.setRate(rate, monotonicNow());
++    m_clock->setRate(rate, monotonicNow());
 +    if (RefPtr decoder = m_audioDecoder)
 +        decoder->setDiscard(rate != 1);
 +    updatePlaybackRunning();
@@ -7153,10 +7957,7 @@ index 000000000..720256bf4
 +
 +double MediaPlayerPrivateFFmpeg::clockTime(double now) const
 +{
-+    std::optional<double> audioTime;
-+    if (RefPtr decoder = m_audioDecoder; decoder && m_audioSink && !decoder->drained(m_serial))
-+        audioTime = decoder->clockTime(m_audioSink->latency());
-+    return m_clock.time(now, audioTime);
++    return m_clock->time(now);
 +}
 +
 +MediaTime MediaPlayerPrivateFFmpeg::currentTime() const
@@ -7177,7 +7978,7 @@ index 000000000..720256bf4
 +
 +bool MediaPlayerPrivateFFmpeg::timeIsProgressing() const
 +{
-+    return m_clock.running() && !m_clock.stalled() && !m_seeking && !m_ended;
++    return m_clock->running() && !m_clock->stalled() && !m_seeking && !m_ended;
 +}
 +
 +MediaTime MediaPlayerPrivateFFmpeg::maxTimeSeekable() const
@@ -7210,7 +8011,14 @@ index 000000000..720256bf4
 +    m_seekTime = time;
 +    m_seeking = true;
 +    m_ended = false;
-+    // Decoders first, so the first packets of the new serial are trimmed.
++    // The presenter first: it must not peek the decoder with the old serial
++    // once frames of the new one exist.
++    if (RefPtr presenter = m_presenter) {
++        presenter->setSeeking(true, time);
++        presenter->setSerial(m_serial);
++    }
++    m_clock->setAudioSerial(m_serial);
++    // Decoders next, so the first packets of the new serial are trimmed.
 +    if (RefPtr decoder = m_videoDecoder)
 +        decoder->setSeekTarget(time, m_serial);
 +    if (RefPtr decoder = m_audioDecoder)
@@ -7218,7 +8026,7 @@ index 000000000..720256bf4
 +    if (m_audioSink)
 +        m_audioSink->flush();
 +    demuxer->seek(time, m_serial);
-+    m_clock.reset(time, monotonicNow());
++    m_clock->reset(time, monotonicNow());
 +    updatePlaybackRunning();
 +
 +    m_seekPromise.emplace(PlatformMediaError::Cancelled);
@@ -7231,17 +8039,20 @@ index 000000000..720256bf4
 +        return;
 +    RefPtr video = m_videoDecoder;
 +    RefPtr audio = m_audioDecoder;
++    RefPtr frame = currentFrame();
 +    bool videoReady = !video || !m_pageVisible || video->hasFatalError()
-+        || (m_currentFrame && m_currentFrame->serial == m_serial) || video->reachedEnd(m_serial);
++        || (frame && frame->serial == m_serial) || video->reachedEnd(m_serial);
 +    bool audioReady = !audio || audio->hasFatalError() || audio->hasData(m_serial) || audio->drained(m_serial);
 +    if (!videoReady || !audioReady)
 +        return;
 +
-+    if (m_seekFailureHandled && m_currentFrame && m_currentFrame->serial == m_serial)
-+        m_seekTime = m_currentFrame->pts;
++    if (m_seekFailureHandled && frame && frame->serial == m_serial)
++        m_seekTime = frame->pts;
 +    ffmpegMediaLog("seek #%u finished at %.3f in %.0f ms", m_serial, m_seekTime, (now - m_seekStartedAt) * 1000);
 +    m_seeking = false;
-+    m_clock.reset(m_seekTime, now);
++    m_clock->reset(m_seekTime, now);
++    if (RefPtr presenter = m_presenter)
++        presenter->setSeeking(false, m_seekTime);
 +    updatePlaybackRunning();
 +    if (auto promise = std::exchange(m_seekPromise, std::nullopt))
 +        promise->resolve(MediaTime::createWithDouble(m_seekTime));
@@ -7282,8 +8093,7 @@ index 000000000..720256bf4
 +    }
 +
 +    double position = clockTime(now);
-+    if (RefPtr decoder = m_videoDecoder)
-+        decoder->setClockHint(position);
++    // The presenter keeps the video decoder's hint current.
 +    if (RefPtr decoder = m_audioDecoder)
 +        decoder->setClockHint(position);
 +
@@ -7297,13 +8107,12 @@ index 000000000..720256bf4
 +            decoder->setSeekTarget(-1, m_serial);
 +    }
 +    updateOverlay();
-+    presentVideo(m_seeking ? m_seekTime : position);
 +    finishSeekIfReady(now);
 +    logStats(now, position, status.bytesReceived, status.readerWaiting, status.endOfStream);
 +
 +    double bufferedAhead = status.buffered.bufferedAhead(m_seeking ? m_seekTime : position);
 +    // Extrapolated clock (no audio master): hold still while starved.
-+    m_clock.setStalled(!status.endOfStream && bufferedAhead < stallThreshold && !m_seeking, now);
++    m_clock->setStalled(!status.endOfStream && bufferedAhead < stallThreshold && !m_seeking, now);
 +
 +    checkEnded(status.endOfStream, position);
 +    updateBuffered(status.buffered);
@@ -7312,87 +8121,117 @@ index 000000000..720256bf4
 +
 +    if (m_failed)
 +        return;
-+    bool playing = m_clock.running() && !m_ended;
-+    if (playing && m_hasVideo && m_pageVisible)
-+        scheduleTick(playingVideoTick);
-+    else if (playing || m_seeking)
-+        scheduleTick(playingAudioTick);
++    // Frames are the presenter's; this tick only keeps the HTML states
++    // current (HTMLMediaElement reads currentTime() through the clock).
++    if (m_seeking)
++        scheduleTick(busyStateTick);
++    else if (m_clock->running() && !m_ended)
++        scheduleTick(playingStateTick);
 +    else
-+        scheduleTick(m_overlay && m_overlay->punchesHole() ? overlayIdleTick : idleTick);
++        scheduleTick(idleStateTick);
++}
++
++void MediaPlayerPrivateFFmpeg::overlayTick()
++{
++    updateOverlay();
++    if (m_overlay && m_videoDecoder)
++        m_overlayTimer.startOneShot(overlayGeometryTick);
++}
++
++void MediaPlayerPrivateFFmpeg::startPresenter()
++{
++    RefPtr decoder = m_videoDecoder;
++    if (!decoder || m_presenter)
++        return;
++    m_presenter = FFmpegVideoPresenter::create(m_clock.copyRef(), decoder.releaseNonNull(), m_serial, "", [this](unsigned events) {
++        handlePresenterEvents(events);
++    });
++    RefPtr presenter = m_presenter;
++    presenter->setSeeking(m_seeking, m_seekTime);
++    presenter->setOverlay(m_overlay.get());
++    presenter->start();
++}
++
++void MediaPlayerPrivateFFmpeg::stopPresenter()
++{
++    RefPtr presenter = std::exchange(m_presenter, nullptr);
++    if (!presenter)
++        return;
++    presenter->stop();
++    m_retainedFrame = presenter->currentFrame();
++    m_presenterDroppedBefore += presenter->droppedFrames();
++}
++
++bool MediaPlayerPrivateFFmpeg::hasAvailableVideoFrame() const
++{
++    return !!currentFrame();
++}
++
++RefPtr<FFmpegVideoFrame> MediaPlayerPrivateFFmpeg::currentFrame() const
++{
++    if (RefPtr presenter = m_presenter)
++        return presenter->currentFrame();
++    return m_retainedFrame;
++}
++
++// Main thread, coalesced: the presenter thread showed one or more frames.
++void MediaPlayerPrivateFFmpeg::handlePresenterEvents(unsigned events)
++{
++    RefPtr player = m_player.get();
++    RefPtr frame = currentFrame();
++    if (!player || !frame)
++        return;
++    // Let go of the previous frame's image (it keeps a pool frame alive).
++    if (frame != m_imageFrame) {
++        m_imageFrame = nullptr;
++        m_currentImage = nullptr;
++    }
++    FloatSize size(frame->width(), frame->height());
++    if (size != m_naturalSize) {
++        m_naturalSize = size;
++        player->sizeChanged();
++    }
++    if (events & FFmpegVideoPresenter::FirstFrame) {
++        if (m_loggedFirstFrameSerial != frame->serial + 1) {
++            m_loggedFirstFrameSerial = frame->serial + 1;
++            ffmpegMediaLog("first video frame%s: pts %.3f, %dx%d", frame->serial ? " after seek" : "", frame->pts, frame->width(), frame->height());
++        }
++        player->firstVideoFrameAvailable();
++        // Seek completion, readyState and the hole punch follow now.
++        scheduleTick(0_s);
++        overlayTick();
++    }
++    if (events & FFmpegVideoPresenter::ReachedEnd)
++        scheduleTick(0_s);
++    // With the hole punched the overlay shows the frame: no page repaint.
++    if ((events & FFmpegVideoPresenter::FrameShown) && (!m_overlay || !m_overlay->punchesHole()))
++        player->repaint();
 +}
 +
 +void MediaPlayerPrivateFFmpeg::updateOverlay()
 +{
 +    if (!m_hasVideo || !m_videoDecoder)
 +        return;
-+    if (!std::exchange(m_overlayCreated, true))
++    if (!std::exchange(m_overlayCreated, true)) {
 +        m_overlay = FFmpegVideoOverlay::createIfEnabled();
++        if (RefPtr presenter = m_presenter)
++            presenter->setOverlay(m_overlay.get());
++        if (m_overlay)
++            m_overlayTimer.startOneShot(overlayGeometryTick);
++    }
 +    if (!m_overlay)
 +        return;
 +    RefPtr player = m_player.get();
-+    if (player && m_overlay->update(*player, m_pageVisible, !!m_currentFrame))
++    if (player && m_overlay->update(*player, m_pageVisible, !!currentFrame())) {
 +        player->repaint();
-+}
-+
-+void MediaPlayerPrivateFFmpeg::presentVideo(double position)
-+{
-+    RefPtr decoder = m_videoDecoder;
-+    if (!decoder)
-+        return;
-+
-+    bool needFirstFrame = !m_currentFrame || m_currentFrame->serial != m_serial;
-+    RefPtr<FFmpegVideoFrame> chosen;
-+    while (RefPtr frame = decoder->peekFrame(m_serial)) {
-+        RefPtr next = decoder->peekFrame(m_serial, 1);
-+        std::optional<double> nextPts;
-+        if (next)
-+            nextPts = next->pts;
-+        auto decision = FFmpegMedia::decideFrame(frame->pts, nextPts, position);
-+        // Paused, or just seeked: show the first frame at the new position
-+        // even though the clock has not reached it.
-+        if (decision == FFmpegMedia::FrameDecision::Wait && needFirstFrame && !chosen && (m_seeking || !m_clock.running()))
-+            decision = FFmpegMedia::FrameDecision::Show;
-+        if (decision == FFmpegMedia::FrameDecision::Wait)
-+            break;
-+        decoder->popFrame();
-+        if (decision == FFmpegMedia::FrameDecision::Drop) {
-+            ++m_presenterDropped;
-+            continue;
-+        }
-+        chosen = WTF::move(frame);
-+        if (needFirstFrame && !m_clock.running())
-+            break;
-+    }
-+    if (!chosen)
-+        return;
-+
-+    m_currentFrame = WTF::move(chosen);
-+    m_currentImage = nullptr;
-+    FloatSize size(m_currentFrame->width(), m_currentFrame->height());
-+    RefPtr player = m_player.get();
-+    if (size != m_naturalSize) {
-+        m_naturalSize = size;
-+        if (player)
-+            player->sizeChanged();
-+    }
-+    if (needFirstFrame && m_loggedFirstFrameSerial != m_serial + 1) {
-+        m_loggedFirstFrameSerial = m_serial + 1;
-+        ffmpegMediaLog("first video frame%s: pts %.3f, %dx%d", m_serial ? " after seek" : "", m_currentFrame->pts, m_currentFrame->width(), m_currentFrame->height());
-+    }
-+    if (m_overlay)
-+        m_overlay->submit(*m_currentFrame);
-+    if (player) {
-+        if (needFirstFrame)
-+            player->firstVideoFrameAvailable();
-+        // With the hole punched the overlay shows the frame: no page repaint.
-+        if (!m_overlay || !m_overlay->punchesHole())
-+            player->repaint();
++        if (RefPtr presenter = m_presenter; presenter && m_overlay->punchesHole())
++            presenter->resubmitToOverlay();
 +    }
 +}
 +
 +void MediaPlayerPrivateFFmpeg::checkEnded(bool endOfStream, double position)
 +{
-+    if (m_ended || m_seeking || !endOfStream || !m_clock.running())
++    if (m_ended || m_seeking || !endOfStream || !m_clock->running())
 +        return;
 +    RefPtr video = m_videoDecoder;
 +    RefPtr audio = m_audioDecoder;
@@ -7460,7 +8299,10 @@ index 000000000..720256bf4
 +    ready.metadataLoaded = true;
 +    ready.seeking = m_seeking;
 +    if (video && m_pageVisible)
-+        ready.currentDataAvailable = m_currentFrame && m_currentFrame->serial == m_serial;
++        ready.currentDataAvailable = [&] {
++            RefPtr frame = currentFrame();
++            return frame && frame->serial == m_serial;
++        }();
 +    else if (audio)
 +        ready.currentDataAvailable = audio->hasData(m_serial) || audio->drained(m_serial);
 +    else
@@ -7474,7 +8316,7 @@ index 000000000..720256bf4
 +void MediaPlayerPrivateFFmpeg::checkAudioWatchdog(double now)
 +{
 +    RefPtr decoder = m_audioDecoder;
-+    if (!decoder || !m_audioSink || m_audioSink->isNull() || !m_clock.running() || m_rate != 1 || m_seeking) {
++    if (!decoder || !m_audioSink || m_audioSink->isNull() || !m_clock->running() || m_rate != 1 || m_seeking) {
 +        m_lastAudioClock.reset();
 +        return;
 +    }
@@ -7499,7 +8341,7 @@ index 000000000..720256bf4
 +{
 +    if (!ffmpegMediaLogEnabled())
 +        return;
-+    bool active = (m_clock.running() && !m_ended) || m_seeking;
++    bool active = (m_clock->running() && !m_ended) || m_seeking;
 +    if (!active) {
 +        m_lastStatsAt = 0;
 +        return;
@@ -7521,8 +8363,8 @@ index 000000000..720256bf4
 +        audioClock = audio->clockTime(m_audioSink->latency());
 +    ffmpegMediaLog("stats: t=%.2f%s video %u decoded %u dropped (+%u presenter) %zu queued, pts %.2f | packets v %zu/%.1fs a %zu/%.1fs %zu KiB | audio %s clock %.2f buffered %.2fs | net %llu KiB%s%s",
 +        position, m_seeking ? makeString(" SEEKING #"_s, m_serial, " for "_s, static_cast<int>((now - m_seekStartedAt) * 1000), "ms"_s).utf8().legacyCStringPointer() : "",
-+        video ? video->decodedFrames() : 0, video ? video->droppedFrames() : 0, m_presenterDropped, video ? video->queuedFrames() : 0,
-+        m_currentFrame ? m_currentFrame->pts : -1.0,
++        video ? video->decodedFrames() : 0, video ? video->droppedFrames() : 0, presenterDroppedFrames(), video ? video->queuedFrames() : 0,
++        currentFrame() ? currentFrame()->pts : -1.0,
 +        videoLevel.packets, videoLevel.seconds, audioLevel.packets, audioLevel.seconds,
 +        demuxer ? (demuxer->videoQueue().bytes() + demuxer->audioQueue().bytes()) >> 10 : 0,
 +        m_audioSink ? m_audioSink->name() : "none", audioClock ? *audioClock : -1.0, audio ? audio->bufferedSeconds() : 0.0,
@@ -7587,17 +8429,18 @@ index 000000000..720256bf4
 +unsigned MediaPlayerPrivateFFmpeg::droppedFrameCount() const
 +{
 +    RefPtr decoder = m_videoDecoder;
-+    return (decoder ? decoder->droppedFrames() : 0) + m_presenterDropped;
++    return (decoder ? decoder->droppedFrames() : 0) + presenterDroppedFrames();
 +}
 +
 +// MARK: - Painting
 +
 +RefPtr<NativeImage> MediaPlayerPrivateFFmpeg::currentNativeImage()
 +{
-+    if (m_currentImage || !m_currentFrame)
-+        return m_currentImage;
-+
-+    m_currentImage = createNativeImage(*m_currentFrame);
++    RefPtr frame = currentFrame();
++    if (frame != m_imageFrame) {
++        m_imageFrame = frame;
++        m_currentImage = frame ? createNativeImage(*frame) : nullptr;
++    }
 +    return m_currentImage;
 +}
 +
@@ -7653,10 +8496,10 @@ index 000000000..720256bf4
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.h b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.h
 new file mode 100644
-index 000000000..3c0eba5ba
+index 000000000..46a30e7b7
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.h
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,227 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// MediaPlayerPrivate backed by ffmpeg (libavformat/libavcodec/libswscale/
@@ -7666,8 +8509,9 @@ index 000000000..3c0eba5ba
 +// (mse/). No EME, WebAudio or hardware decoding. Video is painted from BGRA frames through NativeImage,
 +// audio goes to an AudioSink (SDL2, or a silent fallback).
 +//
-+// Threads: main (this object, a presentation/state tick), demuxer, video
-+// decoder, audio decoder, audio sink. See webkit-port/media/README.md.
++// Threads: main (this object, a low-rate state tick), demuxer, video
++// decoder, video presenter (FFmpegVideoPresenter.h), audio decoder, audio
++// sink. See webkit-port/media/README.md.
 +
 +#pragma once
 +
@@ -7678,6 +8522,7 @@ index 000000000..3c0eba5ba
 +#include "FFmpegPlaybackPolicy.h"
 +#include "FFmpegSupportTable.h"
 +#include "FFmpegTimeRanges.h"
++#include "FFmpegVideoPresenter.h"
 +#include "MediaPlayerPrivate.h"
 +#include <memory>
 +#include <optional>
@@ -7726,6 +8571,13 @@ index 000000000..3c0eba5ba
 +    // Shared painting: a hole while `overlay` shows the video (only for the
 +    // element's own painting, `forElement`), otherwise the frame.
 +    static void paintVideo(GraphicsContext&, const FloatRect&, FFmpegVideoOverlay*, bool forElement, const RefPtr<NativeImage>&);
++    // Main tick periods shared with the MSE player: the presenter thread
++    // shows the frames, the tick only keeps the HTML states current.
++    static constexpr Seconds playingStateTick = 250_ms;
++    static constexpr Seconds busyStateTick = 50_ms;
++    static constexpr Seconds idleStateTick = 100_ms;
++    // The overlay's geometry follows layout and scrolling at this rate.
++    static constexpr Seconds overlayGeometryTick = 33_ms;
 +
 +    void load(const String&) final;
 +#if ENABLE(MEDIA_SOURCE)
@@ -7772,7 +8624,7 @@ index 000000000..3c0eba5ba
 +    void paintCurrentFrameInContext(GraphicsContext&, const FloatRect&) final;
 +    RefPtr<NativeImage> nativeImageForCurrentTime() final;
 +    ColorSpace colorSpace() final { return ColorSpace::SRGB(); }
-+    bool hasAvailableVideoFrame() const final { return !!m_currentFrame; }
++    bool hasAvailableVideoFrame() const final;
 +
 +    bool supportsFullscreen() const final { return true; }
 +    unsigned decodedFrameCount() const final;
@@ -7788,7 +8640,12 @@ index 000000000..3c0eba5ba
 +    void tick();
 +    void scheduleTick(Seconds);
 +    double clockTime(double now) const;
-+    void presentVideo(double position);
++    void startPresenter();
++    void stopPresenter();
++    void handlePresenterEvents(unsigned);
++    RefPtr<FFmpegVideoFrame> currentFrame() const;
++    void overlayTick();
++    unsigned presenterDroppedFrames() const { return m_presenterDroppedBefore + (m_presenter ? m_presenter->droppedFrames() : 0); }
 +    void finishSeekIfReady(double now);
 +    void checkEnded(bool endOfStream, double position);
 +    void updateBuffered(const FFmpegMedia::TimeRangeSet&);
@@ -7798,6 +8655,7 @@ index 000000000..3c0eba5ba
 +    void logStats(double now, double position, uint64_t bytesReceived, bool readerWaiting, bool endOfStream);
 +    void applyGain();
 +    void updateOverlay();
++    void setAudioSink(std::unique_ptr<AudioSink>&&);
 +
 +    void setNetworkState(MediaPlayer::NetworkState);
 +    void setReadyState(MediaPlayer::ReadyState);
@@ -7805,13 +8663,15 @@ index 000000000..3c0eba5ba
 +
 +    ThreadSafeWeakPtr<MediaPlayer> m_player;
 +    RunLoop::Timer m_tickTimer;
++    RunLoop::Timer m_overlayTimer;
 +    URL m_url;
 +
 +    RefPtr<FFmpegDemuxer> m_demuxer;
 +    RefPtr<FFmpegVideoDecoder> m_videoDecoder;
 +    RefPtr<FFmpegAudioDecoder> m_audioDecoder;
 +    std::unique_ptr<AudioSink> m_audioSink;
-+    mutable FFmpegMedia::AVClock m_clock;
++    const Ref<FFmpegPlaybackClock> m_clock;
++    RefPtr<FFmpegVideoPresenter> m_presenter;
 +
 +    MediaPlayer::NetworkState m_networkState { MediaPlayer::NetworkState::Empty };
 +    MediaPlayer::ReadyState m_readyState { MediaPlayer::ReadyState::HaveNothing };
@@ -7819,7 +8679,10 @@ index 000000000..3c0eba5ba
 +    PlatformTimeRanges m_buffered;
 +    mutable uint64_t m_lastProgressBytes { 0 };
 +
-+    RefPtr<FFmpegVideoFrame> m_currentFrame;
++    // The frame on screen after the presenter stopped (cancelLoad).
++    RefPtr<FFmpegVideoFrame> m_retainedFrame;
++    // currentNativeImage() cache, valid for m_imageFrame.
++    RefPtr<FFmpegVideoFrame> m_imageFrame;
 +    RefPtr<NativeImage> m_currentImage;
 +    FloatSize m_naturalSize;
 +    // Video overlay (FFmpegVideoOverlay.h), created with the video pipeline.
@@ -7832,7 +8695,8 @@ index 000000000..3c0eba5ba
 +    double m_volume { 1 };
 +    double m_rate { 1 };
 +    unsigned m_serial { 0 };
-+    unsigned m_presenterDropped { 0 };
++    // Frames the presenters of earlier pipelines dropped.
++    unsigned m_presenterDroppedBefore { 0 };
 +
 +    // Audio sink watchdog: a device that opens but never pulls data would
 +    // freeze the audio clock forever.
@@ -9088,10 +9952,10 @@ index 000000000..1f213d65d
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.cpp b/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.cpp
 new file mode 100644
-index 000000000..c252115c8
+index 000000000..a7244f304
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.cpp
-@@ -0,0 +1,1108 @@
+@@ -0,0 +1,1169 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -9129,11 +9993,6 @@ index 000000000..c252115c8
 +
 +namespace {
 +
-+constexpr Seconds playingVideoTick = 8_ms;
-+constexpr Seconds playingAudioTick = 50_ms;
-+constexpr Seconds idleTick = 100_ms;
-+// Paused with a video overlay: the overlay follows scrolling at this rate.
-+constexpr Seconds overlayIdleTick = 33_ms;
 +constexpr double audioWatchdogSeconds = 2.0;
 +constexpr double statsIntervalSeconds = 5.0;
 +// A seek whose first frame never shows (decode failure) still completes.
@@ -9262,6 +10121,8 @@ index 000000000..c252115c8
 +MediaPlayerPrivateFFmpegMSE::MediaPlayerPrivateFFmpegMSE(MediaPlayer& player)
 +    : m_player(player)
 +    , m_tickTimer(RunLoop::mainSingleton(), "MediaPlayerPrivateFFmpegMSE::Tick"_s, this, &MediaPlayerPrivateFFmpegMSE::tick)
++    , m_overlayTimer(RunLoop::mainSingleton(), "MediaPlayerPrivateFFmpegMSE::OverlayTick"_s, this, &MediaPlayerPrivateFFmpegMSE::overlayTick)
++    , m_clock(FFmpegPlaybackClock::create())
 +{
 +    m_video.isVideo = true;
 +}
@@ -9276,8 +10137,12 @@ index 000000000..c252115c8
 +void MediaPlayerPrivateFFmpegMSE::stopPipelines()
 +{
 +    m_tickTimer.stop();
-+    // The sink calls into the audio decoder; the decoders read the queues.
-+    m_audioSink = nullptr;
++    m_overlayTimer.stop();
++    // The presenter reads the video decoder and the overlay, the sink calls
++    // into the audio decoder, the decoders read the queues.
++    stopPresenter();
++    setAudioSink(nullptr);
++    m_clock->setAudioDecoder(nullptr);
 +    for (auto* pipeline : { &m_video, &m_audio }) {
 +        if (pipeline->queue)
 +            pipeline->queue->abort();
@@ -9314,7 +10179,8 @@ index 000000000..c252115c8
 +void MediaPlayerPrivateFFmpegMSE::load(const URL&, const LoadOptions&, MediaSourcePrivateClient& client)
 +{
 +    stopPipelines();
-+    m_currentFrame = nullptr;
++    m_retainedFrame = nullptr;
++    m_imageFrame = nullptr;
 +    m_currentImage = nullptr;
 +    m_ended = false;
 +    if (RefPtr existing = client.mediaSourcePrivate(); existing && existing->platformType() == MediaPlatformType::FFmpeg) {
@@ -9325,8 +10191,8 @@ index 000000000..c252115c8
 +    } else
 +        m_mediaSourcePrivate = MediaSourcePrivateFFmpeg::open(client, *this);
 +    ffmpegMediaLog("mse: load (MediaSource)");
-+    m_clock.reset(0, monotonicNow());
-+    m_clock.setRate(m_rate, monotonicNow());
++    m_clock->reset(0, monotonicNow());
++    m_clock->setRate(m_rate, monotonicNow());
 +    setNetworkState(MediaPlayer::NetworkState::Loading);
 +    scheduleTick(0_s);
 +}
@@ -9387,6 +10253,7 @@ index 000000000..c252115c8
 +            decoder->setSuspended(!m_pageVisible);
 +            decoder->setSeekTarget(position, pipeline.serial);
 +            decoder->start();
++            startPresenter();
 +        }
 +    } else {
 +        m_audioDecoder = FFmpegAudioDecoder::create(stream, *pipeline.queue, AudioSink::sampleRate, AudioSink::channels);
@@ -9397,6 +10264,8 @@ index 000000000..c252115c8
 +            decoder->setSeekTarget(position, pipeline.serial);
 +            decoder->setDiscard(m_rate != 1);
 +            decoder->start();
++            m_clock->setAudioDecoder(decoder.copyRef());
++            m_clock->setAudioSerial(pipeline.serial);
 +            createAudioSink(false);
 +            applyGain();
 +        }
@@ -9490,11 +10359,16 @@ index 000000000..c252115c8
 +    if (!pipeline.queue)
 +        return;
 +    ++pipeline.serial;
-+    // Decoder first, so the first packets of the new serial are trimmed.
++    // The presenter first (it must not peek the decoder with the old serial
++    // once frames of the new one exist), then the decoder, so the first
++    // packets of the new serial are trimmed.
 +    if (pipeline.isVideo) {
++        if (RefPtr presenter = m_presenter)
++            presenter->setSerial(pipeline.serial);
 +        if (RefPtr decoder = m_videoDecoder)
 +            decoder->setSeekTarget(target, pipeline.serial);
 +    } else {
++        m_clock->setAudioSerial(pipeline.serial);
 +        if (RefPtr decoder = m_audioDecoder)
 +            decoder->setSeekTarget(target, pipeline.serial);
 +        if (m_audioSink)
@@ -9536,10 +10410,12 @@ index 000000000..c252115c8
 +        if (pipeline->queue)
 +            pipeline->queue->abort();
 +        if (pipeline->isVideo) {
++            stopPresenter();
 +            if (RefPtr decoder = std::exchange(m_videoDecoder, nullptr))
 +                decoder->stop();
 +        } else {
-+            m_audioSink = nullptr;
++            setAudioSink(nullptr);
++            m_clock->setAudioDecoder(nullptr);
 +            if (RefPtr decoder = std::exchange(m_audioDecoder, nullptr))
 +                decoder->stop();
 +        }
@@ -9552,7 +10428,7 @@ index 000000000..c252115c8
 +void MediaPlayerPrivateFFmpegMSE::videoFormatAvailable(const FFmpegMSETrackFormat& format)
 +{
 +    auto size = format.presentationSize();
-+    if (m_currentFrame || size.isEmpty() || size == m_naturalSize)
++    if (currentFrame() || size.isEmpty() || size == m_naturalSize)
 +        return;
 +    m_naturalSize = size;
 +    if (RefPtr player = m_player.get())
@@ -9588,13 +10464,21 @@ index 000000000..c252115c8
 +    RefPtr decoder = m_audioDecoder;
 +    if (!decoder)
 +        return;
-+    m_audioSink = nullptr;
++    setAudioSink(nullptr);
 +    auto render = [decoder](std::span<float> out) {
 +        decoder->render(out);
 +    };
-+    m_audioSink = forceNull ? AudioSink::createNull(WTF::move(render)) : AudioSink::create(WTF::move(render));
++    setAudioSink(forceNull ? AudioSink::createNull(WTF::move(render)) : AudioSink::create(WTF::move(render)));
 +    m_lastAudioClock.reset();
 +    ffmpegMediaLog("mse: audio sink: using %s, latency %.0f ms", m_audioSink->name(), m_audioSink->latency() * 1000);
++}
++
++void MediaPlayerPrivateFFmpegMSE::setAudioSink(std::unique_ptr<AudioSink>&& sink)
++{
++    // The clock (read by the presenter thread) lets go of the old sink first.
++    m_clock->setAudioSink(nullptr);
++    m_audioSink = WTF::move(sink);
++    m_clock->setAudioSink(m_audioSink.get());
 +}
 +
 +void MediaPlayerPrivateFFmpegMSE::play()
@@ -9613,13 +10497,15 @@ index 000000000..c252115c8
 +{
 +    double now = monotonicNow();
 +    bool running = !m_paused && !m_seeking && !m_ended && m_mediaSourcePrivate;
-+    m_clock.setRunning(running, now);
++    m_clock->setRunning(running, now);
 +    if (m_audioSink) {
 +        if (running && m_rate == 1)
 +            m_audioSink->play();
 +        else
 +            m_audioSink->pause();
 +    }
++    if (RefPtr presenter = m_presenter)
++        presenter->wake();
 +    if (m_mediaSourcePrivate)
 +        scheduleTick(0_s);
 +}
@@ -9629,7 +10515,7 @@ index 000000000..c252115c8
 +    if (!(rate > 0) || rate == m_rate)
 +        return;
 +    m_rate = rate;
-+    m_clock.setRate(rate, monotonicNow());
++    m_clock->setRate(rate, monotonicNow());
 +    if (RefPtr decoder = m_audioDecoder)
 +        decoder->setDiscard(rate != 1);
 +    updatePlaybackRunning();
@@ -9684,10 +10570,7 @@ index 000000000..c252115c8
 +
 +double MediaPlayerPrivateFFmpegMSE::clockTime(double now) const
 +{
-+    std::optional<double> audioTime;
-+    if (RefPtr decoder = m_audioDecoder; decoder && m_audioSink && !decoder->drained(m_audio.serial))
-+        audioTime = decoder->clockTime(m_audioSink->latency());
-+    return m_clock.time(now, audioTime);
++    return m_clock->time(now);
 +}
 +
 +double MediaPlayerPrivateFFmpegMSE::playbackPosition() const
@@ -9710,7 +10593,7 @@ index 000000000..c252115c8
 +
 +bool MediaPlayerPrivateFFmpegMSE::timeIsProgressing() const
 +{
-+    return m_clock.running() && !m_clock.stalled() && !m_seeking && !m_ended;
++    return m_clock->running() && !m_clock->stalled() && !m_seeking && !m_ended;
 +}
 +
 +MediaTime MediaPlayerPrivateFFmpegMSE::maxTimeSeekable() const
@@ -9755,9 +10638,11 @@ index 000000000..c252115c8
 +    m_seekReenqueued = false;
 +    m_seekTime = time;
 +    m_ended = false;
++    if (RefPtr presenter = m_presenter)
++        presenter->setSeeking(true, time);
 +    flushPipeline(m_video, time);
 +    flushPipeline(m_audio, time);
-+    m_clock.reset(time, now);
++    m_clock->reset(time, now);
 +    m_lastSeekWaitLog = now;
 +    // readyState follows in the tick: notifying the element synchronously
 +    // would re-enter HTMLMediaElement::seekTask.
@@ -9773,6 +10658,8 @@ index 000000000..c252115c8
 +        if (!result || !mediaSource) {
 +            ffmpegMediaLog("mse: seek to %.3f abandoned", protectedThis->m_seekTime);
 +            protectedThis->m_seeking = false;
++            if (RefPtr presenter = protectedThis->m_presenter)
++                presenter->setSeeking(false, protectedThis->m_seekTime);
 +            if (auto promise = std::exchange(protectedThis->m_seekPromise, std::nullopt))
 +                promise->reject(result ? PlatformMediaError::Cancelled : result.error());
 +            protectedThis->updatePlaybackRunning();
@@ -9782,9 +10669,11 @@ index 000000000..c252115c8
 +        double now = monotonicNow();
 +        ffmpegMediaLog("mse: seek data at %.3f available after %.0f ms", seekTime.toDouble(), (now - protectedThis->m_seekStartedAt) * 1000);
 +        protectedThis->m_seekTime = seekTime.toDouble();
++        if (RefPtr presenter = protectedThis->m_presenter)
++            presenter->setSeeking(true, protectedThis->m_seekTime);
 +        protectedThis->flushPipeline(protectedThis->m_video, protectedThis->m_seekTime);
 +        protectedThis->flushPipeline(protectedThis->m_audio, protectedThis->m_seekTime);
-+        protectedThis->m_clock.reset(protectedThis->m_seekTime, now);
++        protectedThis->m_clock->reset(protectedThis->m_seekTime, now);
 +        mediaSource->reenqueueMediaForTime(seekTime)->whenSettled(RunLoop::mainSingleton(), [weakThis, generation](auto&&) {
 +            RefPtr protectedThis = weakThis.get();
 +            if (!protectedThis || generation != protectedThis->m_seekGeneration || !protectedThis->m_seeking)
@@ -9807,8 +10696,9 @@ index 000000000..c252115c8
 +    RefPtr audio = m_audioDecoder;
 +    FFmpegMedia::MSESeekInputs inputs;
 +    inputs.dataAvailable = m_seekReenqueued;
++    RefPtr frame = currentFrame();
 +    inputs.videoReady = !video || !m_pageVisible || video->hasFatalError()
-+        || (m_currentFrame && m_currentFrame->serial == m_video.serial) || video->reachedEnd(m_video.serial);
++        || (frame && frame->serial == m_video.serial) || video->reachedEnd(m_video.serial);
 +    inputs.audioReady = !audio || audio->hasFatalError() || audio->hasData(m_audio.serial) || audio->drained(m_audio.serial);
 +    inputs.secondsSinceReenqueue = now - m_seekStartedAt;
 +    auto phase = FFmpegMedia::mseSeekPhase(inputs);
@@ -9844,7 +10734,9 @@ index 000000000..c252115c8
 +        timedOut ? makeString(" (timed out waiting for "_s, videoReady ? ""_s : "video "_s, audioReady ? ""_s : "audio"_s, ')').utf8().legacyCStringPointer() : "");
 +    m_seeking = false;
 +    m_seekReenqueued = false;
-+    m_clock.reset(m_seekTime, now);
++    m_clock->reset(m_seekTime, now);
++    if (RefPtr presenter = m_presenter)
++        presenter->setSeeking(false, m_seekTime);
 +    updatePlaybackRunning();
 +    if (auto promise = std::exchange(m_seekPromise, std::nullopt))
 +        promise->resolve(MediaTime::createWithDouble(m_seekTime));
@@ -9870,8 +10762,7 @@ index 000000000..c252115c8
 +
 +    double now = monotonicNow();
 +    double position = m_seeking ? m_seekTime : clockTime(now);
-+    if (RefPtr decoder = m_videoDecoder)
-+        decoder->setClockHint(position);
++    // The presenter keeps the video decoder's hint current.
 +    if (RefPtr decoder = m_audioDecoder)
 +        decoder->setClockHint(position);
 +
@@ -9884,14 +10775,13 @@ index 000000000..c252115c8
 +    }
 +
 +    updateOverlay();
-+    presentVideo(position);
 +    finishSeekIfReady(now);
 +
 +    auto duration = mediaSource->duration();
 +    double durationSeconds = duration.isValid() && duration.isFinite() ? duration.toDouble() : std::numeric_limits<double>::infinity();
 +    auto buffered = toRangeSet(mediaSource->buffered());
-+    bool stalled = !m_seeking && m_clock.running() && FFmpegMedia::mseShouldStall(buffered, position, durationSeconds, mediaSource->isEnded());
-+    m_clock.setStalled(stalled, now);
++    bool stalled = !m_seeking && m_clock->running() && FFmpegMedia::mseShouldStall(buffered, position, durationSeconds, mediaSource->isEnded());
++    m_clock->setStalled(stalled, now);
 +    if (stalled != m_stalled) {
 +        m_stalled = stalled;
 +        if (stalled)
@@ -9905,86 +10795,118 @@ index 000000000..c252115c8
 +    checkAudioWatchdog(now);
 +    logStats(now, position);
 +
-+    bool playing = m_clock.running() && !m_ended;
-+    if (playing && m_videoDecoder && m_pageVisible)
-+        scheduleTick(playingVideoTick);
-+    else if (playing || m_seeking)
-+        scheduleTick(playingAudioTick);
++    // Frames are the presenter's; this tick keeps the HTML states and the
++    // SourceBuffer feeding current.
++    if (m_seeking)
++        scheduleTick(MediaPlayerPrivateFFmpeg::busyStateTick);
++    else if (m_clock->running() && !m_ended)
++        scheduleTick(MediaPlayerPrivateFFmpeg::playingStateTick);
 +    else
-+        scheduleTick(m_overlay && m_overlay->punchesHole() ? overlayIdleTick : idleTick);
++        scheduleTick(MediaPlayerPrivateFFmpeg::idleStateTick);
++}
++
++void MediaPlayerPrivateFFmpegMSE::overlayTick()
++{
++    updateOverlay();
++    if (m_overlay && m_videoDecoder)
++        m_overlayTimer.startOneShot(MediaPlayerPrivateFFmpeg::overlayGeometryTick);
++}
++
++void MediaPlayerPrivateFFmpegMSE::startPresenter()
++{
++    RefPtr decoder = m_videoDecoder;
++    if (!decoder || m_presenter)
++        return;
++    m_presenter = FFmpegVideoPresenter::create(m_clock.copyRef(), decoder.releaseNonNull(), m_video.serial, " [mse]", [this](unsigned events) {
++        handlePresenterEvents(events);
++    });
++    RefPtr presenter = m_presenter;
++    presenter->setSeeking(m_seeking, m_seekTime);
++    presenter->setOverlay(m_overlay.get());
++    presenter->start();
++}
++
++void MediaPlayerPrivateFFmpegMSE::stopPresenter()
++{
++    RefPtr presenter = std::exchange(m_presenter, nullptr);
++    if (!presenter)
++        return;
++    presenter->stop();
++    m_retainedFrame = presenter->currentFrame();
++    m_presenterDroppedBefore += presenter->droppedFrames();
++}
++
++bool MediaPlayerPrivateFFmpegMSE::hasAvailableVideoFrame() const
++{
++    return !!currentFrame();
++}
++
++RefPtr<FFmpegVideoFrame> MediaPlayerPrivateFFmpegMSE::currentFrame() const
++{
++    if (RefPtr presenter = m_presenter)
++        return presenter->currentFrame();
++    return m_retainedFrame;
++}
++
++// Main thread, coalesced: the presenter thread showed one or more frames.
++void MediaPlayerPrivateFFmpegMSE::handlePresenterEvents(unsigned events)
++{
++    RefPtr player = m_player.get();
++    RefPtr frame = currentFrame();
++    if (!player || !frame)
++        return;
++    // Let go of the previous frame's image (it keeps a pool frame alive).
++    if (frame != m_imageFrame) {
++        m_imageFrame = nullptr;
++        m_currentImage = nullptr;
++    }
++    FloatSize size(frame->width(), frame->height());
++    if (size != m_naturalSize) {
++        m_naturalSize = size;
++        player->sizeChanged();
++    }
++    if (events & FFmpegVideoPresenter::FirstFrame) {
++        if (m_loggedFirstFrameSerial != frame->serial + 1) {
++            m_loggedFirstFrameSerial = frame->serial + 1;
++            ffmpegMediaLog("mse: first video frame (serial %u): pts %.3f, %dx%d", frame->serial, frame->pts, frame->width(), frame->height());
++        }
++        player->firstVideoFrameAvailable();
++        // Seek completion, readyState and the hole punch follow now.
++        scheduleTick(0_s);
++        overlayTick();
++    }
++    if (events & FFmpegVideoPresenter::ReachedEnd)
++        scheduleTick(0_s);
++    // With the hole punched the overlay shows the frame: no page repaint.
++    if ((events & FFmpegVideoPresenter::FrameShown) && (!m_overlay || !m_overlay->punchesHole()))
++        player->repaint();
 +}
 +
 +void MediaPlayerPrivateFFmpegMSE::updateOverlay()
 +{
 +    if (!m_videoDecoder)
 +        return;
-+    if (!std::exchange(m_overlayCreated, true))
++    if (!std::exchange(m_overlayCreated, true)) {
 +        m_overlay = FFmpegVideoOverlay::createIfEnabled();
++        if (RefPtr presenter = m_presenter)
++            presenter->setOverlay(m_overlay.get());
++        if (m_overlay)
++            m_overlayTimer.startOneShot(MediaPlayerPrivateFFmpeg::overlayGeometryTick);
++    }
 +    if (!m_overlay)
 +        return;
 +    RefPtr player = m_player.get();
-+    if (player && m_overlay->update(*player, m_pageVisible, !!m_currentFrame))
++    if (player && m_overlay->update(*player, m_pageVisible, !!currentFrame())) {
 +        player->repaint();
-+}
-+
-+void MediaPlayerPrivateFFmpegMSE::presentVideo(double position)
-+{
-+    RefPtr decoder = m_videoDecoder;
-+    if (!decoder)
-+        return;
-+    unsigned serial = m_video.serial;
-+    bool needFirstFrame = !m_currentFrame || m_currentFrame->serial != serial;
-+    RefPtr<FFmpegVideoFrame> chosen;
-+    while (RefPtr frame = decoder->peekFrame(serial)) {
-+        RefPtr next = decoder->peekFrame(serial, 1);
-+        std::optional<double> nextPts;
-+        if (next)
-+            nextPts = next->pts;
-+        auto decision = FFmpegMedia::decideFrame(frame->pts, nextPts, position);
-+        if (decision == FFmpegMedia::FrameDecision::Wait && needFirstFrame && !chosen && (m_seeking || !m_clock.running()))
-+            decision = FFmpegMedia::FrameDecision::Show;
-+        if (decision == FFmpegMedia::FrameDecision::Wait)
-+            break;
-+        decoder->popFrame();
-+        if (decision == FFmpegMedia::FrameDecision::Drop) {
-+            ++m_presenterDropped;
-+            continue;
-+        }
-+        chosen = WTF::move(frame);
-+        if (needFirstFrame && !m_clock.running())
-+            break;
-+    }
-+    if (!chosen)
-+        return;
-+
-+    m_currentFrame = WTF::move(chosen);
-+    m_currentImage = nullptr;
-+    FloatSize size(m_currentFrame->width(), m_currentFrame->height());
-+    RefPtr player = m_player.get();
-+    if (size != m_naturalSize) {
-+        m_naturalSize = size;
-+        if (player)
-+            player->sizeChanged();
-+    }
-+    if (needFirstFrame && m_loggedFirstFrameSerial != serial + 1) {
-+        m_loggedFirstFrameSerial = serial + 1;
-+        ffmpegMediaLog("mse: first video frame (serial %u): pts %.3f, %dx%d", serial, m_currentFrame->pts, m_currentFrame->width(), m_currentFrame->height());
-+    }
-+    if (m_overlay)
-+        m_overlay->submit(*m_currentFrame);
-+    if (player) {
-+        if (needFirstFrame)
-+            player->firstVideoFrameAvailable();
-+        // With the hole punched the overlay shows the frame: no page repaint.
-+        if (!m_overlay || !m_overlay->punchesHole())
-+            player->repaint();
++        if (RefPtr presenter = m_presenter; presenter && m_overlay->punchesHole())
++            presenter->resubmitToOverlay();
 +    }
 +}
 +
 +void MediaPlayerPrivateFFmpegMSE::checkEnded(double position)
 +{
 +    RefPtr mediaSource = m_mediaSourcePrivate;
-+    if (m_ended || m_seeking || !mediaSource || !mediaSource->isEnded() || !m_clock.running())
++    if (m_ended || m_seeking || !mediaSource || !mediaSource->isEnded() || !m_clock->running())
 +        return;
 +    auto duration = mediaSource->duration();
 +    bool pastDuration = duration.isValid() && duration.isFinite() && position >= duration.toDouble();
@@ -10021,7 +10943,8 @@ index 000000000..c252115c8
 +    inputs.fromMediaSource = toReadyLevel(mediaSource->mediaPlayerReadyState());
 +    inputs.seeking = m_seeking;
 +    inputs.videoRendered = mediaSource->hasVideo() && m_pageVisible && !m_video.failed && !(video && video->hasFatalError());
-+    inputs.videoFrameShown = m_currentFrame && video && m_currentFrame->serial == m_video.serial;
++    RefPtr frame = currentFrame();
++    inputs.videoFrameShown = frame && video && frame->serial == m_video.serial;
 +    inputs.audioReady = !audio || audio->hasFatalError() || audio->hasData(m_audio.serial) || audio->drained(m_audio.serial);
 +    setReadyState(toReadyState(FFmpegMedia::mseReadyLevel(inputs)));
 +
@@ -10058,7 +10981,7 @@ index 000000000..c252115c8
 +void MediaPlayerPrivateFFmpegMSE::checkAudioWatchdog(double now)
 +{
 +    RefPtr decoder = m_audioDecoder;
-+    if (!decoder || !m_audioSink || m_audioSink->isNull() || !m_clock.running() || m_rate != 1 || m_seeking) {
++    if (!decoder || !m_audioSink || m_audioSink->isNull() || !m_clock->running() || m_rate != 1 || m_seeking) {
 +        m_lastAudioClock.reset();
 +        return;
 +    }
@@ -10083,7 +11006,7 @@ index 000000000..c252115c8
 +{
 +    if (!ffmpegMediaLogEnabled())
 +        return;
-+    bool active = (m_clock.running() && !m_ended) || m_seeking;
++    bool active = (m_clock->running() && !m_ended) || m_seeking;
 +    if (!active) {
 +        m_lastStatsAt = 0;
 +        return;
@@ -10107,8 +11030,8 @@ index 000000000..c252115c8
 +    auto timing = video ? video->takeTiming() : FFmpegVideoDecoder::Timing { };
 +    ffmpegMediaLog("mse stats: t=%.2f%s %s | video %u decoded %u dropped (+%u presenter) %zu queued, pts %.2f, decode %.1f ms convert %.1f ms per frame (%d threads) | queues v %zu/%.1fs a %zu/%.1fs | audio %s clock %.2f ring %.2fs | buffered ahead %.1fs, %llu KiB appended",
 +        position, m_seeking ? " SEEKING" : "", readyStateName(m_readyState),
-+        video ? video->decodedFrames() : 0, video ? video->droppedFrames() : 0, m_presenterDropped, video ? video->queuedFrames() : 0,
-+        m_currentFrame ? m_currentFrame->pts : -1.0, timing.decodeMilliseconds, timing.convertMilliseconds, video ? video->threadCount() : 0,
++        video ? video->decodedFrames() : 0, video ? video->droppedFrames() : 0, presenterDroppedFrames(), video ? video->queuedFrames() : 0,
++        currentFrame() ? currentFrame()->pts : -1.0, timing.decodeMilliseconds, timing.convertMilliseconds, video ? video->threadCount() : 0,
 +        videoLevel.packets, videoLevel.seconds, audioLevel.packets, audioLevel.seconds,
 +        m_audioSink ? m_audioSink->name() : "none", audioClock ? *audioClock : -1.0, audio ? audio->bufferedSeconds() : 0.0,
 +        ahead, static_cast<unsigned long long>(m_bytesAppended >> 10));
@@ -10154,7 +11077,7 @@ index 000000000..c252115c8
 +unsigned MediaPlayerPrivateFFmpegMSE::droppedFrameCount() const
 +{
 +    RefPtr decoder = m_videoDecoder;
-+    return (decoder ? decoder->droppedFrames() : 0) + m_presenterDropped;
++    return (decoder ? decoder->droppedFrames() : 0) + presenterDroppedFrames();
 +}
 +
 +std::optional<VideoPlaybackQualityMetrics> MediaPlayerPrivateFFmpegMSE::videoPlaybackQualityMetrics()
@@ -10170,9 +11093,11 @@ index 000000000..c252115c8
 +
 +RefPtr<NativeImage> MediaPlayerPrivateFFmpegMSE::currentNativeImage()
 +{
-+    if (m_currentImage || !m_currentFrame)
-+        return m_currentImage;
-+    m_currentImage = MediaPlayerPrivateFFmpeg::createNativeImage(*m_currentFrame);
++    RefPtr frame = currentFrame();
++    if (frame != m_imageFrame) {
++        m_imageFrame = frame;
++        m_currentImage = frame ? MediaPlayerPrivateFFmpeg::createNativeImage(*frame) : nullptr;
++    }
 +    return m_currentImage;
 +}
 +
@@ -10202,10 +11127,10 @@ index 000000000..c252115c8
 +#endif // ENABLE(VIDEO) && USE(FFMPEG) && ENABLE(MEDIA_SOURCE)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.h b/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.h
 new file mode 100644
-index 000000000..abf34a694
+index 000000000..e1ee29157
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.h
-@@ -0,0 +1,225 @@
+@@ -0,0 +1,238 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Media Source Extensions player of the ffmpeg media engine. Samples come
@@ -10216,7 +11141,8 @@ index 000000000..abf34a694
 +// FFmpegVideoDecoder/FFmpegAudioDecoder, AVClock, AudioSink and frame
 +// painting the progressive MediaPlayerPrivateFFmpeg uses. readyState is the
 +// MediaSource's (computed from buffered ranges), held at HAVE_METADATA until
-+// the frame at the position is on screen. Main thread.
++// the frame at the position is on screen. Main thread, except that the
++// FFmpegVideoPresenter thread shows the frames.
 +
 +#pragma once
 +
@@ -10224,6 +11150,7 @@ index 000000000..abf34a694
 +
 +#include "FFmpegAVClock.h"
 +#include "FFmpegUtilities.h"
++#include "FFmpegVideoPresenter.h"
 +#include "MediaPlayerPrivate.h"
 +#include <memory>
 +#include <optional>
@@ -10328,7 +11255,7 @@ index 000000000..abf34a694
 +    void paintCurrentFrameInContext(GraphicsContext&, const FloatRect&) final;
 +    RefPtr<NativeImage> nativeImageForCurrentTime() final;
 +    ColorSpace colorSpace() final;
-+    bool hasAvailableVideoFrame() const final { return !!m_currentFrame; }
++    bool hasAvailableVideoFrame() const final;
 +
 +    bool supportsFullscreen() const final { return true; }
 +    unsigned decodedFrameCount() const final;
@@ -10361,12 +11288,18 @@ index 000000000..abf34a694
 +    void createAudioSink(bool forceNull);
 +    void applyGain();
 +    void updateOverlay();
++    void overlayTick();
++    void setAudioSink(std::unique_ptr<AudioSink>&&);
++    void startPresenter();
++    void stopPresenter();
++    void handlePresenterEvents(unsigned);
++    RefPtr<FFmpegVideoFrame> currentFrame() const;
++    unsigned presenterDroppedFrames() const { return m_presenterDroppedBefore + (m_presenter ? m_presenter->droppedFrames() : 0); }
 +
 +    void tick();
 +    void scheduleTick(Seconds);
 +    double clockTime(double now) const;
 +    double playbackPosition() const;
-+    void presentVideo(double position);
 +    void finishSeekIfReady(double now);
 +    void checkEnded(double position);
 +    void updateReadyState();
@@ -10380,6 +11313,7 @@ index 000000000..abf34a694
 +
 +    ThreadSafeWeakPtr<MediaPlayer> m_player;
 +    RunLoop::Timer m_tickTimer;
++    RunLoop::Timer m_overlayTimer;
 +    RefPtr<MediaSourcePrivateFFmpeg> m_mediaSourcePrivate;
 +
 +    Pipeline m_video;
@@ -10387,12 +11321,16 @@ index 000000000..abf34a694
 +    RefPtr<FFmpegVideoDecoder> m_videoDecoder;
 +    RefPtr<FFmpegAudioDecoder> m_audioDecoder;
 +    std::unique_ptr<AudioSink> m_audioSink;
-+    mutable FFmpegMedia::AVClock m_clock;
++    const Ref<FFmpegPlaybackClock> m_clock;
++    RefPtr<FFmpegVideoPresenter> m_presenter;
 +
 +    MediaPlayer::NetworkState m_networkState { MediaPlayer::NetworkState::Empty };
 +    MediaPlayer::ReadyState m_readyState { MediaPlayer::ReadyState::HaveNothing };
 +
-+    RefPtr<FFmpegVideoFrame> m_currentFrame;
++    // The frame on screen after the presenter stopped.
++    RefPtr<FFmpegVideoFrame> m_retainedFrame;
++    // currentNativeImage() cache, valid for m_imageFrame.
++    RefPtr<FFmpegVideoFrame> m_imageFrame;
 +    RefPtr<NativeImage> m_currentImage;
 +    // Video overlay (FFmpegVideoOverlay.h), created with the video decoder.
 +    std::unique_ptr<FFmpegVideoOverlay> m_overlay;
@@ -10408,7 +11346,7 @@ index 000000000..abf34a694
 +    double m_endTime { 0 };
 +    double m_volume { 1 };
 +    double m_rate { 1 };
-+    unsigned m_presenterDropped { 0 };
++    unsigned m_presenterDroppedBefore { 0 };
 +
 +    std::optional<double> m_lastAudioClock;
 +    double m_lastAudioClockChange { 0 };
