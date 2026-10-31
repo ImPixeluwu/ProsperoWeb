@@ -132,3 +132,120 @@ target_link_options(prosperoweb PRIVATE -Wl,--gc-sections)
 # for the CPU monitor).
 target_link_options(prosperoweb PRIVATE -Wl,--wrap=pthread_create -Wl,--wrap=pthread_exit)
 set_target_properties(prosperoweb PROPERTIES OUTPUT_NAME "prosperoweb" SUFFIX ".elf")
+
+# --- The native title's eboot.bin (docs/native-title.md) --------------------
+#
+# The same frontend, linked a second time as a PS5 native application: the
+# boilerplate's app_crt (entry _start(process_parameters, teardown)) instead
+# of the payload crt1.o, the native PIE layout, and the native runtime
+# shims (native/). scripts/ps5/native/make-title.sh converts and signs the
+# result into PRWB00001/eboot.bin with third_party/ps5-native-tool. The
+# payload ELF (prosperoweb above) stays what the broker and the children run.
+option(PROSPEROWEB_NATIVE_TITLE_TARGET "Define the native title eboot target (prosperoweb_native)" ON)
+if(PROSPEROWEB_NATIVE_TITLE_TARGET)
+  set(_native_tool "${CMAKE_SOURCE_DIR}/third_party/ps5-native-tool/tooling/native")
+  file(READ "${CMAKE_SOURCE_DIR}/assets/app.json" _app_json)
+  string(JSON PROSPEROWEB_TITLE_ID GET "${_app_json}" titleId)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/assets/app.json")
+
+  # The frontend objects again, with the native code paths.
+  add_library(prosperoweb_frontend_ps5_native_objs OBJECT ${_frontend_sources})
+  target_compile_features(prosperoweb_frontend_ps5_native_objs PRIVATE cxx_std_20)
+  target_compile_definitions(prosperoweb_frontend_ps5_native_objs PRIVATE
+    PROSPEROWEB_NATIVE_TITLE=1 PROSPEROWEB_TITLE_ID="${PROSPEROWEB_TITLE_ID}")
+  target_link_libraries(prosperoweb_frontend_ps5_native_objs PRIVATE prosperoweb_warnings)
+  target_include_directories(prosperoweb_frontend_ps5_native_objs PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/webkit-port/include")
+  target_include_directories(prosperoweb_frontend_ps5_native_objs SYSTEM PRIVATE
+    ${PS5WEBKIT_INCLUDE_DIRS}
+    "${_wk_fwd}"
+    "${PS5_WEBKIT_PREFIX}/include/wpe-1.0"
+    "${PS5_WEBKIT_PREFIX}/include/freetype2"
+    "${SDL2_INCLUDE_DIRS}"
+    "${PROSPEROWEB_THIRD_PARTY_DIR}")
+  target_link_libraries(prosperoweb_frontend_ps5_native_objs PRIVATE prosperoweb::core
+    prosperoweb::shell prosperoweb::spawn_util prosperoweb::spawn_broker
+    prosperoweb::audio_server prosperoweb::display prosperoweb::video_server prosperoweb::cpu)
+
+  # What the payload crt and libc.a gave the payload (native/*.c).
+  add_library(prosperoweb_native_runtime OBJECT
+    native/native_runtime.c
+    native/native_memory.c
+    native/native_title.c)
+  target_link_libraries(prosperoweb_native_runtime PRIVATE prosperoweb_warnings)
+
+  # Third-party code: the boilerplate's CRT and dlmalloc, without -Werror.
+  add_library(prosperoweb_native_vendor OBJECT
+    "${_native_tool}/app_crt.cpp"
+    native/dlmalloc_unit.c)
+  target_include_directories(prosperoweb_native_vendor PRIVATE "${CMAKE_SOURCE_DIR}/third_party/dlmalloc")
+  target_compile_options(prosperoweb_native_vendor PRIVATE -w
+    $<$<COMPILE_LANGUAGE:CXX>:-std=c++20 -fno-exceptions -fno-rtti>)
+
+  # Link stub for libSceVideodec2 (the payload SDK has none).
+  add_library(prosperoweb_videodec2_stub SHARED native/videodec2_stub.c)
+  target_link_libraries(prosperoweb_videodec2_stub PRIVATE prosperoweb_warnings)
+  set_target_properties(prosperoweb_videodec2_stub PROPERTIES
+    OUTPUT_NAME SceVideodec2 NO_SONAME ON)
+  target_link_options(prosperoweb_videodec2_stub PRIVATE
+    -nodefaultlibs -Wl,-soname,libSceVideodec2.sprx)
+
+  # libc.a without its raw-syscall objects: a title may not execute the
+  # syscall instruction itself. Those calls then resolve to libkernel, or
+  # to native/native_runtime.c.
+  set(_libc_native "${CMAKE_CURRENT_BINARY_DIR}/libc-native.a")
+  add_custom_command(OUTPUT "${_libc_native}"
+    COMMAND "${CMAKE_COMMAND}" -E copy "${PS5_PAYLOAD_SDK}/target/lib/libc.a" "${_libc_native}"
+    COMMAND "${CMAKE_AR}" d "${_libc_native}" syscalls.o mman.o
+    DEPENDS "${PS5_PAYLOAD_SDK}/target/lib/libc.a"
+    COMMENT "libc-native.a: the SDK libc.a without syscalls.o and mman.o"
+    VERBATIM)
+  add_custom_target(prosperoweb_libc_native DEPENDS "${_libc_native}")
+
+  add_executable(prosperoweb_native EXCLUDE_FROM_ALL
+    $<TARGET_OBJECTS:prosperoweb_frontend_ps5_native_objs>
+    $<TARGET_OBJECTS:prosperoweb_native_runtime>
+    $<TARGET_OBJECTS:prosperoweb_native_vendor>)
+  add_dependencies(prosperoweb_native prosperoweb_libc_native prosperoweb_videodec2_stub)
+  target_link_libraries(prosperoweb_native PRIVATE
+    prosperoweb::shell
+    prosperoweb::core
+    prosperoweb::spawn
+    prosperoweb::audio_server
+    prosperoweb::display
+    prosperoweb::video_server
+    prosperoweb::cpu
+    ${PS5WEBKIT_LINK_LIBRARIES}
+    ${SDL2_LIBRARIES}
+    SceImeDialog SceUserService ScePad
+    "$<TARGET_FILE:prosperoweb_videodec2_stub>"
+    # -nodefaultlibs drops the toolchain's own runtime: name it explicitly,
+    # with libc-native.a in place of libc.a.
+    "${PS5_PAYLOAD_SDK}/target/lib/libc++.a"
+    "${PS5_PAYLOAD_SDK}/target/lib/libc++abi.a"
+    "${PS5_PAYLOAD_SDK}/target/lib/libunwind.a"
+    "${_libc_native}"
+    kernel_web SceLibcInternal SceNet SceSysmodule)
+  target_link_directories(prosperoweb_native PRIVATE ${SDL2_LIBRARY_DIRS})
+  set(_native_wraps pthread_create pthread_exit
+    malloc free calloc realloc posix_memalign aligned_alloc malloc_usable_size
+    mmap munmap pipe)
+  list(TRANSFORM _native_wraps PREPEND "-Wl,--wrap=")
+  target_link_options(prosperoweb_native PRIVATE
+    -nostartfiles -nodefaultlibs
+    "-Wl,-T,${CMAKE_CURRENT_SOURCE_DIR}/native/ps5-native-app.ld"
+    "-Wl,--version-script,${_native_tool}/app-symbols.map"
+    -Wl,-e,_start
+    # Weak references nobody defines (WKBundleInitialize, zstd's trace
+    # hooks, ...) stay 0 instead of becoming imports the converter refuses.
+    -Wl,--no-dynamic-linker
+    # Only the system modules something still calls are needed at start-up
+    # (libSceKeyboard is replaced by native/native_title.c).
+    -Wl,--as-needed
+    -Wl,--gc-sections
+    ${_native_wraps})
+  set_property(TARGET prosperoweb_native APPEND PROPERTY LINK_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/native/ps5-native-app.ld" "${_libc_native}")
+  set_target_properties(prosperoweb_native PROPERTIES OUTPUT_NAME "prosperoweb-native" SUFFIX ".elf")
+endif()

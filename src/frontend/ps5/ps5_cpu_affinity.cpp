@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cerrno>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -285,6 +286,33 @@ int __real_pthread_create(pthread_t* thread, const pthread_attr_t* attr, void* (
 int __wrap_pthread_create(pthread_t* thread, const pthread_attr_t* attr, void* (*fn)(void*),
                           void* arg) {
   using prosperoweb::frontend::Start;
+#if PROSPEROWEB_NATIVE_TITLE
+  // A title's default thread stack is 64 KiB (the Kodi and Stremio PS5
+  // ports, native/posix_fixes.c): threads made with default attributes get
+  // 2 MiB, explicit sizes are raised to 1 MiB at least.
+  constexpr std::size_t kDefaultStack = std::size_t{2} << 20;
+  constexpr std::size_t kMinStack = std::size_t{1} << 20;
+  pthread_attr_t local;
+  bool own_attr = false;
+  std::size_t size = 0;
+  if (!attr) {
+    if (pthread_attr_init(&local) == 0) {
+      pthread_attr_setstacksize(&local, kDefaultStack);
+      attr = &local;
+      own_attr = true;
+    }
+  } else if (pthread_attr_getstacksize(attr, &size) == 0 && size < kMinStack) {
+    pthread_attr_setstacksize(const_cast<pthread_attr_t*>(attr), kMinStack);
+  }
+  struct AttrGuard {
+    pthread_attr_t* attr;
+    ~AttrGuard() {
+      if (attr) {
+        pthread_attr_destroy(attr);
+      }
+    }
+  } guard{own_attr ? &local : nullptr};
+#endif
   auto* start = new (std::nothrow) Start{fn, arg};
   if (!start) {
     return __real_pthread_create(thread, attr, fn, arg);
