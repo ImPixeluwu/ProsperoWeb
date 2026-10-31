@@ -210,7 +210,15 @@ int main(int argc, char** argv) {
   log_printf("main: native title %s pid=%d argv0=%s", PROSPEROWEB_TITLE_ID,
              static_cast<int>(getpid()), argc > 0 && argv[0] ? argv[0] : "(none)");
   // First, before any other thread and before any helper is started: the
-  // hardware decoder's module and compute queue (VLC for PS5's order).
+  // hardware decoder's module and compute queue (VLC for PS5's order). Its
+  // switches may be in config.json, which is applied later.
+  for (const char* name : {"PROSPEROWEB_HWDEC", "PROSPEROWEB_VIDEO_DECODE"}) {
+    const std::string value = config_env_value(kPs5DataDir, name);
+    if (!value.empty() && setenv(name, value.c_str(), /*overwrite=*/0) == 0) {
+      log_printf("env %s=%s (config.json, before the decoder start-up)", name,
+                 std::getenv(name));
+    }
+  }
   hwdec_native_startup();
   char modules[256];
   native_load_system_modules(modules, sizeof(modules));

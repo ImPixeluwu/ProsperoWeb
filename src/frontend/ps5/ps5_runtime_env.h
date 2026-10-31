@@ -36,6 +36,11 @@ void setup_runtime_env(const std::string& base_dir, const std::string& assets_di
 // the UI's own read-only files (the splash font).
 const std::string& runtime_assets_dir();
 
+// The value of one config.json "env" entry under base_dir (strings,
+// numbers and booleans as setup_runtime_env exports them), or "" when it is
+// absent. For settings needed before setup_runtime_env runs.
+std::string config_env_value(const std::string& base_dir, const std::string& name);
+
 // UI role: SYSTEM_LANGUAGE from config.json (overrides the default above).
 void apply_language_env(const std::string& language);
 

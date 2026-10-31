@@ -88,6 +88,35 @@ void apply_config_env(const std::string& base_dir) {
 
 }  // namespace
 
+std::string config_env_value(const std::string& base_dir, const std::string& name) {
+  std::ifstream in(base_dir + "/config.json");
+  if (!in) {
+    return "";
+  }
+  std::stringstream text;
+  text << in.rdbuf();
+  const nlohmann::json doc =
+      nlohmann::json::parse(text.str(), nullptr, /*allow_exceptions=*/false);
+  if (!doc.is_object()) {
+    return "";
+  }
+  const auto env = doc.find("env");
+  if (env == doc.end() || !env->is_object()) {
+    return "";
+  }
+  const auto value = env->find(name);
+  if (value == env->end()) {
+    return "";
+  }
+  if (value->is_string()) {
+    return value->get<std::string>();
+  }
+  if (value->is_boolean()) {
+    return value->get<bool>() ? "true" : "false";
+  }
+  return value->is_number() ? value->dump() : "";
+}
+
 std::string system_language_tag(const std::string& language) {
   if (language.empty() || language == "en") {
     return "en-US";
