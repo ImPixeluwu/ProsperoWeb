@@ -126,6 +126,12 @@ The `[prosperoweb] native heap: ...` line goes to klog (port 3232) only, as it i
 
 Fallback: if the title shows nothing or closes, read `log.txt` and klog. `PROSPEROWEB_HWDEC=0` in `/data/prosperoweb/config.json` `"env"` skips the decoder; `PROSPEROWEB_BROKER_LOADER=websrv` uses websrv instead of elfldr. If the title does not start at all, lower `kernel.flexibleMemorySize` in `sce_sys/param.json` to `268435456`. The websrv tile keeps working independently.
 
+## First console run (run 14)
+
+The first build (`build-20261031-1912-native`) was launched from the home screen. klog showed `EXEC /app0/eboot.bin [user] ... abi=native category=native_game`, then `SIGSEGV ... fault address: 0 rip: 0` with return addresses `0x43d246` and `0x43d2fd`; `log.txt` got nothing. With the image at `0x400000` these are `_init+0x86` (just after `callq *(%rax)` in the init_array loop) and `_start+0x3d` (after `call _init`). `init_array[0]` is `_GLOBAL__sub_I_ps5_cpu_affinity.cpp`, which ends in a tail call `jmpq *GOT[__cxa_atexit]` (registering a static destructor), so the jump to 0 was that GOT slot: the `__cxa_atexit` import of `libSceLibcInternal` (NID `tsvEmnenz48`) was left unresolved, while `_init_env` and `atexit`, imported from the same module and called just before, resolved. Why the system leaves that one export unresolved is not known.
+
+Fix: the title defines `__cxa_atexit`/`__cxa_finalize` itself (`native/native_runtime.c`), so nothing imports it. The start-up code is now `native/native_crt.cpp` (the boilerplate's `app_crt.cpp` plus checks): it writes `[prosperoweb] crt: ...` breadcrumbs to klog (`_start`, the import check, `_init_env done`, the init_array size, `constructors done, calling main`), reads `/app0/imports.txt` (slot offset and symbol of every import, written by `check-eboot.py`), names each import slot the system left at 0 (`crt: import slot image+0x... is 0: <symbol>`) and points it at a stand-in that logs `CALL TO AN UNRESOLVED IMPORT from image+0x...` and returns 0, and skips empty init_array entries. `check-eboot.py` also checks the init/fini arrays, the undefined weak symbols and the zero GOT slots at build time.
+
 ## Not verified on hardware
 
 Everything above links, converts, signs and passes the import and syscall checks; none of it has run on a console yet. The open questions, most likely first:
