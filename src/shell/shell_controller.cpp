@@ -29,6 +29,13 @@ std::string origin_of(const std::string& url) {
   return url.substr(0, sep) + "://" + core::UrlNormalizer::display_host(url);
 }
 
+// Selects the focused field's whole value, so the following insertText
+// replaces it (the text input was pre-filled with that value).
+constexpr const char* kSelectFieldScript =
+    "(function(){var e=document.activeElement;if(!e)return;"
+    "try{if(typeof e.select==='function'){e.select();return;}}catch(x){}"
+    "document.execCommand('selectAll',false);})()";
+
 bool is_internal_url(const std::string& url) {
   return url.empty() || url.starts_with("about:") || url.starts_with("file:");
 }
@@ -287,6 +294,7 @@ void ShellController::after_tab_switch() {
     close_osk();
   }
   text_input_focused_ = false;
+  focused_field_.reset();
   if (const auto* tab = tabs_.active()) {
     auto& entry = ensure_entry(tab->id);
     if (!entry.loaded && !tab->url.empty()) {
@@ -426,9 +434,26 @@ void ShellController::on_fullscreen_exited(std::uint64_t id) {
   mark_dirty();
 }
 
-void ShellController::on_script_message(std::uint64_t /*id*/, const std::string& text) {
+void ShellController::on_script_message(std::uint64_t id, const std::string& text) {
   const json msg = json::parse(text, nullptr, /*allow_exceptions=*/false);
-  if (!msg.is_object() || msg.value("type", std::string()) != "eme") {
+  if (!msg.is_object()) {
+    return;
+  }
+  const std::string type = msg.value("type", std::string());
+  if (type == "focus_info") {
+    // Sent right before the {type:'focus', editable:true} report that
+    // on_text_input_focused() receives.
+    if (tabs_.active_id() == id) {
+      FocusedField field;
+      field.type = msg.value("inputType", std::string());
+      if (const auto it = msg.find("value"); it != msg.end() && it->is_string()) {
+        field.value = it->get<std::string>();
+      }
+      focused_field_ = std::move(field);
+    }
+    return;
+  }
+  if (type != "eme") {
     return;
   }
   const std::string origin = msg.value("origin", std::string());
@@ -450,10 +475,14 @@ void ShellController::on_text_input_focused(std::uint64_t id, bool focused) {
     return;
   }
   text_input_focused_ = focused;
-  if (focused && focus_ == Focus::Page && since_click_ >= 0.0f &&
+  if (!focused) {
+    focused_field_.reset();
+    return;
+  }
+  if (focus_ == Focus::Page && !text_request_ && since_click_ >= 0.0f &&
       since_click_ <= kClickFocusWindowSeconds) {
     since_click_ = -1.0f;
-    open_osk(OskTarget::Page, "");
+    request_text_entry(OskTarget::Page);
   }
 }
 
@@ -472,6 +501,9 @@ core::Mode ShellController::mode() const {
 }
 
 void ShellController::on_button(Button button, bool pressed) {
+  if (text_request_) {
+    return;  // the text input provider owns the gamepad meanwhile
+  }
   if (!pressed) {
     if (held_button_ == button) {
       stop_repeat();
@@ -494,6 +526,9 @@ void ShellController::on_button(Button button, bool pressed) {
 }
 
 void ShellController::on_sticks(float lx, float ly, float rx, float ry) {
+  if (text_request_) {
+    lx = ly = rx = ry = 0.0f;
+  }
   sticks_[0] = lx;
   sticks_[1] = ly;
   sticks_[2] = rx;
@@ -509,6 +544,9 @@ void ShellController::on_mouse_move(float x, float y) {
 }
 
 void ShellController::tick(float dt_seconds) {
+  if (config_.text_input && text_request_) {
+    config_.text_input->poll();
+  }
   if (since_click_ >= 0.0f) {
     since_click_ += dt_seconds;
     if (since_click_ > kClickFocusWindowSeconds) {
@@ -636,12 +674,8 @@ void ShellController::run_page_action(Action action) {
     case Action::ScrollRight: scroll_active(kScrollStep, 0); break;
     case Action::PageUp: scroll_active(0, -page); break;
     case Action::PageDown: scroll_active(0, page); break;
-    case Action::FocusAddressBar: {
-      const auto* tab = tabs_.active();
-      open_osk(OskTarget::Address, tab ? tab->url : std::string());
-      break;
-    }
-    case Action::OpenOsk: open_osk(OskTarget::Page, ""); break;
+    case Action::FocusAddressBar: request_text_entry(OskTarget::Address); break;
+    case Action::OpenOsk: request_text_entry(OskTarget::Page); break;
     case Action::PrevTab:
       tabs_.prev();
       after_tab_switch();
@@ -767,11 +801,98 @@ void ShellController::stop_repeat() {
   osk_repeat_.release();
 }
 
-void ShellController::open_osk(OskTarget target, const std::string& text) {
+void ShellController::request_text_entry(OskTarget target) {
+  if (text_request_) {
+    return;
+  }
+  const bool ru = language() == core::Language::Ru;
+  TextInputRequest request;
+  bool replace = false;
+  if (target == OskTarget::Address) {
+    const auto* tab = tabs_.active();
+    request.kind = TextInputKind::Url;
+    request.title = ru ? "Адрес или поиск" : "Address or search";
+    request.initial = tab ? tab->url : std::string();
+  } else {
+    // A known field value is pre-filled and replaced on commit; without one
+    // (no focus report, contenteditable, password) the text is inserted at
+    // the caret, as typed.
+    request.kind = focused_field_ ? text_input_kind_from_type(focused_field_->type)
+                                  : TextInputKind::Text;
+    request.title = ru ? "Ввод текста" : "Enter text";
+    if (focused_field_ && focused_field_->value) {
+      request.initial = *focused_field_->value;
+      replace = true;
+    }
+  }
+
+  if (config_.text_input && !config_.text_input->active()) {
+    if (menu_open_) {
+      close_menu();
+    }
+    stop_repeat();
+    text_request_ = TextRequest{target, tabs_.active_id().value_or(0), request.initial, replace};
+    mark_dirty();
+    if (config_.text_input->request_text(
+            request, [this](const TextInputResult& result) { on_text_input_result(result); })) {
+      return;
+    }
+    text_request_.reset();  // could not start: fall back to the built-in OSK
+  }
+  open_osk(target, request.initial, replace);
+}
+
+void ShellController::on_text_input_result(const TextInputResult& result) {
+  if (!text_request_) {
+    return;
+  }
+  const TextRequest request = *text_request_;
+  text_request_.reset();
+  mark_dirty();
+  switch (result.outcome) {
+    case TextInputResult::Outcome::Done:
+      commit_text(request.target, request.tab_id, result.text, request.replace);
+      break;
+    case TextInputResult::Outcome::Cancelled: break;
+    case TextInputResult::Outcome::Error:
+      if (tabs_.active_id().value_or(0) == request.tab_id) {
+        open_osk(request.target, request.initial, request.replace);
+      }
+      break;
+  }
+}
+
+void ShellController::commit_text(OskTarget target, std::uint64_t tab_id,
+                                  const std::string& text, bool replace) {
+  if (target == OskTarget::Address) {
+    navigate(text);
+    return;
+  }
+  if (tabs_.active_id().value_or(0) != tab_id) {
+    return;  // the field's tab is gone or in the background
+  }
+  auto* view = active_view();
+  if (!view) {
+    return;
+  }
+  if (replace) {
+    view->run_javascript(kSelectFieldScript);
+    if (text.empty()) {
+      view->run_javascript("document.execCommand('delete', false)");
+      return;
+    }
+  }
+  if (!text.empty()) {
+    view->insert_text(text);
+  }
+}
+
+void ShellController::open_osk(OskTarget target, const std::string& text, bool replace) {
   if (menu_open_) {
     close_menu();
   }
   osk_target_ = target;
+  osk_replace_ = target == OskTarget::Page && replace;
   osk_open_ = true;
   osk_.set_text(text);
   set_focus(Focus::Osk);
@@ -792,14 +913,9 @@ void ShellController::close_osk() {
 void ShellController::commit_osk() {
   const std::string text = osk_.text();
   const OskTarget target = osk_target_;
+  const bool replace = osk_replace_;
   close_osk();
-  if (target == OskTarget::Address) {
-    navigate(text);
-  } else if (!text.empty()) {
-    if (auto* view = active_view()) {
-      view->insert_text(text);
-    }
-  }
+  commit_text(target, tabs_.active_id().value_or(0), text, replace);
 }
 
 void ShellController::open_menu() {
@@ -1148,6 +1264,9 @@ json ShellController::chrome_state() const {
                    {"section", section},
                    {"items", std::move(items)},
                    {"selected", menu_selected_}};
+  state["text_input"] = {
+      {"active", text_request_.has_value()},
+      {"target", text_request_ && text_request_->target == OskTarget::Page ? "page" : "address"}};
   state["focus"] = focus_name(focus_);
   return state;
 }

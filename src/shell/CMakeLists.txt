@@ -1,5 +1,6 @@
 add_library(ps5browser_shell STATIC
   shell_controller.cpp
+  text_input.cpp
 )
 add_library(ps5browser::shell ALIAS ps5browser_shell)
 

@@ -93,31 +93,56 @@ constexpr const char* kEmeDetectorScript = R"JS((function () {
 )JS";
 
 // Reports focus changes of editable elements through the "ps5browser" script
-// message handler as {type: 'focus', editable}, so the shell can offer the
-// on-screen keyboard (EngineViewClient::text_input_focused). Frontends route
-// these messages to text_input_focused() instead of script_message().
+// message handler as {type: 'focus', editable}, so the shell can offer text
+// entry (EngineViewClient::text_input_focused). Frontends route these
+// messages to text_input_focused() instead of script_message().
+//
+// Right before a {editable: true} report it posts
+// {type: 'focus_info', inputType, value}, which frontends pass to
+// script_message() unchanged: inputType is the lower-cased <input type>,
+// 'textarea' or 'contenteditable'; value is the field's current value, or
+// null for passwords, contenteditable and values over 2048 characters (so
+// they are neither logged nor pre-filled). The 'focus' report itself never
+// carries the value, since frontends log it.
 constexpr const char* kFocusReporterScript = R"JS((function () {
   'use strict';
+  var TYPES = ['text', 'search', 'email', 'url', 'tel', 'password', 'number'];
+  function inputType(e) {
+    if (e.isContentEditable) return 'contenteditable';
+    if (e.tagName === 'TEXTAREA') return 'textarea';
+    return (e.getAttribute('type') || 'text').toLowerCase();
+  }
   function editable(e) {
     if (!e) return false;
     if (e.isContentEditable) return true;
     var tag = e.tagName;
     if (tag === 'TEXTAREA') return !e.readOnly && !e.disabled;
     if (tag === 'INPUT') {
-      var type = (e.getAttribute('type') || 'text').toLowerCase();
-      return ['text', 'search', 'email', 'url', 'tel', 'password', 'number'].indexOf(type) >= 0 &&
-             !e.readOnly && !e.disabled;
+      return TYPES.indexOf(inputType(e)) >= 0 && !e.readOnly && !e.disabled;
     }
     return false;
   }
-  function post(value) {
+  function send(msg) {
     try {
-      window.webkit.messageHandlers.ps5browser.postMessage({ type: 'focus', editable: value });
+      window.webkit.messageHandlers.ps5browser.postMessage(msg);
     } catch (e) {
     }
   }
-  document.addEventListener('focusin', function (ev) { post(editable(ev.target)); }, true);
-  document.addEventListener('focusout', function () { post(false); }, true);
+  function info(e) {
+    var type = inputType(e);
+    var value = null;
+    if (type !== 'password' && type !== 'contenteditable' && typeof e.value === 'string' &&
+        e.value.length <= 2048) {
+      value = e.value;
+    }
+    send({ type: 'focus_info', inputType: type, value: value });
+  }
+  document.addEventListener('focusin', function (ev) {
+    var on = editable(ev.target);
+    if (on) info(ev.target);
+    send({ type: 'focus', editable: on });
+  }, true);
+  document.addEventListener('focusout', function () { send({ type: 'focus', editable: false }); }, true);
 })();
 )JS";
 

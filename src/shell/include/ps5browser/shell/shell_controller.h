@@ -25,6 +25,7 @@
 #include "ps5browser/core/tab_manager.h"
 #include "ps5browser/shell/chrome_ui.h"
 #include "ps5browser/shell/engine_view.h"
+#include "ps5browser/shell/text_input.h"
 
 namespace ps5browser::shell {
 
@@ -61,6 +62,10 @@ class ShellController {
     std::string diagnostics_url;
     // Unix time source for history/bookmarks; defaults to time(nullptr).
     std::function<std::int64_t()> now;
+    // Text entry front end (e.g. the PS5 system keyboard dialog); must
+    // outlive the controller. nullptr: the built-in HTML OSK. The built-in
+    // OSK is also the fallback when the provider reports an error.
+    TextInputProvider* text_input = nullptr;
   };
 
   enum class Focus : std::uint8_t { Page, Chrome, Osk, Menu, Notice };
@@ -151,6 +156,9 @@ class ShellController {
   // True while the active page reports a focused editable element; hosts
   // with a physical keyboard use it to stop treating letters as buttons.
   bool text_input_focused() const { return text_input_focused_; }
+  // True while a TextInputProvider request is running (the shell ignores
+  // gamepad input and keeps its focus meanwhile).
+  bool text_input_active() const { return text_request_.has_value(); }
 
  private:
   class TabClient;
@@ -171,6 +179,22 @@ class ShellController {
   struct PendingNavigation {
     std::uint64_t tab_id = 0;
     std::string url;
+  };
+
+  // The focused page field as reported by core::kFocusReporterScript
+  // ({type:'focus_info'}); value is unset when the script did not send it
+  // (passwords, contenteditable, very long values).
+  struct FocusedField {
+    std::string type;
+    std::optional<std::string> value;
+  };
+
+  // A running TextInputProvider request.
+  struct TextRequest {
+    OskTarget target = OskTarget::Address;
+    std::uint64_t tab_id = 0;
+    std::string initial;
+    bool replace = false;  // the result replaces the field's whole value
   };
 
   struct MenuItem {
@@ -217,7 +241,15 @@ class ShellController {
   core::Vec2 to_view(core::Vec2 window_pos) const;
 
   // Overlays.
-  void open_osk(OskTarget target, const std::string& text);
+  // Text entry for the address bar or the focused page field: the provider
+  // when configured, else (or when it cannot start) the built-in OSK.
+  void request_text_entry(OskTarget target);
+  void on_text_input_result(const TextInputResult& result);
+  // Navigates (address) or puts text into the focused field (page); with
+  // replace the field's current value is selected first so it is replaced.
+  void commit_text(OskTarget target, std::uint64_t tab_id, const std::string& text,
+                   bool replace);
+  void open_osk(OskTarget target, const std::string& text, bool replace = false);
   void close_osk();
   void commit_osk();
   void open_menu();
@@ -262,6 +294,9 @@ class ShellController {
   Focus focus_before_notice_ = Focus::Page;
   OskTarget osk_target_ = OskTarget::Address;
   bool osk_open_ = false;
+  bool osk_replace_ = false;  // commit replaces the page field's value
+  std::optional<FocusedField> focused_field_;
+  std::optional<TextRequest> text_request_;
   bool menu_open_ = false;
   MenuSection menu_section_ = MenuSection::Main;
   std::vector<MenuItem> menu_items_;
