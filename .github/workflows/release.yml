@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build
+    # Host tests and the PS5 build; names come from ci.yml's env.
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Draft release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the build artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: "*.zip"
+          path: release-assets
+          merge-multiple: true
+          # The artifacts are the zips themselves (archive: false); keep them.
+          skip-decompress: true
+
+      - name: Check the assets and write the notes
+        env:
+          PRODUCT_NAME: ${{ needs.build.outputs.product-name }}
+          DATA_ZIP: ${{ needs.build.outputs.data-zip }}
+          NATIVE_ZIP: ${{ needs.build.outputs.native-zip }}
+        run: |
+          ls -l release-assets
+          [[ -f "release-assets/${DATA_ZIP}" ]] \
+            || { echo "::error::release-assets/${DATA_ZIP} is missing"; exit 1; }
+          if [[ -n "${NATIVE_ZIP}" && ! -f "release-assets/${NATIVE_ZIP}" ]]; then
+            echo "::error::release-assets/${NATIVE_ZIP} is missing"; exit 1
+          fi
+          scripts/ci/release-notes.sh "${GITHUB_REF_NAME}" "${PRODUCT_NAME}" CHANGELOG.md > "${RUNNER_TEMP}/notes.md"
+          cat "${RUNNER_TEMP}/notes.md"
+
+      - name: Create the draft release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          name: ${{ needs.build.outputs.product-name }} ${{ github.ref_name }}
+          body_path: ${{ runner.temp }}/notes.md
+          draft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: release-assets/*.zip
+          fail_on_unmatched_files: true
