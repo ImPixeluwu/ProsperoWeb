@@ -392,6 +392,25 @@ WkWebView::WkWebView(WKContextRef context, WKWebsiteDataStoreRef data_store,
   WKPreferencesSetFullScreenEnabled(preferences_, fullscreen_enabled);
   // Phase 1 is the non-accelerated raster path (WKPagePaint + SDL framebuffer).
   WKPreferencesSetAcceleratedCompositingEnabled(preferences_, false);
+  // The PlayStation port resolves form-control and default text through the
+  // generic font-family preferences (SystemFontDatabasePlayStation returns
+  // the standard family). Sony's own browser sets them; unset, buttons and
+  // text fields get no font at all and render as empty boxes.
+  {
+    auto set = [&](void (*fn)(WKPreferencesRef, WKStringRef), const char* family) {
+      auto f = make_wk_string(family);
+      fn(preferences_, f.get());
+    };
+    set(WKPreferencesSetStandardFontFamily, "DejaVu Sans");
+    set(WKPreferencesSetSansSerifFontFamily, "DejaVu Sans");
+    set(WKPreferencesSetSerifFontFamily, "DejaVu Serif");
+    set(WKPreferencesSetFixedFontFamily, "DejaVu Sans Mono");
+    set(WKPreferencesSetCursiveFontFamily, "DejaVu Serif");
+    set(WKPreferencesSetFantasyFontFamily, "DejaVu Sans");
+    set(WKPreferencesSetPictographFontFamily, "DejaVu Sans");
+    WKPreferencesSetDefaultFontSize(preferences_, 16);
+    WKPreferencesSetDefaultFixedFontSize(preferences_, 13);
+  }
   WKPreferencesSetJavaScriptCanOpenWindowsAutomatically(preferences_, true);
 
   WKPageConfigurationRef config = WKPageConfigurationCreate();
