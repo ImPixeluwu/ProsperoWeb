@@ -14,6 +14,9 @@
 
 #include <dlfcn.h>
 #include <sys/cpuset.h>
+#include <unistd.h>
+
+#include <ps5/kernel.h>
 
 #include "ps5_cpu_affinity.h"
 #include "hwdec_probe.h"
@@ -744,6 +747,34 @@ bool cache_memory_answers(video::HwdecProbe& probe) {
   return true;
 }
 
+// The process's credentials, logged before the first Sony call. The
+// references run the decoder in a sandboxed title; VLC-PS5 found the
+// library (0x80020063) and the compute queue (0x811D0111) refused once its
+// title had been given full access (src/platform_ps5.c). hbldr gives this
+// process uid 0, every capability and no jail before main() runs.
+void log_process_identity() {
+  const pid_t self = getpid();
+  std::uint8_t caps[16] = {};
+  std::string caps_hex = "?";
+  if (kernel_get_ucred_caps(self, caps) == 0) {
+    caps_hex.clear();
+    for (std::uint8_t byte : caps) {
+      char two[3];
+      std::snprintf(two, sizeof(two), "%02x", byte);
+      caps_hex += two;
+    }
+  }
+  const intptr_t jail = kernel_get_proc_jaildir(self);
+  const intptr_t root = kernel_get_proc_rootdir(self);
+  log_printf("hwdec: process uid %u (kernel %u) euid %u authid %#" PRIx64
+             " caps %s jaildir %s rootdir %s fw %#x",
+             static_cast<unsigned>(getuid()), static_cast<unsigned>(kernel_get_ucred_uid(self)),
+             static_cast<unsigned>(geteuid()),
+             static_cast<std::uint64_t>(kernel_get_ucred_authid(self)), caps_hex.c_str(),
+             jail ? "set" : "none", root == kernel_get_root_vnode() ? "/" : "other",
+             static_cast<unsigned>(kernel_get_fw_version()));
+}
+
 // The probe body: libraries, functions, the shared compute queue, memory
 // answers. The order follows the references (ps5_hwdec.h): the GPU
 // libraries in the process before the decoder's (all four have libSceAgc
@@ -751,6 +782,7 @@ bool cache_memory_answers(video::HwdecProbe& probe) {
 // module, then the queue in 16 KiB-aligned CPU+GPU direct memory of type 12.
 bool probe_body(video::HwdecProbe& probe) {
   State& s = state();
+  log_process_identity();
   if (!env_off("PROSPEROWEB_HWDEC_AGC", "0")) {
     for (const char* name : {"libSceAgcDriver.sprx", "libSceAgc.sprx"}) {
       load_library(probe, name);  // a failure is logged; the decoder may still work

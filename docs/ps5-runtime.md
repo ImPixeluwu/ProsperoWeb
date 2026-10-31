@@ -658,6 +658,25 @@ reject vp9 ... (unsupported)` per stream, `hwdec: stream N ...: <why>; the
 WebProcess decodes in software` at run time.
 `PROSPEROWEB_VIDEO_DECODE=webprocess` restores software decoding.
 
+Console status (runs 13 and 14): in the UI started by hbldr the first
+decoder call, `sceVideodec2QueryComputeMemoryInfo`, stops the whole process
+(`mDBG: Sending signal(... signo: 0xa0020101)` in klog), with
+`sceSysmoduleLoadModule(207)` returning 0 (run 13) or `0x80020064` (run 14).
+Keep `PROSPEROWEB_HWDEC=0` on consoles until this is solved. It is not a
+linking problem: the payload SDK loads a `DT_NEEDED` `.sprx` and a `dlopen`ed
+one through the same code (`crt/rtld_payload.c` `dt_needed()` and
+`crt/rtld_dlfcn.c` `__dlopen()` both call `__rtld_lib_new()` and
+`__rtld_lib_open()`, which end in `sceKernelLoadStartModule`), and `dlsym`
+and import relocation both return the module's own symbol address
+(`crt/rtld_sprx.c` `sprx_sym2addr()`), so a link stub as the native titles
+use would change nothing, while a missing `NEEDED` module is fatal to the
+whole multi-call ELF. The difference from the references is the process:
+they are signed titles that make the decoder's library and compute queue
+inside their sandbox, and VLC-PS5 saw both refused once its title had full
+access (`0x80020063`, `0x811D0111`, `src/platform_ps5.c`); hbldr gives this
+process uid 0, every capability and no jail before `main()` runs. The probe
+logs those credentials (`hwdec: process uid ...`) before its first call.
+
 Limits: no pixels in the WebProcess for hardware-decoded video, so canvas
 `drawImage(video)`, snapshots and a video box the overlay cannot show (rotated,
 skewed) stay empty; 8-bit 4:2:0 H.264 and HEVC Main only.
