@@ -25,6 +25,7 @@
 #include "ps5_app.h"
 #include "ps5_cpu_affinity.h"
 #include "ps5_cpu_monitor.h"
+#include "ps5_hwdec.h"
 #include "ps5_log.h"
 #include "ps5_runtime_env.h"
 
@@ -177,6 +178,9 @@ int main(int argc, char** argv) {
     return rc;
   }
 
+  // The hardware video decoder's library and compute queue, before anything
+  // else of the UI (ps5_hwdec.h: they were refused later in other homebrew).
+  hwdec_prepare();
   start_cpu_monitor();
   Ps5App app;
   return app.run();

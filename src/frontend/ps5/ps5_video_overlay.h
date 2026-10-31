@@ -11,7 +11,10 @@
 // Env (exported to the WebProcess too): PROSPEROWEB_VIDEO_PORT (default
 // 17773, "off" disables the server; the players then paint into the page),
 // PROSPEROWEB_VIDEO_OVERLAY=0 (players paint into the page; the server still
-// runs), PROSPEROWEB_VIDEO_SCALE=nearest (default bilinear).
+// runs), PROSPEROWEB_VIDEO_SCALE=nearest (default bilinear),
+// PROSPEROWEB_VIDEO_DECODE=ui|webprocess (who decodes: ui, the default,
+// lets players send compressed video for the hardware decoder,
+// ps5_hwdec.h).
 #pragma once
 
 #include <functional>

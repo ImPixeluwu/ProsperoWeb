@@ -8,6 +8,7 @@
 #include <WebKit/WKPagePrivatePlayStation.h>
 
 #include "FFmpegVideoOverlayWire.h"
+#include "ps5_hwdec.h"
 #include "ps5_log.h"
 #include "video_geometry.h"
 
@@ -52,6 +53,12 @@ std::unique_ptr<Ps5VideoOverlay> Ps5VideoOverlay::start(std::function<void()> on
   options.filter = scale && !std::strcmp(scale, "nearest") ? display::ScaleFilter::Nearest
                                                             : display::ScaleFilter::Bilinear;
   options.on_update = std::move(on_update);
+  // Remote decoding: players send compressed video when the UI can decode
+  // it (ps5_hwdec.h); without a factory every stream is refused.
+  options.decoder_factory = hwdec_factory();
+  log_line(options.decoder_factory
+               ? "video overlay: remote decoding on (sceVideodec2: h264, hevc)"
+               : "video overlay: remote decoding off (no hardware decoder); players decode");
   std::unique_ptr<Ps5VideoOverlay> self(new Ps5VideoOverlay());
   self->server_ = std::make_unique<video::VideoServer>(std::move(options));
   if (!self->server_->start()) {
