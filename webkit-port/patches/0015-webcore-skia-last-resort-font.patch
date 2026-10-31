@@ -1,0 +1,78 @@
+Subject: WebCore: robust last-resort font on the PS5 build
+
+FontCache::lastResortFallbackFont() asked fontconfig for "serif", then
+for any font. On the console, under memory pressure, both failed (no
+typeface), the empty typeface was used, and for a 0px font the
+resulting FontPlatformData equalled the font data cache's empty key:
+the HashTable key validation RELEASE_ASSERT in fontForPlatformData()
+killed the WebProcess during layout.
+
+Try "DejaVu Sans" by name, then a typeface reserved at the first call
+(while fontconfig still works), then the packaged
+$FONTCONFIG_PATH/DejaVuSans.ttf directly; a glyphless last-resort font
+at size 0 gets the smallest non-zero size so it can never be the empty
+key.
+diff --git a/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp b/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
+index 74cfeb60a..1b4f44ef4 100644
+--- a/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
++++ b/Source/WebCore/platform/graphics/skia/FontCacheSkia.cpp
+@@ -30,7 +30,11 @@
+ #include "FontCustomPlatformData.h"
+ #include "FontDescription.h"
+ #include "StyleFontSizeFunctions.h"
++#include <cstdlib>
++#include <limits>
+ #include <wtf/Assertions.h>
++#include <wtf/NeverDestroyed.h>
++#include <wtf/text/MakeString.h>
+ #include <wtf/text/CString.h>
+ #include <wtf/text/CharacterProperties.h>
+ #include <wtf/unicode/CharacterNames.h>
+@@ -184,18 +188,46 @@ Ref<Font> FontCache::lastResortFallbackFont(const FontDescription& fontDescripti
+ #else
+     const auto defaultFontName = "serif"_s;
+ #endif
++#if defined(PS5_HOMEBREW)
++    // A typeface taken while fontconfig still works: under memory pressure
++    // on the console every lookup below can fail (FreeType cannot open the
++    // file), and the empty typeface at size 0 then equals the font data
++    // cache's empty key, a RELEASE_ASSERT in FontCache::fontForPlatformData.
++    static NeverDestroyed<sk_sp<SkTypeface>> reserveTypeface(fontManager().matchFamilyStyle("DejaVu Sans", SkFontStyle()));
++#endif
++
+     if (RefPtr<Font> font = fontForFamily(fontDescription, defaultFontName))
+         return font.releaseNonNull();
+ 
++#if defined(PS5_HOMEBREW)
++    if (RefPtr<Font> font = fontForFamily(fontDescription, "DejaVu Sans"_s))
++        return font.releaseNonNull();
++#endif
++
+     // Passing nullptr as family name makes Skia use a weak match.
+     auto typeface = fontManager().matchFamilyStyle(nullptr, skiaFontStyle(fontDescription));
++#if defined(PS5_HOMEBREW)
++    if (!typeface)
++        typeface = reserveTypeface.get();
++    if (!typeface) {
++        // fontconfig found nothing at all: load the packaged font directly.
++        if (const char* fontDirectory = getenv("FONTCONFIG_PATH"))
++            typeface = fontManager().makeFromFile(makeString(String::fromUTF8(fontDirectory), "/DejaVuSans.ttf"_s).utf8().legacyCStringPointer());
++    }
++#endif
+     if (!typeface) {
+         // LastResort is guaranteed to be non-null, so fallback to empty font with not glyphs.
+         typeface = SkTypeface::MakeEmpty();
+     }
+ 
++    auto size = fontDescription.usedSize();
++#if defined(PS5_HOMEBREW)
++    // The glyphless typeface at size 0 is the cache's empty key.
++    if (!size && !typeface->countGlyphs())
++        size = std::numeric_limits<float>::min();
++#endif
+     auto [syntheticBold, syntheticOblique] = computeSynthesisProperties(*typeface, fontDescription, { });
+-    FontPlatformData platformData(WTF::move(typeface), fontDescription.usedSize(), syntheticBold, syntheticOblique,
++    FontPlatformData platformData(WTF::move(typeface), size, syntheticBold, syntheticOblique,
+         fontDescription.orientation(), fontDescription.widthVariant(), fontDescription.textRenderingMode(), computeFeatures(fontDescription, { }));
+     return fontForPlatformData(platformData);
+ }
