@@ -12,6 +12,12 @@
 // receives them inline), scales them (display/scale.h) and swaps the result
 // in under the frames lock. The compositor holds that lock only while it
 // composes (Frames below).
+//
+// A player may also send its compressed video instead of pixels (remote
+// decoding, PROSPEROWEB_VIDEO_DECODE=ui). With a DecoderFactory configured
+// the server then runs an HwStream for that connection (hwdec_stream.h): its
+// own threads decode, convert and hand the picture the player shows to the
+// same scaling and swap-in path.
 #pragma once
 
 #include <atomic>
@@ -25,6 +31,7 @@
 #include <vector>
 
 #include "damage_region.h"
+#include "hwdec_stream.h"
 #include "scale.h"
 
 namespace prosperoweb::video {
@@ -37,6 +44,11 @@ struct ServerOptions {
   std::function<void()> on_update;
   // Log interval of the statistics line (0 = never).
   int stats_interval_ms = 5000;
+  // Remote decoding: makes a decoder for a stream-open (empty: every stream
+  // is refused and the players decode themselves).
+  DecoderFactory decoder_factory;
+  // Streams decoded at the same time; more are refused.
+  int max_decode_streams = 2;
 };
 
 // The identity of a page: its WebProcess and the page's WebCore identifier.
@@ -87,6 +99,8 @@ class VideoServer {
   std::vector<display::Rect> take_damage(const PageKey& page);
 
   std::size_t player_count();
+  // Remotely decoded streams running now.
+  int decode_stream_count() const { return decode_streams_.load(); }
 
  private:
   struct Connection;
@@ -115,6 +129,16 @@ class VideoServer {
   // Scales the connection's current source frame to its player's rect and
   // swaps it in. `fresh`: a new frame (not a rescale).
   void render(Connection& c, bool fresh);
+  // The same for any source (also from a stream's present thread). False
+  // when nothing was drawn.
+  bool render_frame(std::uint32_t key, const display::ImageView& src,
+                    std::vector<std::uint32_t>& back, std::vector<std::uint32_t>& scratch,
+                    bool fresh, double* scale_ms);
+  // Sends a complete message to the client (any thread).
+  bool send_message(Connection& c, const std::vector<std::uint8_t>& bytes);
+  bool handle_stream_message(Connection& c);
+  void open_stream(Connection& c);
+  void close_stream(Connection& c, const char* why);
   void close_connection(Connection& c, const char* why);
   void add_damage_locked(const Player& p);
   void log_stats();
@@ -126,6 +150,7 @@ class VideoServer {
   std::thread thread_;
   std::vector<std::unique_ptr<Connection>> connections_;  // server thread only
   std::uint32_t next_key_ = 1;
+  std::atomic<int> decode_streams_{0};
 
   std::mutex lock_;  // players_, damage_
   std::map<std::uint32_t, Player> players_;

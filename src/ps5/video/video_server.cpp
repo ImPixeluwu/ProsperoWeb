@@ -84,7 +84,43 @@ struct VideoServer::Connection {
   std::vector<std::uint32_t> back;
   std::vector<std::uint32_t> scratch;
   bool closed = false;
+  // Writes to fd from the poll thread and a stream's threads.
+  std::mutex send_lock;
+  bool send_failed = false;  // send_lock
+  // Remote decoding: the stream and its scaling buffers (present thread).
+  std::unique_ptr<HwStream> stream;
+  std::uint32_t stream_id = 0;
+  StreamConfig stream_config;
+  std::vector<std::uint32_t> stream_back;
+  std::vector<std::uint32_t> stream_scratch;
 };
+
+namespace {
+
+const char* codec_label(wire::Codec codec) { return wire::codecName(codec); }
+
+YuvColor stream_color(const wire::StreamOpen& open) {
+  YuvColor color;
+  color.full_range = open.fullRange;
+  switch (open.matrix) {
+    case wire::Matrix::Bt601:
+      color.matrix = YuvMatrix::Bt601;
+      break;
+    case wire::Matrix::Bt2020:
+      color.matrix = YuvMatrix::Bt2020;
+      break;
+    case wire::Matrix::Bt709:
+      color.matrix = YuvMatrix::Bt709;
+      break;
+    case wire::Matrix::Unknown:
+      // Unspecified: HD is BT.709 in practice (as the software path).
+      color.matrix = open.height >= 720 ? YuvMatrix::Bt709 : YuvMatrix::Bt601;
+      break;
+  }
+  return color;
+}
+
+}  // namespace
 
 VideoServer::VideoServer(ServerOptions options) : options_(std::move(options)) {}
 
@@ -207,6 +243,11 @@ void VideoServer::run() {
         accept_clients();
       }
     }
+    for (auto& c : connections_) {
+      if (c->stream && c->stream->failed()) {
+        close_stream(*c, nullptr);
+      }
+    }
     connections_.erase(std::remove_if(connections_.begin(), connections_.end(),
                                       [](const auto& c) { return c->closed; }),
                        connections_.end());
@@ -298,7 +339,7 @@ bool VideoServer::service(Connection& c) {
       }
       c.out.clear();
       wire::appendAccepted(c.out, c.key);
-      send(c.fd, c.out.data(), c.out.size(), send_flags());
+      send_message(c, c.out);
       ps5_log_printf("video overlay: player key %u connected (pid %u player %u)", c.key, c.pid,
                      c.player);
       continue;
@@ -322,7 +363,7 @@ bool VideoServer::handle_message(Connection& c) {
       }
       c.out.clear();
       wire::appendShmResult(c.out, wire::ShmResult{ok, ok ? 0u : static_cast<std::uint32_t>(error)});
-      send(c.fd, c.out.data(), c.out.size(), send_flags());
+      send_message(c, c.out);
       ps5_log_printf("video overlay: player key %u: %s %s %s%s%s", c.key,
                      offer && offer->kind == wire::ShmKind::File ? "file" : "shm",
                      offer ? offer->name.c_str() : "(malformed)", ok ? "mapped" : "refused: ",
@@ -350,7 +391,9 @@ bool VideoServer::handle_message(Connection& c) {
           add_damage_locked(p);  // where it is now
         }
       }
-      if (rescale && !c.source.empty()) {
+      if (rescale && c.stream) {
+        c.stream->rerender();
+      } else if (rescale && !c.source.empty()) {
         render(c, false);
       }
       if (options_.on_update) {
@@ -417,9 +460,187 @@ bool VideoServer::handle_message(Connection& c) {
     }
     case wire::Type::Close:
       return false;
+    case wire::Type::StreamOpen:
+    case wire::Type::Packet:
+    case wire::Type::Flush:
+    case wire::Type::Show:
+    case wire::Type::Discard:
+    case wire::Type::Drain:
+    case wire::Type::StreamClose:
+      return handle_stream_message(c);
     default:
       return true;  // unknown: ignore (forward compatible)
   }
+}
+
+bool VideoServer::send_message(Connection& c, const std::vector<std::uint8_t>& bytes) {
+  std::lock_guard<std::mutex> lock(c.send_lock);
+  if (c.send_failed || c.fd < 0) {
+    return false;
+  }
+  const std::uint8_t* data = bytes.data();
+  std::size_t left = bytes.size();
+  const auto deadline = Clock::now() + std::chrono::seconds(2);
+  while (left) {
+    const ssize_t sent = send(c.fd, data, left, send_flags());
+    if (sent > 0) {
+      data += sent;
+      left -= static_cast<std::size_t>(sent);
+      continue;
+    }
+    if (sent < 0 && errno == EINTR) {
+      continue;
+    }
+    if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) && Clock::now() < deadline) {
+      pollfd p{c.fd, POLLOUT, 0};
+      poll(&p, 1, 20);
+      continue;
+    }
+    c.send_failed = true;
+    return false;
+  }
+  return true;
+}
+
+void VideoServer::open_stream(Connection& c) {
+  const auto& m = c.parser.message();
+  auto open = wire::decodeStreamOpen(m.payload, m.bytes);
+  if (!open) {
+    return;
+  }
+  auto reject = [&](const std::string& reason) {
+    ps5_log_printf("hwdec: player key %u: reject %s %ux%u (%s)", c.key, codec_label(open->codec),
+                   open->width, open->height, reason.c_str());
+    std::vector<std::uint8_t> out;
+    wire::appendStreamFailure(out, wire::Type::StreamReject,
+                              wire::StreamFailure{open->stream, reason});
+    send_message(c, out);
+  };
+  if (open->codec != wire::Codec::H264 && open->codec != wire::Codec::Hevc) {
+    reject("unsupported");
+    return;
+  }
+  const VideoCodec codec =
+      open->codec == wire::Codec::H264 ? VideoCodec::H264 : VideoCodec::Hevc;
+  std::string error;
+  auto config = parse_stream_config(codec, open->extradata.data(), open->extradata.size(), error);
+  if (!config) {
+    reject("extradata: " + error);
+    return;
+  }
+  // Same stream again: new parameter sets (a quality switch).
+  if (c.stream && c.stream_id == open->stream) {
+    c.stream_config = *config;
+    c.stream->reconfigure(std::move(*config));
+    return;
+  }
+  close_stream(c, "replaced by a new stream");
+  if (!options_.decoder_factory) {
+    reject("no hardware decoder in this build");
+    return;
+  }
+  if (decode_streams_.load() >= options_.max_decode_streams) {
+    char reason[64];
+    std::snprintf(reason, sizeof(reason), "busy: %d streams decoding", decode_streams_.load());
+    reject(reason);
+    return;
+  }
+  DecoderRequest request;
+  request.config = *config;
+  request.width = static_cast<int>(open->width);
+  request.height = static_cast<int>(open->height);
+  std::string reason;
+  std::unique_ptr<DecoderBackend> backend = options_.decoder_factory(request, reason);
+  if (!backend) {
+    reject(reason.empty() ? "decoder refused" : reason);
+    return;
+  }
+  const int slots = backend->slot_count();
+  HwStreamCallbacks callbacks;
+  Connection* conn = &c;
+  const std::uint32_t key = c.key;
+  callbacks.send = [this, conn](std::vector<std::uint8_t>&& bytes) { send_message(*conn, bytes); };
+  callbacks.deliver = [this, conn, key](const display::ImageView& view) {
+    render_frame(key, view, conn->stream_back, conn->stream_scratch, true, nullptr);
+  };
+  callbacks.target_size = [this, key](int& w, int& h) {
+    std::lock_guard<std::mutex> lock(lock_);
+    auto it = players_.find(key);
+    if (it != players_.end()) {
+      w = it->second.rect.w;
+      h = it->second.rect.h;
+    }
+  };
+  c.stream_id = open->stream;
+  c.stream_config = *config;
+  c.stream = std::make_unique<HwStream>(c.key, open->stream, std::move(*config),
+                                        stream_color(*open), std::move(backend),
+                                        std::move(callbacks));
+  decode_streams_++;
+  std::vector<std::uint8_t> out;
+  wire::appendStreamOk(out, wire::StreamOk{open->stream, 1, static_cast<std::uint32_t>(slots)});
+  send_message(c, out);
+}
+
+void VideoServer::close_stream(Connection& c, const char* why) {
+  if (!c.stream) {
+    return;
+  }
+  const std::uint32_t id = c.stream_id;
+  const bool failed = c.stream->failed();
+  c.stream.reset();  // joins its threads
+  decode_streams_--;
+  if (why || !failed) {
+    ps5_log_printf("hwdec: player key %u: stream %u closed%s%s", c.key, id, why ? ": " : "",
+                   why ? why : "");
+  }
+}
+
+bool VideoServer::handle_stream_message(Connection& c) {
+  const auto& m = c.parser.message();
+  if (m.type == wire::Type::StreamOpen) {
+    open_stream(c);
+    return true;
+  }
+  if (m.type == wire::Type::Packet) {
+    const std::uint8_t* data = nullptr;
+    std::size_t bytes = 0;
+    const auto packet = wire::decodePacket(m.payload, m.bytes, &data, &bytes);
+    if (!packet) {
+      return false;
+    }
+    if (c.stream && packet->stream == c.stream_id) {
+      c.stream->packet(packet->serial, packet->pts, packet->keyframe, data, bytes);
+    }
+    return true;
+  }
+  const auto control = wire::decodeStreamControl(m.type, m.payload, m.bytes);
+  if (!control) {
+    return false;
+  }
+  if (!c.stream || control->stream != c.stream_id) {
+    return true;  // a stream that is gone (refused, failed, replaced)
+  }
+  switch (m.type) {
+    case wire::Type::Flush:
+      c.stream->flush(control->serial);
+      break;
+    case wire::Type::Show:
+      c.stream->show(control->serial, control->pts);
+      break;
+    case wire::Type::Discard:
+      c.stream->discard(control->serial, control->pts);
+      break;
+    case wire::Type::Drain:
+      c.stream->drain(control->serial);
+      break;
+    case wire::Type::StreamClose:
+      close_stream(c, nullptr);
+      break;
+    default:
+      break;
+  }
+  return true;
 }
 
 bool VideoServer::map_segment(Connection& c, const std::string& name, bool named,
@@ -469,36 +690,59 @@ void VideoServer::unmap_segment(Connection& c) {
 }
 
 void VideoServer::render(Connection& c, bool fresh) {
-  display::Rect rect;
-  bool visible;
-  {
-    std::lock_guard<std::mutex> lock(lock_);
-    const Player& p = players_[c.key];
-    rect = p.rect;
-    visible = p.visible;
+  if (c.source.empty()) {
+    return;
   }
-  if (!visible || rect.empty() || rect.area() > kMaxScaledPixels || c.source.empty()) {
-    return;  // shown again with the next frame or geometry
-  }
-  const auto t0 = Clock::now();
-  c.back.resize(static_cast<std::size_t>(rect.area()));
   const display::ImageView src{c.source.data(), c.source_w, c.source_h, c.source_w};
-  display::scale_image(src, c.back.data(), rect.w, rect.h, rect.w, options_.filter, c.scratch);
-  const double ms = ms_between(t0, Clock::now());
+  double ms = 0;
+  if (!render_frame(c.key, src, c.back, c.scratch, fresh, &ms)) {
+    return;
+  }
   stats_.rendered++;
   stats_.scale_ms += ms;
   stats_.scale_max_ms = std::max(stats_.scale_max_ms, ms);
   stats_.src_w = c.source_w;
   stats_.src_h = c.source_h;
-  stats_.dst_w = rect.w;
-  stats_.dst_h = rect.h;
+  std::lock_guard<std::mutex> lock(lock_);
+  const Player& p = players_[c.key];
+  stats_.dst_w = p.rect.w;
+  stats_.dst_h = p.rect.h;
+}
+
+bool VideoServer::render_frame(std::uint32_t key, const display::ImageView& src,
+                               std::vector<std::uint32_t>& back,
+                               std::vector<std::uint32_t>& scratch, bool fresh, double* scale_ms) {
+  display::Rect rect;
+  bool visible;
   {
     std::lock_guard<std::mutex> lock(lock_);
-    Player& p = players_[c.key];
-    if (p.rect.w != rect.w || p.rect.h != rect.h) {
-      return;  // resized meanwhile; the geometry message rescales
+    auto it = players_.find(key);
+    if (it == players_.end()) {
+      return false;
     }
-    p.front.swap(c.back);
+    rect = it->second.rect;
+    visible = it->second.visible;
+  }
+  if (!visible || rect.empty() || rect.area() > kMaxScaledPixels || !src.pixels) {
+    return false;  // shown again with the next frame or geometry
+  }
+  const auto t0 = Clock::now();
+  back.resize(static_cast<std::size_t>(rect.area()));
+  display::scale_image(src, back.data(), rect.w, rect.h, rect.w, options_.filter, scratch);
+  if (scale_ms) {
+    *scale_ms = ms_between(t0, Clock::now());
+  }
+  {
+    std::lock_guard<std::mutex> lock(lock_);
+    auto it = players_.find(key);
+    if (it == players_.end()) {
+      return false;
+    }
+    Player& p = it->second;
+    if (p.rect.w != rect.w || p.rect.h != rect.h) {
+      return false;  // resized meanwhile; the geometry message rescales
+    }
+    p.front.swap(back);
     p.front_w = rect.w;
     p.front_h = rect.h;
     p.has_frame = true;
@@ -510,6 +754,7 @@ void VideoServer::render(Connection& c, bool fresh) {
   if (options_.on_update) {
     options_.on_update();
   }
+  return true;
 }
 
 void VideoServer::close_connection(Connection& c, const char* why) {
@@ -517,10 +762,14 @@ void VideoServer::close_connection(Connection& c, const char* why) {
     return;
   }
   c.closed = true;
+  close_stream(c, why ? why : "connection closed");
   unmap_segment(c);
-  if (c.fd >= 0) {
-    close(c.fd);
-    c.fd = -1;
+  {
+    std::lock_guard<std::mutex> lock(c.send_lock);
+    if (c.fd >= 0) {
+      close(c.fd);
+      c.fd = -1;
+    }
   }
   if (c.key) {
     {
