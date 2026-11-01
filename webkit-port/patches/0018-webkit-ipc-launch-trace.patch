@@ -18,6 +18,13 @@ Also traced (console run 25: the UI sent the page's WebProcess one message
 and then nothing): the name of the first 40 messages sent and dispatched on
 each connection, every waitForMessage, and sync replies that time out.
 
+Also traced (console run 26: the page's WebProcess dispatched LoadRequest
+but never CreateWebPage, which the UI had sent): every place
+ConnectionUnix drops a message instead of sending or dispatching it (too
+many attachments, an invalid descriptor attachment, no shared memory for an
+out-of-line body, a missing or unmappable out-of-line body, a message that
+cannot be decoded), and every out-of-line body sent or received.
+
 Also: Connection::platformPrepareForOpen() opens the connection even when
 the socket cannot be made non-blocking (logged). The PlayStation
 SocketMonitor waits with select() before it reads, so a blocking socket
@@ -130,7 +137,7 @@ index 88ca5b968..e02360944 100644
      RefPtr client = m_client.get();
      RELEASE_ASSERT(client);
 diff --git a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
-index 0031d7fee..879a19447 100644
+index 0031d7fee..9b615922d 100644
 --- a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
 +++ b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
 @@ -28,6 +28,15 @@
@@ -149,7 +156,56 @@ index 0031d7fee..879a19447 100644
  #include "IPCUtilities.h"
  #include "Logging.h"
  #include "UnixMessage.h"
-@@ -326,8 +335,16 @@ bool Connection::platformPrepareForOpen()
+@@ -135,6 +144,7 @@ bool Connection::processMessage()
+     memcpySpan(asMutableByteSpan(messageInfo), consumeSpan(messageData, sizeof(messageInfo)));
+ 
+     if (messageInfo.attachmentCount() > attachmentMaxAmount || (!messageInfo.isBodyOutOfLine() && messageInfo.bodySize() > messageMaxSize)) {
++        PS5_TRACE("webkit: ipc fd %d DROPS a message: %zu attachments, body %zu bytes%s", socketDescriptor(), messageInfo.attachmentCount(), messageInfo.bodySize(), messageInfo.isBodyOutOfLine() ? " out of line" : "");
+         ASSERT_NOT_REACHED();
+         return false;
+     }
+@@ -171,12 +181,16 @@ bool Connection::processMessage()
+         ASSERT(messageInfo.bodySize());
+ 
+         if (attachmentInfo[attachmentCount].isNull()) {
++            PS5_TRACE("webkit: ipc fd %d out-of-line message (%zu bytes) without its body descriptor", socketDescriptor(), messageInfo.bodySize());
+             ASSERT_NOT_REACHED();
+             return false;
+         }
+ 
++        if (attachmentFileDescriptorCount > m_fileDescriptors.size())
++            PS5_TRACE("webkit: ipc fd %d message expects %zu descriptors, %zu received", socketDescriptor(), attachmentFileDescriptorCount, m_fileDescriptors.size());
+         auto fd = UnixFileDescriptor { m_fileDescriptors[attachmentFileDescriptorCount - 1], UnixFileDescriptor::Adopt };
+         if (!fd) {
++            PS5_TRACE("webkit: ipc fd %d out-of-line body descriptor invalid", socketDescriptor());
+             ASSERT_NOT_REACHED();
+             return false;
+         }
+@@ -184,9 +198,11 @@ bool Connection::processMessage()
+         auto handle = WebCore::SharedMemory::Handle { WTF::move(fd), messageInfo.bodySize() };
+         oolMessageBody = WebCore::SharedMemory::map(WTF::move(handle), WebCore::SharedMemory::Protection::ReadOnly);
+         if (!oolMessageBody) {
++            PS5_TRACE("webkit: ipc fd %d cannot map an out-of-line body of %zu bytes", socketDescriptor(), messageInfo.bodySize());
+             ASSERT_NOT_REACHED();
+             return false;
+         }
++        PS5_TRACE("webkit: ipc fd %d received an out-of-line body of %zu bytes", socketDescriptor(), messageInfo.bodySize());
+     }
+ 
+     ASSERT(attachments.size() == (messageInfo.isBodyOutOfLine() ? messageInfo.attachmentCount() - 1 : messageInfo.attachmentCount()));
+@@ -197,8 +213,10 @@ bool Connection::processMessage()
+ 
+     auto decoder = Decoder::create(messageBody.first(messageInfo.bodySize()), WTF::move(attachments));
+     ASSERT(decoder);
+-    if (!decoder)
++    if (!decoder) {
++        PS5_TRACE("webkit: ipc fd %d cannot decode a message of %zu bytes", socketDescriptor(), messageInfo.bodySize());
+         return false;
++    }
+ 
+     processIncomingMessage(makeUniqueRefFromNonNullUniquePtr(WTF::move(decoder)));
+ 
+@@ -326,8 +344,16 @@ bool Connection::platformPrepareForOpen()
  {
      if (setNonBlock(socketDescriptor()))
          return true;
@@ -166,7 +222,7 @@ index 0031d7fee..879a19447 100644
  }
  
  void Connection::platformOpen()
-@@ -336,8 +353,10 @@ void Connection::platformOpen()
+@@ -336,8 +362,10 @@ void Connection::platformOpen()
      m_isConnected = true;
  
  #if PLATFORM(PLAYSTATION)
@@ -177,6 +233,30 @@ index 0031d7fee..879a19447 100644
              int fd;
              while ((fd = protectedThis->socketDescriptor()) != -1) {
                  int maxFd = fd;
+@@ -373,14 +401,22 @@ bool Connection::sendOutgoingMessage(UniqueRef<Encoder>&& encoder)
+ 
+     UnixMessage outputMessage(encoder.get());
+     if (outputMessage.attachments().size() > (attachmentMaxAmount - 1)) {
++        PS5_TRACE("webkit: ipc fd %d DROPS outgoing %s: %zu attachments", socketDescriptor(), description(encoder->messageName()).characters(), outputMessage.attachments().size());
+         ASSERT_NOT_REACHED();
+         return false;
+     }
++    for (auto& attachment : outputMessage.attachments()) {
++        if (!attachment)
++            PS5_TRACE("webkit: ipc fd %d outgoing %s carries an INVALID descriptor attachment", socketDescriptor(), description(encoder->messageName()).characters());
++    }
+ 
+     size_t messageSizeWithBodyInline = sizeof(MessageInfo) + (outputMessage.attachments().size() * sizeof(AttachmentInfo)) + outputMessage.bodySize();
+     if (messageSizeWithBodyInline > messageMaxSize && outputMessage.bodySize()) {
+-        if (!outputMessage.setBodyOutOfLine())
++        if (!outputMessage.setBodyOutOfLine()) {
++            PS5_TRACE("webkit: ipc fd %d DROPS outgoing %s: no shared memory for its %zu-byte body (errno %d)", socketDescriptor(), description(encoder->messageName()).characters(), outputMessage.bodySize(), errno);
+             return false;
++        }
++        PS5_TRACE("webkit: ipc fd %d sends %s with an out-of-line body of %zu bytes", socketDescriptor(), description(encoder->messageName()).characters(), outputMessage.bodySize());
+     }
+ 
+     return sendOutputMessage(WTF::move(outputMessage));
 diff --git a/Source/WebKit/UIProcess/AuxiliaryProcessProxy.cpp b/Source/WebKit/UIProcess/AuxiliaryProcessProxy.cpp
 index 1c0a468db..e4a51be35 100644
 --- a/Source/WebKit/UIProcess/AuxiliaryProcessProxy.cpp
