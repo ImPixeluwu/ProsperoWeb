@@ -278,19 +278,47 @@ long long now_ms() {
       .count();
 }
 
+// The last IPC message this process sent (webkit-port patch 0018), if
+// WebKit provides it.
+extern "C" const char* ps5IpcLastSend(int* fd, long long* at_ms) __attribute__((weak));
+
+// Every second from 10 s on, posts a callback to the WebKit main run loop.
+// If one has not run after 3 s, the UI is frozen: the watchdog leaves a
+// line in boot.txt (written without locks, in case the log's lock is held)
+// and in log.txt, with the last IPC message sent, and another when the loop
+// runs again. With PROSPEROWEB_TRACE=1 it also reports where each heartbeat
+// ran and the per-descriptor IPC counts every 5 s.
 void start_main_loop_watchdog() {
   std::thread([] {
     std::this_thread::sleep_for(std::chrono::seconds(10));
     // After the broker opened the profile to every user (spawn_glue.cpp).
     native_profile_probe(prosperoweb::frontend::kPs5DataDir);
-    for (int i = 0; i < 60; i++) {
+    bool frozen = false;
+    for (long long tick = 0;; tick++) {
       const long long posted = g_heartbeat_posted.load();
       const long long ran = g_heartbeat_ran.load();
-      if (posted && ran < posted) {
-        prosperoweb::frontend::log_printf(
-            "main loop: heartbeat posted %lld ms ago has not run: the main run loop is blocked",
-            now_ms() - posted);
-      } else if (posted && prosperoweb::frontend::trace_enabled()) {
+      const long long now = now_ms();
+      if (posted && ran < posted && now - posted >= 3000 && !frozen) {
+        frozen = true;
+        int fd = -1;
+        long long at = 0;
+        const char* last = ps5IpcLastSend ? ps5IpcLastSend(&fd, &at) : nullptr;
+        char line[256];
+        std::snprintf(line, sizeof(line),
+                      "[prosperoweb] main loop: FROZEN for %lld ms; last IPC sent: %s on fd %d, "
+                      "%lld ms ago\n",
+                      now - posted, last ? last : "(none)", fd, at ? now - at : -1);
+        native_boot_say(line);
+        prosperoweb::frontend::log_line(std::string(line + 14, std::strlen(line + 14) - 1));
+      } else if (posted && ran >= posted && frozen) {
+        frozen = false;
+        char line[128];
+        std::snprintf(line, sizeof(line), "[prosperoweb] main loop: running again after %lld ms\n",
+                      ran - posted);
+        native_boot_say(line);
+        prosperoweb::frontend::log_line(std::string(line + 14, std::strlen(line + 14) - 1));
+      } else if (posted && ran >= posted && prosperoweb::frontend::trace_enabled() &&
+                 tick % 5 == 0) {
         const int where = g_heartbeat_where.load();
         prosperoweb::frontend::log_printf(
             "main loop: heartbeat (posted from the watchdog thread) ran %lld ms after posting, "
@@ -300,7 +328,7 @@ void start_main_loop_watchdog() {
             : where == 2 ? "the POSTING thread (inline: isMainThread is wrong there)"
                          : "ANOTHER thread");
       }
-      if (prosperoweb::frontend::trace_enabled()) {
+      if (prosperoweb::frontend::trace_enabled() && tick % 5 == 0) {
         char io[1024];
         native_trace_io_summary(io, sizeof(io));
         prosperoweb::frontend::log_printf("trace: io (sendmsg/recvmsg per fd): %s",
@@ -321,7 +349,7 @@ void start_main_loop_watchdog() {
             },
             nullptr);
       }
-      std::this_thread::sleep_for(std::chrono::seconds(5));
+      std::this_thread::sleep_for(std::chrono::seconds(1));
     }
   }).detach();
 }
