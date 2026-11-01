@@ -177,8 +177,12 @@ int __wrap_dup(int fd) {
       how = "sceKernelRdup";
     }
   }
-  if (atomic_fetch_add(&g_dup_logged, 1) < 8) {
-    ps5_log_printf("trace: dup(%d) refused (EPERM); %s -> %d", fd, how, result);
+  if (atomic_fetch_add(&g_dup_logged, 1) < 16) {
+    // The callers, as image offsets for prosperoweb-native.unstripped.elf.
+    extern char __prwb_image_base[];
+    const uintptr_t base = (uintptr_t)__prwb_image_base;
+    ps5_log_printf("trace: dup(%d) refused (EPERM); %s -> %d; called from image+%#lx", fd, how,
+                   result, (unsigned long)((uintptr_t)__builtin_return_address(0) - base));
   }
   if (result < 0) {
     errno = EPERM;
