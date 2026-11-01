@@ -1,4 +1,6 @@
 add_library(prosperoweb_core STATIC
+  adblock.cpp
+  addons_config.cpp
   bookmarks.cpp
   drm_policy.cpp
   file_storage.cpp
@@ -11,6 +13,7 @@ add_library(prosperoweb_core STATIC
   pointer_model.cpp
   repeat_timer.cpp
   session.cpp
+  sponsorblock.cpp
   storage.cpp
   tab_manager.cpp
   text_utils.cpp
