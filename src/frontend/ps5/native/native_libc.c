@@ -9,11 +9,11 @@
 // are no longer imports; scripts/ps5/native/check-eboot.py fails the build
 // if any of them is left bound to a module.
 //
-// Each is a full, self-contained implementation on libkernel, except
-// getenv/setenv, which forward to the real libSceLibcInternal so the shared
-// environ the children inherit stays consistent, and the stdio data symbols,
-// which point at the real FILE objects (native_libc_init, called from the
-// CRT after _init_env).
+// Each is a self-contained implementation on libkernel and the libc
+// functions that do work in the title (fdopen, setvbuf); none relies on
+// sceKernelDlsym by name. environ, getenv and setenv are one consistent
+// store; the stdio streams are never NULL (native_libc_init, then
+// native_stdio_redirect).
 
 #include <errno.h>
 #include <stdint.h>
@@ -29,9 +29,6 @@ int getdents(int fd, char* buf, int nbytes);
 int sceKernelOpen(const char* path, int flags, int mode);
 int sceKernelClose(int fd);
 int utimes(const char* path, const struct timeval* times);
-int sceKernelLoadStartModule(const char* path, size_t args, const void* argp, uint32_t flags,
-                             void* option, int* result);
-int sceKernelDlsym(int handle, const char* symbol, void** address);
 
 // ---- directories (opendir/readdir/closedir) ------------------------------------
 //
@@ -350,60 +347,98 @@ void makecontext(void* ucp, void (*func)(void), int argc, ...) {
   __builtin_trap();
 }
 
-// ---- getenv / setenv: forward to the real libSceLibcInternal -------------------
+// ---- the environment: getenv / setenv / environ --------------------------------
 //
-// These work through the real module (the UI's whole environment is set with
-// setenv and the children inherit it). Forwarding keeps that path and the
-// shared environ, while removing the direct import that libc.prx shadowed.
+// Self-contained. Forwarding to the real libSceLibcInternal needed
+// sceKernelDlsym by name, which is not reliable in a title (run 21: the
+// stdio objects looked up that way stayed NULL). environ is defined here
+// too, so the spawner (which hands the UI's environment to the children)
+// reads the same list getenv and setenv work on.
 
-typedef char* (*getenv_fn)(const char*);
-typedef int (*setenv_fn)(const char*, const char*, int);
-static getenv_fn g_real_getenv;
-static setenv_fn g_real_setenv;
-static int g_libc_handle = -1;
+int open(const char* path, int flags, ...);
+int dup2(int from, int to);
+int close(int fd);
 
-static int libc_handle(void) {
-  if (g_libc_handle < 0) {
-    int result = 0;
-    g_libc_handle =
-        sceKernelLoadStartModule("libSceLibcInternal.sprx", 0, NULL, 0, NULL, &result);
+#define kEnvMax 512
+static char* g_env_entries[kEnvMax + 1];
+char** environ = g_env_entries;
+static int g_env_count;
+static int g_env_lock;
+
+static void env_lock(void) {
+  while (__atomic_exchange_n(&g_env_lock, 1, __ATOMIC_ACQUIRE)) {
   }
-  return g_libc_handle;
 }
 
-static void* libc_sym(const char* name) {
-  const int handle = libc_handle();
-  void* address = NULL;
-  if (handle >= 0 && sceKernelDlsym(handle, name, &address) == 0) {
-    return address;
+static void env_unlock(void) { __atomic_store_n(&g_env_lock, 0, __ATOMIC_RELEASE); }
+
+static int env_find(const char* name, size_t len) {
+  for (int i = 0; i < g_env_count; i++) {
+    if (strncmp(g_env_entries[i], name, len) == 0 && g_env_entries[i][len] == '=') {
+      return i;
+    }
   }
-  return NULL;
+  return -1;
 }
 
 char* getenv(const char* name) {
-  if (!g_real_getenv) {
-    g_real_getenv = (getenv_fn)libc_sym("getenv");
+  if (!name) {
+    return NULL;
   }
-  return g_real_getenv ? g_real_getenv(name) : NULL;
+  const size_t len = strlen(name);
+  env_lock();
+  const int i = env_find(name, len);
+  char* value = i >= 0 ? g_env_entries[i] + len + 1 : NULL;
+  env_unlock();
+  return value;
 }
 
 int setenv(const char* name, const char* value, int overwrite) {
-  if (!g_real_setenv) {
-    g_real_setenv = (setenv_fn)libc_sym("setenv");
-  }
-  if (!g_real_setenv) {
-    errno = ENOSYS;
+  if (!name || !name[0] || strchr(name, '=')) {
+    errno = EINVAL;
     return -1;
   }
-  return g_real_setenv(name, value, overwrite);
+  const size_t len = strlen(name);
+  const size_t vlen = value ? strlen(value) : 0;
+  char* entry = (char*)malloc(len + vlen + 2);
+  if (!entry) {
+    errno = ENOMEM;
+    return -1;
+  }
+  memcpy(entry, name, len);
+  entry[len] = '=';
+  memcpy(entry + len + 1, value ? value : "", vlen + 1);
+  env_lock();
+  const int i = env_find(name, len);
+  if (i >= 0) {
+    if (!overwrite) {
+      env_unlock();
+      free(entry);
+      return 0;
+    }
+    // The old string may still be referenced by a getenv caller: kept.
+    g_env_entries[i] = entry;
+  } else if (g_env_count < kEnvMax) {
+    g_env_entries[g_env_count++] = entry;
+    g_env_entries[g_env_count] = NULL;
+  } else {
+    env_unlock();
+    free(entry);
+    errno = ENOMEM;
+    return -1;
+  }
+  env_unlock();
+  return 0;
 }
 
 // ---- stdio data symbols --------------------------------------------------------
 //
 // __stdinp/__stdoutp/__stderrp (FILE*), __mb_cur_max (int) and tzname
-// (char*[2]) are data the app reads directly (stderr is __stderrp).
-// native_libc_init, called from the CRT after _init_env, points the three
-// streams at the real libc FILE objects.
+// (char*[2]) are data the app reads directly (stderr is __stderrp). They are
+// never left NULL: native_libc_init (CRT, after _init_env) opens them on
+// /dev/null, and native_stdio_redirect (main) moves stdout and stderr to a
+// file at the descriptor level and gives them fresh FILEs (run 21:
+// fprintf(stderr) with a NULL stderr crashed in libSceLibcInternal).
 
 FILE* __stdinp;
 FILE* __stdoutp;
@@ -411,15 +446,54 @@ FILE* __stderrp;
 int __mb_cur_max = 1;
 char* tzname[2] = {(char*)"UTC", (char*)"UTC"};
 
-void native_libc_init(void) {
-  FILE** in = (FILE**)libc_sym("__stdinp");
-  FILE** out = (FILE**)libc_sym("__stdoutp");
-  FILE** err = (FILE**)libc_sym("__stderrp");
-  __stdinp = in ? *in : NULL;
-  __stdoutp = out ? *out : NULL;
-  __stderrp = err ? *err : NULL;
-  int* mb = (int*)libc_sym("__mb_cur_max");
-  if (mb) {
-    __mb_cur_max = *mb;
+#define O_WRONLY_ 0x1
+#define O_RDWR_ 0x2
+#define O_CREAT_ 0x200
+#define O_TRUNC_ 0x400
+
+static FILE* stream_on(int fd, const char* mode) {
+  if (fd < 0) {
+    return NULL;
   }
+  FILE* f = fdopen(fd, mode);
+  if (f) {
+    setvbuf(f, NULL, _IONBF, 0);
+  }
+  return f;
+}
+
+void native_libc_init(void) {
+  if (!__stdinp) {
+    __stdinp = stream_on(open("/dev/null", O_RDWR_), "r");
+  }
+  if (!__stdoutp) {
+    __stdoutp = stream_on(open("/dev/null", O_RDWR_), "w");
+  }
+  if (!__stderrp) {
+    __stderrp = stream_on(open("/dev/null", O_RDWR_), "w");
+  }
+  sceKernelDebugOutText(0, __stdinp && __stdoutp && __stderrp
+                               ? "[prosperoweb] native libc: stdio on /dev/null\n"
+                               : "[prosperoweb] native libc: stdio FILEs MISSING (fdopen failed)\n");
+}
+
+int native_stdio_redirect(const char* path) {
+  const int fd = open(path, O_WRONLY_ | O_CREAT_ | O_TRUNC_, 0644);
+  if (fd < 0) {
+    return -1;
+  }
+  const int out_ok = dup2(fd, 1) == 1;
+  const int err_ok = dup2(fd, 2) == 2;
+  if (fd > 2) {
+    close(fd);
+  }
+  FILE* out = out_ok ? stream_on(1, "w") : NULL;
+  FILE* err = err_ok ? stream_on(2, "w") : NULL;
+  if (out) {
+    __stdoutp = out;
+  }
+  if (err) {
+    __stderrp = err;
+  }
+  return out && err ? 0 : -1;
 }

@@ -6,6 +6,7 @@
 #include <ctime>
 #include <mutex>
 
+#include <fcntl.h>
 #include <unistd.h>
 
 #include <ps5/klog.h>
@@ -16,6 +17,10 @@ namespace {
 
 std::mutex g_log_lock;
 FILE* g_log_file = nullptr;
+// The native title writes the log at the descriptor level and never through
+// stdio (run 21: the first log line crashed in fprintf(stderr) with a NULL
+// stderr).
+int g_log_fd = -1;
 std::string g_role = "UI";
 
 long long monotonic_ms() {
@@ -42,10 +47,16 @@ void log_set_role(const std::string& role) {
 
 void log_open(const std::string& path) {
   std::lock_guard<std::mutex> lock(g_log_lock);
+#if PROSPEROWEB_NATIVE_TITLE
+  if (g_log_fd < 0) {
+    g_log_fd = open(path.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0644);
+  }
+#else
   if (g_log_file) {
     return;
   }
   g_log_file = std::fopen(path.c_str(), "a");
+#endif
 }
 
 void log_close() {
@@ -54,6 +65,10 @@ void log_close() {
     std::fclose(g_log_file);
     g_log_file = nullptr;
   }
+  if (g_log_fd >= 0) {
+    close(g_log_fd);
+    g_log_fd = -1;
+  }
 }
 
 void log_line(const std::string& message) {
@@ -61,6 +76,23 @@ void log_line(const std::string& message) {
   char prefix[64];
   std::snprintf(prefix, sizeof(prefix), "[%7lld %s]", monotonic_ms() - g_start_ms,
                 g_role.c_str());
+#if PROSPEROWEB_NATIVE_TITLE
+  klog_printf("[prosperoweb] %s %s\n", prefix, message.c_str());
+  if (g_log_fd >= 0) {
+    std::string line = std::string(prefix) + " " + message + "\n";
+    const char* p = line.data();
+    size_t left = line.size();
+    while (left > 0) {
+      const ssize_t n = write(g_log_fd, p, left);
+      if (n <= 0) {
+        break;
+      }
+      p += n;
+      left -= static_cast<size_t>(n);
+    }
+  }
+  return;
+#endif
   std::fprintf(stderr, "[prosperoweb] %s %s\n", prefix, message.c_str());
   std::fflush(stderr);
   klog_printf("[prosperoweb] %s %s\n", prefix, message.c_str());

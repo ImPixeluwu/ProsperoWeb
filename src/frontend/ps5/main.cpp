@@ -216,12 +216,9 @@ void setup_native_title_env() {
 // launches, assertions) land in this file instead.
 void redirect_stdio() {
   const std::string path = std::string(prosperoweb::frontend::kPs5DataDir) + "/stderr-ui.txt";
-  if (std::freopen(path.c_str(), "w", stderr)) {
-    std::setvbuf(stderr, nullptr, _IONBF, 0);
-  }
-  if (std::freopen(path.c_str(), "a", stdout)) {
-    std::setvbuf(stdout, nullptr, _IONBF, 0);
-  }
+  native_boot_say(native_stdio_redirect(path.c_str()) == 0
+                      ? "[prosperoweb] main: stdout/stderr -> stderr-ui.txt\n"
+                      : "[prosperoweb] main: stdout/stderr redirect FAILED (kept on /dev/null)\n");
 }
 
 // Every 5 s from 10 s on, posts a callback to the WebKit main run loop and
