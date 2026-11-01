@@ -137,15 +137,14 @@ tid = app["titleId"]
 assert re.fullmatch(r"[A-Z]{4}\d{5}", tid), f"bad titleId {tid!r}"
 assert re.fullmatch(r"[A-Z]{2}\d{4}-" + tid + r"_00-[A-Z0-9]{16}", app["contentId"])
 assert re.fullmatch(r"\d{2}\.\d{3}\.\d{3}", app["contentVersion"])
-# Category 0 + badge 1 is the Games shelf, as ProsperoStore and websrv's own
-# loader title use it; this gives the title the game memory budget AND, on the
-# console, lets it listen() on loopback TCP for its own audio (127.0.0.1:17772)
-# and video-overlay (17773) servers. Driven by assets/app.json so the shelf is
-# configurable. Category 65536 (Prospero Native Media App) + badge 2 moves the
-# title to the home-screen Media row (like SmartTube and ytps5-sponsorblock),
-# but the media-category sandbox REFUSES those listen() calls (EACCES), which
-# kills audio and hardware video; it needs the audio/overlay transports moved
-# off a title listen() first (see docs/native-title.md). Defaulted to 0/1.
+# Category 65536 (Prospero Native Media App) + badge 2 puts the title on the
+# home-screen Media row, like SmartTube and ytps5-sponsorblock. The media
+# sandbox REFUSES listen() on loopback TCP, so the audio (127.0.0.1:17772) and
+# video-overlay (17773) servers no longer depend on it: each WebProcess hands
+# its stream sockets to the UI over an inherited control socket (see
+# docs/native-title.md), verified on console with working audio + hw video and
+# no perf regression. Category 0 + badge 1 is the Games shelf (unchanged TCP
+# path); switch via assets/app.json. Defaulted to 65536/2 (Media).
 category = int(app.get("applicationCategoryType", 0))
 badge = int(app.get("contentBadgeType", 1))
 param = {
