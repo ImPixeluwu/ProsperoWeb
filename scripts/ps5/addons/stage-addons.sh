@@ -95,14 +95,18 @@ done < "${LOCK}"
 
 [[ ${#ADS_INPUTS[@]} -gt 0 ]] || die "no ads lists in addons.lock"
 
-log "converting ads+privacy -> adblock-ads.json"
-"${CONVERT}" --max-rules "${MAX_RULES}" "${ADDONS}/adblock-ads.json" "${ADS_INPUTS[@]}"
+# ENABLE(CONTENT_EXTENSIONS) is off in our WebKit build, so the console cannot
+# use native content rule lists. Produce the userscript filter set (host
+# blocklist + cosmetic CSS + domain rules) that adblock.js enforces instead.
+log "building ads filter set (EasyList/EasyPrivacy/uBlock) -> adblock-ads.filters.json"
+"${CONVERT}" --filter-set "${ADDONS}/adblock-ads.filters.json" "${ADS_INPUTS[@]}"
 if [[ ${#COOKIE_INPUTS[@]} -gt 0 ]]; then
-  log "converting cookie banners -> adblock-cookie.json"
-  "${CONVERT}" --max-rules "${MAX_RULES}" "${ADDONS}/adblock-cookie.json" "${COOKIE_INPUTS[@]}"
+  log "building cookie filter set -> adblock-cookie.filters.json"
+  "${CONVERT}" --filter-set "${ADDONS}/adblock-cookie.filters.json" "${COOKIE_INPUTS[@]}"
 fi
 
-# --- SponsorBlock user script. ----------------------------------------------
+# --- User scripts. ----------------------------------------------------------
+cp -- "${ROOT}/src/addons/adblock.js" "${ADDONS}/adblock.js"
 cp -- "${ROOT}/src/addons/sponsorblock.js" "${ADDONS}/sponsorblock.js"
 
 # --- sources.json: what the on-device updater refetches. --------------------
@@ -118,9 +122,8 @@ join_json() {
 {
   printf '{\n'
   printf '  "install_dir": "%s",\n' "${INSTALL_DIR}"
-  printf '  "max_rules": %s,\n' "${MAX_RULES}"
-  printf '  "ads": { "output": "adblock-ads.json", "sources": [%s] },\n' "$(join_json "${ADS_SOURCES[@]}")"
-  printf '  "cookie": { "output": "adblock-cookie.json", "sources": [%s] }\n' "$(join_json "${COOKIE_SOURCES[@]}")"
+  printf '  "ads": { "output": "adblock-ads.filters.json", "sources": [%s] },\n' "$(join_json "${ADS_SOURCES[@]}")"
+  printf '  "cookie": { "output": "adblock-cookie.filters.json", "sources": [%s] }\n' "$(join_json "${COOKIE_SOURCES[@]}")"
   printf '}\n'
 } > "${ADDONS}/sources.json"
 
@@ -129,22 +132,30 @@ cat > "${LICENSES}/filter-lists.txt" <<'EOF'
 Ad-block filter lists bundled with ProsperoWeb
 ==============================================
 
-ProsperoWeb's ad blocker is NOT uBlock Origin. It compiles the following
-public filter lists into WebKit's native content rule list (the same
-mechanism as Safari content blockers). Cosmetic coverage is therefore more
-limited than uBlock Origin.
+ProsperoWeb's ad blocker is NOT uBlock Origin. Because our WebKit build has
+content extensions disabled, it enforces a SUBSET of these public lists with
+an injected userscript: whole-host network blocking and static element-hiding
+CSS (generic and domain-scoped). uBlock's scriptlets and procedural cosmetic
+filters are skipped. Coverage is best-effort and weaker than uBlock Origin.
 
   EasyList            https://easylist.to/   (GPLv3 and CC BY-SA 3.0)
   EasyPrivacy         https://easylist.to/   (GPLv3 and CC BY-SA 3.0)
   EasyList Cookie List (Fanboy's Cookiemonster, "Block cookie banners")
                       https://easylist.to/   (GPLv3 and CC BY-SA 3.0)
+  uBlock Origin filter lists (uAssets: filters, filters-general, filters-
+                      mobile, filters-2020..2026, privacy, badware, unbreak,
+                      quick-fixes)
+                      https://github.com/uBlockOrigin/uAssets   (GPLv3)
+  Peter Lowe's Ad and tracking server list
+                      https://pgl.yoyo.org/adservers/   (CC BY-NC-SA 4.0)
 
-The EasyList authors dual-license these lists under the GNU General Public
+The EasyList authors dual-license their lists under the GNU General Public
 License version 3 (GPL-3.0-or-later.txt, shipped alongside) and the Creative
 Commons Attribution-ShareAlike 3.0 Unported License
-(https://creativecommons.org/licenses/by-sa/3.0/). The lists are bundled
-unmodified as downloaded; ProsperoWeb converts them to WebKit's JSON rule
-format at build time and may refetch and recompile them on the console.
+(https://creativecommons.org/licenses/by-sa/3.0/). uBlock Origin's uAssets
+lists are licensed under the GPL version 3. The lists are bundled unmodified
+as downloaded; ProsperoWeb extracts the host/cosmetic subset at build time and
+may refetch and rebuild it on the console.
 
 SponsorBlock
 ------------
