@@ -103,6 +103,10 @@ struct VideoServer::Connection {
   StreamConfig stream_config;
   std::vector<std::uint32_t> stream_back;
   std::vector<std::uint32_t> stream_scratch;
+  // Present thread: what the last "present" log line said.
+  int presented_w = 0;
+  int presented_h = 0;
+  display::Rect presented_rect;
 };
 
 namespace {
@@ -399,12 +403,14 @@ bool VideoServer::handle_message(Connection& c) {
         return false;
       }
       bool rescale = false;
+      bool visibility_changed = false;
       {
         std::lock_guard<std::mutex> lock(lock_);
         Player& p = players_[c.key];
         add_damage_locked(p);  // where it was
         const display::Rect rect{g->x, g->y, g->width, g->height};
         rescale = rect.w != p.rect.w || rect.h != p.rect.h || (g->visible && !p.visible);
+        visibility_changed = g->visible != p.visible;
         p.rect = rect;
         p.page = g->pageId;
         p.visible = g->visible;
@@ -412,6 +418,11 @@ bool VideoServer::handle_message(Connection& c) {
         if (!rescale) {
           add_damage_locked(p);  // where it is now
         }
+      }
+      // Hidden (another tab, page hidden): the stream stops presenting and
+      // frees its pictures; shown: it presents again (see HwStream).
+      if (visibility_changed && c.stream) {
+        c.stream->set_visible(g->visible);
       }
       if (rescale && c.stream) {
         c.stream->rerender();
@@ -583,7 +594,21 @@ void VideoServer::open_stream(Connection& c) {
   const std::uint32_t key = c.key;
   callbacks.send = [this, conn](std::vector<std::uint8_t>&& bytes) { send_message(*conn, bytes); };
   callbacks.deliver = [this, conn, key](const display::ImageView& view) {
-    render_frame(key, view, conn->stream_back, conn->stream_scratch, true, nullptr);
+    display::Rect rect;
+    if (!render_frame(key, view, conn->stream_back, conn->stream_scratch, true, nullptr,
+                      &rect)) {
+      return;
+    }
+    // Once per change of the picture size or of the video box (page <->
+    // fullscreen, a resize): what is scaled to where.
+    if (view.width != conn->presented_w || view.height != conn->presented_h ||
+        rect != conn->presented_rect) {
+      conn->presented_w = view.width;
+      conn->presented_h = view.height;
+      conn->presented_rect = rect;
+      ps5_log_printf("hwdec: present %dx%d -> rect %d,%d %dx%d (player key %u)", view.width,
+                     view.height, rect.x, rect.y, rect.w, rect.h, key);
+    }
   };
   callbacks.target_size = [this, key](int& w, int& h) {
     std::lock_guard<std::mutex> lock(lock_);
@@ -733,7 +758,8 @@ void VideoServer::render(Connection& c, bool fresh) {
 
 bool VideoServer::render_frame(std::uint32_t key, const display::ImageView& src,
                                std::vector<std::uint32_t>& back,
-                               std::vector<std::uint32_t>& scratch, bool fresh, double* scale_ms) {
+                               std::vector<std::uint32_t>& scratch, bool fresh, double* scale_ms,
+                               display::Rect* drawn_rect) {
   display::Rect rect;
   bool visible;
   {
@@ -772,6 +798,9 @@ bool VideoServer::render_frame(std::uint32_t key, const display::ImageView& src,
       p.new_frames++;
     }
     add_damage_locked(p);
+  }
+  if (drawn_rect) {
+    *drawn_rect = rect;
   }
   if (options_.on_update) {
     options_.on_update();

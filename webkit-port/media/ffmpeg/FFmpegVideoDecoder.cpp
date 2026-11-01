@@ -353,6 +353,7 @@ void FFmpegVideoDecoder::runRemote()
     ffmpegMediaLog("video decoder: stream %u decoded by the UI (hardware, %u frames held there)", remote->id(), remote->maxFrames());
     m_remoteActive = true;
     std::optional<FFmpegPacketQueue::Entry> pending;
+    bool suspended = false;
     while (!m_stopping) {
         processRemoteNotices();
         if (!remote->usable()) {
@@ -382,6 +383,8 @@ void FFmpegVideoDecoder::runRemote()
         }
         AVPacket* packet = pending->packet.get();
         if (m_suspended) {
+            if (!std::exchange(suspended, true))
+                ffmpegMediaLog("video decoder: stream %u suspended (page hidden) at clock %.3f", remote->id(), m_clockHint.load());
             m_waitingForKeyframe = true;
             pending.reset();
             continue;
@@ -391,10 +394,24 @@ void FFmpegVideoDecoder::runRemote()
                 pending.reset();
                 continue;
             }
-            // Resuming after a hidden page: the UI's decoder starts over.
+            // Resuming after a hidden page: the UI's decoder starts over, and
+            // the pictures before the clock are dropped as they come out (as
+            // after a seek) so the next one due is shown, not a stale one.
             remote->flush(m_serial);
             m_remoteDurations.clear();
             m_waitingForKeyframe = false;
+            if (std::exchange(suspended, false)) {
+                double clock = m_clockHint.load();
+                {
+                    Locker locker { m_lock };
+                    if (m_seekTarget < 0 || m_seekSerial != m_serial) {
+                        m_seekTarget = clock;
+                        m_seekSerial = m_serial;
+                    }
+                }
+                ffmpegMediaLog("video decoder: stream %u resumed (page shown) at keyframe pts %.3f, clock %.3f", remote->id(),
+                    packet->pts != AV_NOPTS_VALUE ? packet->pts * av_q2d(m_timeBase) - m_startTime : -1.0, clock);
+            }
         }
         if (!remote->hasCredit(static_cast<size_t>(std::max(0, packet->size)))) {
             remote->waitForEvent(remoteEventWaitSeconds);

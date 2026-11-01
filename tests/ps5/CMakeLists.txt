@@ -30,7 +30,7 @@ add_test(NAME ps5.video_overlay
                  --test-suite=video_wire,video_geometry,video_scale,video_compose,video_e2e --no-version)
 add_test(NAME ps5.hwdec
          COMMAND prosperoweb_ps5_tests
-                 --test-suite=hwdec_bitstream,hwdec_policy,hwdec_convert,hwdec_wire,hwdec_e2e,hwdec_probe
+                 --test-suite=hwdec_bitstream,hwdec_policy,hwdec_convert,hwdec_wire,hwdec_e2e,hwdec_geometry,hwdec_visibility,hwdec_probe
                  --no-version)
 add_test(NAME ps5.cpu_mask
          COMMAND prosperoweb_ps5_tests --test-suite=cpu_mask --no-version)

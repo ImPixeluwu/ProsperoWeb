@@ -4718,10 +4718,10 @@ index 000000000..4b6fe252f
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp
 new file mode 100644
-index 000000000..2e3e1ffda
+index 000000000..32938902b
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp
-@@ -0,0 +1,737 @@
+@@ -0,0 +1,754 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -5077,6 +5077,7 @@ index 000000000..2e3e1ffda
 +    ffmpegMediaLog("video decoder: stream %u decoded by the UI (hardware, %u frames held there)", remote->id(), remote->maxFrames());
 +    m_remoteActive = true;
 +    std::optional<FFmpegPacketQueue::Entry> pending;
++    bool suspended = false;
 +    while (!m_stopping) {
 +        processRemoteNotices();
 +        if (!remote->usable()) {
@@ -5106,6 +5107,8 @@ index 000000000..2e3e1ffda
 +        }
 +        AVPacket* packet = pending->packet.get();
 +        if (m_suspended) {
++            if (!std::exchange(suspended, true))
++                ffmpegMediaLog("video decoder: stream %u suspended (page hidden) at clock %.3f", remote->id(), m_clockHint.load());
 +            m_waitingForKeyframe = true;
 +            pending.reset();
 +            continue;
@@ -5115,10 +5118,24 @@ index 000000000..2e3e1ffda
 +                pending.reset();
 +                continue;
 +            }
-+            // Resuming after a hidden page: the UI's decoder starts over.
++            // Resuming after a hidden page: the UI's decoder starts over, and
++            // the pictures before the clock are dropped as they come out (as
++            // after a seek) so the next one due is shown, not a stale one.
 +            remote->flush(m_serial);
 +            m_remoteDurations.clear();
 +            m_waitingForKeyframe = false;
++            if (std::exchange(suspended, false)) {
++                double clock = m_clockHint.load();
++                {
++                    Locker locker { m_lock };
++                    if (m_seekTarget < 0 || m_seekSerial != m_serial) {
++                        m_seekTarget = clock;
++                        m_seekSerial = m_serial;
++                    }
++                }
++                ffmpegMediaLog("video decoder: stream %u resumed (page shown) at keyframe pts %.3f, clock %.3f", remote->id(),
++                    packet->pts != AV_NOPTS_VALUE ? packet->pts * av_q2d(m_timeBase) - m_startTime : -1.0, clock);
++            }
 +        }
 +        if (!remote->hasCredit(static_cast<size_t>(std::max(0, packet->size)))) {
 +            remote->waitForEvent(remoteEventWaitSeconds);
@@ -5951,10 +5968,10 @@ index 000000000..14b2b2b70
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.h
 new file mode 100644
-index 000000000..34a8389e5
+index 000000000..a2f363990
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.h
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,91 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Video overlay of the ffmpeg media engine ("hole punch"). Accelerated
@@ -6022,6 +6039,9 @@ index 000000000..34a8389e5
 +    std::shared_ptr<FFmpegMedia::VideoWire::RemoteVideoStream> openRemoteStream(const FFmpegMedia::VideoWire::StreamOpen&);
 +    // The picture is gone (new load, decoder reset).
 +    void clear();
++    // The page was hidden or shown: the next update() reports the video box
++    // again even when it did not move (the UI resumes presenting on it).
++    void invalidateGeometry() { m_geometry = std::nullopt; }
 +    // One "video overlay: player N: <transport> sent N/s ..." line covering
 +    // the last `seconds` (the player's stats interval).
 +    void logStats(double seconds);
@@ -8454,10 +8474,10 @@ index 000000000..08b72aa6d
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp
 new file mode 100644
-index 000000000..a1ec56cf0
+index 000000000..927a9c16e
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/MediaPlayerPrivateFFmpeg.cpp
-@@ -0,0 +1,1101 @@
+@@ -0,0 +1,1108 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -8998,6 +9018,13 @@ index 000000000..a1ec56cf0
 +    // decoding resumes at the next keyframe.
 +    if (RefPtr decoder = m_videoDecoder)
 +        decoder->setSuspended(!visible);
++    // Re-report the video box with its visibility now (not at the next
++    // overlay tick): the UI stops presenting a hidden player at once and
++    // shows the current picture again when it comes back.
++    if (m_overlay) {
++        m_overlay->invalidateGeometry();
++        updateOverlay();
++    }
 +}
 +
 +// MARK: - Time
@@ -11275,10 +11302,10 @@ index 000000000..ad6741365
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.cpp b/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.cpp
 new file mode 100644
-index 000000000..2f44fbb97
+index 000000000..d1b3c16b3
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/mse/MediaPlayerPrivateFFmpegMSE.cpp
-@@ -0,0 +1,1175 @@
+@@ -0,0 +1,1182 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -11870,6 +11897,13 @@ index 000000000..2f44fbb97
 +    m_pageVisible = visible;
 +    if (RefPtr decoder = m_videoDecoder)
 +        decoder->setSuspended(!visible);
++    // Re-report the video box with its visibility now (not at the next
++    // overlay tick): the UI stops presenting a hidden player at once and
++    // shows the current picture again when it comes back.
++    if (m_overlay) {
++        m_overlay->invalidateGeometry();
++        updateOverlay();
++    }
 +}
 +
 +bool MediaPlayerPrivateFFmpegMSE::hasVideo() const

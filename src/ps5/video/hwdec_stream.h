@@ -116,6 +116,15 @@ class HwStream {
   void reconfigure(StreamConfig config);
   // Converts the picture on screen again (the video box changed size).
   void rerender();
+  // The player's video box was hidden (page hidden, another tab) or shown
+  // again. Hidden: nothing is presented and the held pictures are freed so
+  // the decoder never blocks on them; shown: the picture on screen is
+  // presented again and the next show() continues from the player's clock.
+  void set_visible(bool visible);
+
+  // For tests and logs.
+  bool hidden();
+  int held_pictures();
 
   // Pending packets, for tests.
   std::size_t queued_packets();
@@ -138,6 +147,11 @@ class HwStream {
   // Records what a backend call returned. False when the stream failed.
   bool take_result(const DecoderBackend::Result& result, int target, const char* what);
   int wait_for_free_slot();
+  // Outputs what the decoder still holds (announcing the pictures), then
+  // resets it. False when the stream failed.
+  bool drain_decoder(const char* what);
+  // The picture as shown: cropped to the SPS's visible size.
+  Nv12View visible_picture(const Nv12View& picture);
   void send_decoded(std::uint8_t flags, int width, int height, std::int64_t pts);
   void fail(const std::string& reason);
   void maybe_log_stats();
@@ -161,6 +175,8 @@ class HwStream {
   std::vector<Nv12View> pictures_;      // lock_: per slot
   bool show_pending_ = false;           // lock_
   bool rerender_pending_ = false;       // lock_
+  bool hidden_ = false;                 // lock_
+  std::uint32_t show_count_ = 0;        // lock_: show() calls, for SlotWaitPolicy
 
   // Decode thread only.
   StreamConfig config_;
@@ -172,6 +188,14 @@ class HwStream {
   std::uint32_t good_pictures_ = 0;
   std::vector<std::uint8_t> annexb_;
   bool logged_first_picture_ = false;
+  // New parameter sets: the decoder is drained and reset at the next
+  // keyframe (a resolution switch inside one decoder session fails).
+  bool reset_on_keyframe_ = false;
+  // The visible size pictures are cropped to (the SPS's), for the pictures
+  // of the current decoder session; the new one applies after the reset.
+  int crop_w_ = 0, crop_h_ = 0;
+  int next_crop_w_ = 0, next_crop_h_ = 0;
+  bool logged_crop_mismatch_ = false;
 
   // Statistics (5 s windows), lock_.
   struct Stats {

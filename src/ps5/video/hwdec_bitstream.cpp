@@ -140,7 +140,235 @@ bool parse_hvcc(const std::uint8_t* d, std::size_t n, StreamConfig& c, std::stri
   return true;
 }
 
+// Exp-Golomb bit reader over an RBSP (emulation prevention bytes removed).
+class BitReader {
+ public:
+  BitReader(const std::uint8_t* nal, std::size_t size) {
+    rbsp_.reserve(size);
+    int zeros = 0;
+    for (std::size_t i = 0; i < size; ++i) {
+      if (zeros >= 2 && nal[i] == 3) {
+        zeros = 0;
+        continue;
+      }
+      zeros = nal[i] == 0 ? zeros + 1 : 0;
+      rbsp_.push_back(nal[i]);
+    }
+  }
+  bool ok() const { return ok_; }
+  std::uint32_t bits(int n) {
+    std::uint32_t v = 0;
+    for (int i = 0; i < n; ++i) {
+      if (pos_ >= rbsp_.size() * 8) {
+        ok_ = false;
+        return 0;
+      }
+      v = v << 1 | ((rbsp_[pos_ / 8] >> (7 - pos_ % 8)) & 1);
+      ++pos_;
+    }
+    return v;
+  }
+  void skip(int n) { bits(n); }
+  std::uint32_t ue() {
+    int zeros = 0;
+    while (ok_ && bits(1) == 0) {
+      if (++zeros > 31) {
+        ok_ = false;
+        return 0;
+      }
+    }
+    return zeros ? ((1u << zeros) - 1 + bits(zeros)) : 0;
+  }
+  std::int32_t se() {
+    const std::uint32_t v = ue();
+    return (v & 1) ? static_cast<std::int32_t>((v + 1) / 2) : -static_cast<std::int32_t>(v / 2);
+  }
+
+ private:
+  std::vector<std::uint8_t> rbsp_;
+  std::size_t pos_ = 0;
+  bool ok_ = true;
+};
+
+bool h264_sps_size(BitReader& r, int& width, int& height) {
+  r.skip(8);  // NAL header
+  const std::uint32_t profile = r.bits(8);
+  r.skip(16);  // constraint flags, level
+  r.ue();      // seq_parameter_set_id
+  std::uint32_t chroma_format = 1;
+  bool separate_planes = false;
+  switch (profile) {
+    case 100: case 110: case 122: case 244: case 44: case 83: case 86:
+    case 118: case 128: case 138: case 139: case 134: case 135: {
+      chroma_format = r.ue();
+      if (chroma_format == 3) {
+        separate_planes = r.bits(1) != 0;
+      }
+      r.ue();       // bit_depth_luma_minus8
+      r.ue();       // bit_depth_chroma_minus8
+      r.skip(1);    // qpprime_y_zero_transform_bypass_flag
+      if (r.bits(1)) {  // seq_scaling_matrix_present_flag
+        const int lists = chroma_format != 3 ? 8 : 12;
+        for (int i = 0; i < lists && r.ok(); ++i) {
+          if (!r.bits(1)) {
+            continue;
+          }
+          const int count = i < 6 ? 16 : 64;
+          int last = 8;
+          int next = 8;
+          for (int j = 0; j < count && r.ok(); ++j) {
+            if (next != 0) {
+              next = (last + r.se() + 256) % 256;
+            }
+            last = next == 0 ? last : next;
+          }
+        }
+      }
+      break;
+    }
+    default:
+      break;
+  }
+  r.ue();  // log2_max_frame_num_minus4
+  const std::uint32_t poc_type = r.ue();
+  if (poc_type == 0) {
+    r.ue();
+  } else if (poc_type == 1) {
+    r.skip(1);
+    r.se();
+    r.se();
+    const std::uint32_t cycle = r.ue();
+    if (cycle > 255) {
+      return false;
+    }
+    for (std::uint32_t i = 0; i < cycle; ++i) {
+      r.se();
+    }
+  }
+  r.ue();     // max_num_ref_frames
+  r.skip(1);  // gaps_in_frame_num_value_allowed_flag
+  const std::uint32_t width_mbs = r.ue() + 1;
+  const std::uint32_t height_units = r.ue() + 1;
+  const std::uint32_t frame_mbs_only = r.bits(1);
+  if (!frame_mbs_only) {
+    r.skip(1);  // mb_adaptive_frame_field_flag
+  }
+  r.skip(1);  // direct_8x8_inference_flag
+  std::uint32_t crop[4] = {0, 0, 0, 0};
+  if (r.bits(1)) {
+    for (auto& c : crop) {
+      c = r.ue();
+    }
+  }
+  if (!r.ok() || width_mbs > 1024 || height_units > 1024) {
+    return false;
+  }
+  const std::uint32_t array_type = separate_planes ? 0 : chroma_format;
+  const std::uint32_t crop_x = array_type == 0 ? 1 : (array_type == 3 ? 1 : 2);
+  const std::uint32_t crop_y =
+      (array_type == 0 ? 1 : (array_type == 1 ? 2 : 1)) * (2 - frame_mbs_only);
+  const std::int64_t w = static_cast<std::int64_t>(width_mbs) * 16 - crop_x * (crop[0] + crop[1]);
+  const std::int64_t h = static_cast<std::int64_t>(height_units) * 16 * (2 - frame_mbs_only) -
+                         crop_y * (crop[2] + crop[3]);
+  if (w <= 0 || h <= 0) {
+    return false;
+  }
+  width = static_cast<int>(w);
+  height = static_cast<int>(h);
+  return true;
+}
+
+void hevc_skip_profile_tier_level(BitReader& r, std::uint32_t max_sub_layers_minus1) {
+  r.skip(2 + 1 + 5 + 32 + 4 + 43 + 1);  // general profile
+  r.skip(8);                            // general_level_idc
+  bool profile_present[8] = {};
+  bool level_present[8] = {};
+  for (std::uint32_t i = 0; i < max_sub_layers_minus1; ++i) {
+    profile_present[i] = r.bits(1) != 0;
+    level_present[i] = r.bits(1) != 0;
+  }
+  if (max_sub_layers_minus1 > 0) {
+    for (std::uint32_t i = max_sub_layers_minus1; i < 8; ++i) {
+      r.skip(2);
+    }
+  }
+  for (std::uint32_t i = 0; i < max_sub_layers_minus1; ++i) {
+    if (profile_present[i]) {
+      r.skip(88);
+    }
+    if (level_present[i]) {
+      r.skip(8);
+    }
+  }
+}
+
+bool hevc_sps_size(BitReader& r, int& width, int& height) {
+  r.skip(16);  // NAL header
+  r.skip(4);   // sps_video_parameter_set_id
+  const std::uint32_t max_sub_layers_minus1 = r.bits(3);
+  r.skip(1);  // sps_temporal_id_nesting_flag
+  if (max_sub_layers_minus1 > 6) {
+    return false;
+  }
+  hevc_skip_profile_tier_level(r, max_sub_layers_minus1);
+  r.ue();  // sps_seq_parameter_set_id
+  const std::uint32_t chroma_format = r.ue();
+  bool separate_planes = false;
+  if (chroma_format == 3) {
+    separate_planes = r.bits(1) != 0;
+  }
+  const std::uint32_t w = r.ue();
+  const std::uint32_t h = r.ue();
+  std::uint32_t window[4] = {0, 0, 0, 0};
+  if (r.bits(1)) {
+    for (auto& c : window) {
+      c = r.ue();
+    }
+  }
+  if (!r.ok() || w == 0 || h == 0 || w > 16384 || h > 16384) {
+    return false;
+  }
+  const std::uint32_t array_type = separate_planes ? 0 : chroma_format;
+  const std::uint32_t sub_w = array_type == 1 || array_type == 2 ? 2 : 1;
+  const std::uint32_t sub_h = array_type == 1 ? 2 : 1;
+  const std::int64_t vw = static_cast<std::int64_t>(w) - sub_w * (window[0] + window[1]);
+  const std::int64_t vh = static_cast<std::int64_t>(h) - sub_h * (window[2] + window[3]);
+  if (vw <= 0 || vh <= 0) {
+    return false;
+  }
+  width = static_cast<int>(vw);
+  height = static_cast<int>(vh);
+  return true;
+}
+
+// Fills config.width/height from the first SPS of its parameter sets.
+void set_visible_size(StreamConfig& config) {
+  for_each_annexb_nal(config.parameter_sets.data(), config.parameter_sets.size(),
+                      [&](const std::uint8_t* nal, std::size_t len) {
+                        if (config.width > 0 ||
+                            nal_type(config.codec, nal[0]) != sps_type(config.codec)) {
+                          return;
+                        }
+                        int w = 0;
+                        int h = 0;
+                        if (sps_visible_size(config.codec, nal, len, w, h)) {
+                          config.width = w;
+                          config.height = h;
+                        }
+                      });
+}
+
 }  // namespace
+
+bool sps_visible_size(VideoCodec codec, const std::uint8_t* nal, std::size_t size, int& width,
+                      int& height) {
+  if (!nal || size < 4) {
+    return false;
+  }
+  BitReader reader(nal, size);
+  return codec == VideoCodec::H264 ? h264_sps_size(reader, width, height)
+                                   : hevc_sps_size(reader, width, height);
+}
 
 std::optional<StreamConfig> parse_stream_config(VideoCodec codec, const std::uint8_t* data,
                                                 std::size_t size, std::string& error) {
@@ -168,6 +396,7 @@ std::optional<StreamConfig> parse_stream_config(VideoCodec codec, const std::uin
         config.level = nal[14];
       }
     });
+    set_visible_size(config);
     return config;
   }
   if (data[0] != 1) {
@@ -179,6 +408,7 @@ std::optional<StreamConfig> parse_stream_config(VideoCodec codec, const std::uin
   if (!ok) {
     return std::nullopt;
   }
+  set_visible_size(config);
   return config;
 }
 

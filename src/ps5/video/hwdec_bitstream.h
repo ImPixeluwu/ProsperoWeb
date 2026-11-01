@@ -30,6 +30,10 @@ struct StreamConfig {
   int chroma_format = 1;     // 1 = 4:2:0 (the avcC/hvcC default when absent)
   int bit_depth_luma = 8;
   int bit_depth_chroma = 8;
+  // The visible picture size the SPS declares (cropping applied); 0 when
+  // unknown. A quality switch changes it without a new stream.
+  int width = 0;
+  int height = 0;
   // Every parameter set (VPS/SPS/PPS) with 4-byte start codes, ready to be
   // prepended to a keyframe.
   std::vector<std::uint8_t> parameter_sets;
@@ -40,6 +44,12 @@ struct StreamConfig {
 // parameter sets in band). nullopt with `error` set when malformed.
 std::optional<StreamConfig> parse_stream_config(VideoCodec codec, const std::uint8_t* data,
                                                 std::size_t size, std::string& error);
+
+// The visible size an SPS NAL unit (with its header, emulation prevention
+// bytes still in) declares: H.264 frame cropping, HEVC conformance window.
+// False when it cannot be parsed.
+bool sps_visible_size(VideoCodec codec, const std::uint8_t* nal, std::size_t size, int& width,
+                      int& height);
 
 // NAL unit type of the first byte of a NAL unit.
 inline int nal_type(VideoCodec codec, std::uint8_t first) {

@@ -176,6 +176,30 @@ class FrameSlots {
     return released;
   }
 
+  int stale_count() const {
+    int n = 0;
+    for (const Slot& s : slots_) {
+      n += current_ >= 0 && s.held && s.pts < current_pts_ ? 1 : 0;
+    }
+    return n;
+  }
+
+  // Frees the held pictures older than the one on screen: the WebProcess
+  // went past them (shows release older pictures, so these came late).
+  int release_stale() {
+    if (current_ < 0) {
+      return 0;
+    }
+    int released = 0;
+    for (Slot& s : slots_) {
+      if (s.held && s.pts < current_pts_) {
+        s.held = false;
+        ++released;
+      }
+    }
+    return released;
+  }
+
   // Frees the oldest held picture (the WebProcess never answered for it).
   bool evict_oldest() {
     int oldest = -1;
@@ -208,6 +232,8 @@ class FrameSlots {
   void drop_current() { current_ = -1; }
 
   int current() const { return current_; }
+  // The pts of the picture on screen (meaningful when current() >= 0).
+  std::int64_t current_pts() const { return current_pts_; }
   int held_count() const {
     int n = 0;
     for (const Slot& s : slots_) {
@@ -236,6 +262,51 @@ class FrameSlots {
   std::vector<Slot> slots_;
   int current_ = -1;
   std::int64_t current_pts_ = 0;
+};
+
+// What the decode thread does when every picture slot is taken and none was
+// freed for a while (HwStream::wait_for_free_slot). Held pictures ahead of
+// the one on screen are frames the WebProcess will show: a paused player or
+// one whose clock trails the decoder (resuming a hidden tab, a quality
+// switch) frees them later, so the decoder waits (the client's credit stops
+// the packets meanwhile). Evicting them instead loses exactly the frames
+// shown next, and the picture freezes while the audio goes on.
+//
+// Pure, with the time passed in (tests drive it with a fake clock).
+class SlotWaitPolicy {
+ public:
+  enum class Action {
+    Wait,          // the player frees them in time
+    ReleaseStale,  // free the held pictures older than the one on screen
+    ReleaseHeld,   // hidden: nothing is presented, free every held picture
+    EvictOldest,   // the player shows frames but never these: a leak
+  };
+  // Shows arriving all along without freeing a slot for this long mean the
+  // held pictures will never be shown.
+  static constexpr std::int64_t kLeakMs = 10000;
+
+  // A wait for a slot begins (`shows`: the stream's show counter).
+  void start(std::int64_t now_ms, std::uint32_t shows) {
+    start_ms_ = now_ms;
+    shows_ = shows;
+  }
+
+  Action on_timeout(std::int64_t now_ms, std::uint32_t shows, bool hidden, int stale) const {
+    if (hidden) {
+      return Action::ReleaseHeld;
+    }
+    if (stale > 0) {
+      return Action::ReleaseStale;
+    }
+    if (shows != shows_ && now_ms - start_ms_ >= kLeakMs) {
+      return Action::EvictOldest;
+    }
+    return Action::Wait;
+  }
+
+ private:
+  std::int64_t start_ms_ = 0;
+  std::uint32_t shows_ = 0;
 };
 
 }  // namespace prosperoweb::video

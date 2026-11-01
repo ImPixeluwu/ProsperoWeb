@@ -611,19 +611,25 @@ class Videodec2Backend final : public video::DecoderBackend {
     v.uv = buffer + static_cast<std::size_t>(out.pitch_bytes) * out.height;
     v.y_pitch = static_cast<int>(out.pitch_bytes);
     v.uv_pitch = static_cast<int>(out.pitch_bytes);
-    // The visible size: the container's, within the decoded one.
+    // The visible size: the decoder's picture (it may be the coded size,
+    // 1088 rows for 1080p). The container's size crops only that padding:
+    // after a quality switch the pictures outgrow it (a 1280x720 stream
+    // switching to 1080p) and cropping to it showed the top-left part.
+    // HwStream crops to the visible size of the current parameter sets.
     v.width = static_cast<int>(out.width);
     v.height = static_cast<int>(out.height);
-    if (width_ > 0 && width_ < v.width) {
+    if (width_ > 0 && height_ > 0 && width_ <= v.width && height_ <= v.height &&
+        v.width - width_ < 32 && v.height - height_ < 32) {
       v.width = width_;
-    }
-    if (height_ > 0 && height_ < v.height) {
       v.height = height_;
     }
     v.width &= ~1;
     v.height &= ~1;
-    if (!logged_format_) {
-      logged_format_ = true;
+    if (out.width != logged_width_ || out.height != logged_height_ ||
+        out.pitch_bytes != logged_pitch_) {
+      logged_width_ = out.width;
+      logged_height_ = out.height;
+      logged_pitch_ = out.pitch_bytes;
       log_printf("hwdec: pictures %ux%u (shown %dx%d), pitch %u bytes, buffer %" PRIu64
                  " bytes, format %u",
                  out.width, out.height, v.width, v.height, out.pitch_bytes, out.buffer_size,
@@ -642,7 +648,7 @@ class Videodec2Backend final : public video::DecoderBackend {
   int slots_ = kSlotsUpTo1080p;
   int width_ = 0;
   int height_ = 0;
-  bool logged_format_ = false;
+  std::uint32_t logged_width_ = 0, logged_height_ = 0, logged_pitch_ = 0;
 };
 
 // --- the probe ----------------------------------------------------------------

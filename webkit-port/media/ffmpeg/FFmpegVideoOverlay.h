@@ -65,6 +65,9 @@ public:
     std::shared_ptr<FFmpegMedia::VideoWire::RemoteVideoStream> openRemoteStream(const FFmpegMedia::VideoWire::StreamOpen&);
     // The picture is gone (new load, decoder reset).
     void clear();
+    // The page was hidden or shown: the next update() reports the video box
+    // again even when it did not move (the UI resumes presenting on it).
+    void invalidateGeometry() { m_geometry = std::nullopt; }
     // One "video overlay: player N: <transport> sent N/s ..." line covering
     // the last `seconds` (the player's stats interval).
     void logStats(double seconds);

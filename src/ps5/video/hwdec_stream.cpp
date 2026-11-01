@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cinttypes>
+#include <cstdio>
 
 #include "FFmpegVideoOverlayWire.h"
 
@@ -30,9 +31,12 @@ double ms_since(Clock::time_point start) {
 constexpr int kMaxResyncs = 5;
 // Good pictures after which the resync count starts again.
 constexpr std::uint32_t kResyncForgiveFrames = 300;
-// How long the decoder waits for the WebProcess to show or drop a picture
-// before the oldest one is evicted.
+// How often a decoder waiting for a free picture slot reconsiders
+// (SlotWaitPolicy).
 constexpr auto kSlotWait = std::chrono::milliseconds(500);
+// A decoder may report the coded size (1088 rows for 1080p): the visible
+// size the SPS declares is used when it is within this of it.
+constexpr int kCodedPadding = 32;
 constexpr int kStatsIntervalMs = 5000;
 
 }  // namespace
@@ -48,6 +52,8 @@ HwStream::HwStream(std::uint32_t player_key, std::uint32_t stream_id, StreamConf
       slots_(backend_->slot_count()),
       pictures_(static_cast<std::size_t>(backend_->slot_count())),
       config_(std::move(config)) {
+  crop_w_ = next_crop_w_ = config_.width;
+  crop_h_ = next_crop_h_ = config_.height;
   stats_start_ms_ = now_ms();
   decode_thread_ = std::thread([this] { decode_loop(); });
   present_thread_ = std::thread([this] { present_loop(); });
@@ -132,6 +138,7 @@ void HwStream::show(std::uint32_t serial, std::int64_t pts) {
     }
     const FrameSlots::ShowResult result = slots_.show(pts);
     stats_.shows++;
+    show_count_++;
     stats_.dropped += static_cast<std::uint32_t>(result.released);
     if (!result.exact) {
       stats_.late++;
@@ -184,6 +191,52 @@ void HwStream::rerender() {
   present_wake_.notify_one();
 }
 
+void HwStream::set_visible(bool visible) {
+  bool wake = false;
+  {
+    std::lock_guard<std::mutex> lock(lock_);
+    if (hidden_ == !visible) {
+      return;
+    }
+    hidden_ = !visible;
+    const int held = slots_.held_count();
+    const bool on_screen = slots_.current() >= 0;
+    std::size_t packets = 0;
+    for (const Item& item : queue_) {
+      packets += item.kind == Item::Kind::Packet ? 1 : 0;
+    }
+    if (hidden_) {
+      // The player keeps naming frames (it releases nothing meanwhile
+      // otherwise); none of these will be presented.
+      slots_.release_held();
+    } else if (on_screen) {
+      // The overlay shows the last picture again until the next show().
+      rerender_pending_ = true;
+      wake = true;
+    }
+    char pts[32] = "none";
+    if (on_screen) {
+      std::snprintf(pts, sizeof(pts), "%" PRId64, slots_.current_pts());
+    }
+    ps5_log_printf("hwdec: stream %u %s at pts %s, held %d, queue %zu", id_,
+                   hidden_ ? "hidden" : "shown", pts, held, packets);
+  }
+  slot_freed_.notify_all();
+  if (wake) {
+    present_wake_.notify_one();
+  }
+}
+
+bool HwStream::hidden() {
+  std::lock_guard<std::mutex> lock(lock_);
+  return hidden_;
+}
+
+int HwStream::held_pictures() {
+  std::lock_guard<std::mutex> lock(lock_);
+  return slots_.held_count();
+}
+
 std::size_t HwStream::queued_packets() {
   std::lock_guard<std::mutex> lock(lock_);
   return queue_.size();
@@ -227,9 +280,17 @@ void HwStream::decode_loop() {
         if (item.config.codec != config_.codec) {
           fail("the codec changed");
         } else {
-          ps5_log_printf("hwdec: stream %u: new parameter sets (profile %d level %d, %zu bytes)",
-                         id_, item.config.profile, item.config.level,
-                         item.config.parameter_sets.size());
+          ps5_log_printf("hwdec: stream %u: new parameter sets (profile %d level %d, %dx%d, "
+                         "%zu bytes): decoder reset at the next keyframe",
+                         id_, item.config.profile, item.config.level, item.config.width,
+                         item.config.height, item.config.parameter_sets.size());
+          reset_on_keyframe_ = item.config.parameter_sets != config_.parameter_sets;
+          next_crop_w_ = item.config.width;
+          next_crop_h_ = item.config.height;
+          if (!reset_on_keyframe_) {
+            crop_w_ = next_crop_w_;
+            crop_h_ = next_crop_h_;
+          }
           config_ = std::move(item.config);
         }
         break;
@@ -250,6 +311,22 @@ void HwStream::handle_packet(Item& item) {
                    id_, item.data.size(), item.pts);
     send_decoded(0, 0, 0, 0);
     return;
+  }
+  if (item.keyframe && reset_on_keyframe_) {
+    // The new parameter sets start here: the old session's pictures come
+    // out first, then the decoder starts over with the new size.
+    reset_on_keyframe_ = false;
+    if (!drain_decoder("parameter switch")) {
+      ++consumed_;
+      return;
+    }
+    crop_w_ = next_crop_w_;
+    crop_h_ = next_crop_h_;
+    wait_keyframe_ = false;
+    key_pts_ = item.pts;
+    ps5_log_printf("hwdec: stream %u: decoder reset for the new parameter sets at pts %" PRId64
+                   " (visible %dx%d)",
+                   id_, item.pts, crop_w_, crop_h_);
   }
   const int target = wait_for_free_slot();
   if (target < 0) {
@@ -322,24 +399,46 @@ bool HwStream::take_result(const DecoderBackend::Result& result, int target, con
     send_decoded(0, 0, 0, 0);
     return true;
   }
+  const Nv12View picture = visible_picture(result.picture);
   {
     std::lock_guard<std::mutex> lock(lock_);
     slots_.hold(result.frame_slot, *pts);
-    pictures_[static_cast<std::size_t>(result.frame_slot)] = result.picture;
+    pictures_[static_cast<std::size_t>(result.frame_slot)] = picture;
     stats_.decoded++;
-    stats_.width = result.picture.width;
-    stats_.height = result.picture.height;
+    stats_.width = picture.width;
+    stats_.height = picture.height;
   }
   if (!logged_first_picture_) {
     logged_first_picture_ = true;
     ps5_log_printf("hwdec: stream %u: first picture %dx%d (pitch %d), pts %" PRId64, id_,
-                   result.picture.width, result.picture.height, result.picture.y_pitch, *pts);
+                   picture.width, picture.height, picture.y_pitch, *pts);
   }
   if (++good_pictures_ % kResyncForgiveFrames == 0) {
     resyncs_ = 0;
   }
-  send_decoded(wire::Decoded::HasFrame, result.picture.width, result.picture.height, *pts);
+  send_decoded(wire::Decoded::HasFrame, picture.width, picture.height, *pts);
   return true;
+}
+
+Nv12View HwStream::visible_picture(const Nv12View& picture) {
+  Nv12View v = picture;
+  if (crop_w_ <= 0 || crop_h_ <= 0) {
+    return v;
+  }
+  const bool fits = crop_w_ <= v.width && crop_h_ <= v.height &&
+                    v.width - crop_w_ < kCodedPadding && v.height - crop_h_ < kCodedPadding;
+  if (!fits) {
+    if (!logged_crop_mismatch_) {
+      logged_crop_mismatch_ = true;
+      ps5_log_printf("hwdec: stream %u: picture %dx%d does not match the parameter sets' %dx%d;"
+                     " shown as decoded",
+                     id_, v.width, v.height, crop_w_, crop_h_);
+    }
+    return v;
+  }
+  v.width = crop_w_ & ~1;
+  v.height = crop_h_ & ~1;
+  return v;
 }
 
 void HwStream::handle_flush(std::uint32_t serial) {
@@ -365,6 +464,13 @@ void HwStream::handle_drain(std::uint32_t serial) {
   if (serial != serial_) {
     return;
   }
+  if (!drain_decoder("flush")) {
+    return;
+  }
+  send_decoded(wire::Decoded::Drained, 0, 0, 0);
+}
+
+bool HwStream::drain_decoder(const char* what) {
   for (int i = 0; i < 64; ++i) {
     const int target = wait_for_free_slot();
     if (target < 0) {
@@ -381,11 +487,10 @@ void HwStream::handle_drain(std::uint32_t serial) {
     // A picture: announce it (the "decoded" message per picture).
     DecoderBackend::Result picture = result;
     picture.target_taken = false;
-    if (!take_result(picture, target, "flush")) {
-      return;
+    if (!take_result(picture, target, what)) {
+      return false;
     }
   }
-  send_decoded(wire::Decoded::Drained, 0, 0, 0);
   // A drained decoder wants a reset before it takes more (a loop, a seek).
   backend_->reset();
   {
@@ -396,11 +501,13 @@ void HwStream::handle_drain(std::uint32_t serial) {
   pts_queue_.clear();
   wait_keyframe_ = true;
   key_pts_.reset();
+  return true;
 }
 
 int HwStream::wait_for_free_slot() {
   std::unique_lock<std::mutex> lock(lock_);
-  auto deadline = Clock::now() + kSlotWait;
+  SlotWaitPolicy policy;
+  policy.start(now_ms(), show_count_);
   bool logged = false;
   while (true) {
     if (stop_ || queue_serial_ != serial_) {
@@ -410,28 +517,46 @@ int HwStream::wait_for_free_slot() {
     if (slot >= 0) {
       return slot;
     }
-    if (slot_freed_.wait_until(lock, deadline) != std::cv_status::timeout) {
+    if (slot_freed_.wait_for(lock, kSlotWait) != std::cv_status::timeout) {
       continue;
     }
     if (slots_.find_free() >= 0) {
       continue;
     }
-    if (slots_.evict_oldest()) {
-      stats_.evicted++;
-      if (!logged) {
-        logged = true;
-        ps5_log_printf("hwdec: stream %u: no picture slot free for %lld ms (held %d, decoder %d),"
-                       " evicting the oldest",
-                       id_, static_cast<long long>(kSlotWait.count()), slots_.held_count(),
-                       slots_.decoder_count());
-      }
-      deadline = Clock::now() + kSlotWait;
-      continue;
+    if (slots_.held_count() == 0) {
+      break;  // the decoder (and the picture on screen) has them all
     }
-    lock.unlock();
-    fail("out of picture slots (the decoder holds them all)");
-    return -1;
+    switch (policy.on_timeout(now_ms(), show_count_, hidden_, slots_.stale_count())) {
+      case SlotWaitPolicy::Action::Wait:
+        if (!logged) {
+          logged = true;
+          ps5_log_printf("hwdec: stream %u: every picture slot taken (held %d, decoder %d): "
+                         "waiting for the player to show them",
+                         id_, slots_.held_count(), slots_.decoder_count());
+        }
+        continue;
+      case SlotWaitPolicy::Action::ReleaseStale:
+        stats_.dropped += static_cast<std::uint32_t>(slots_.release_stale());
+        continue;
+      case SlotWaitPolicy::Action::ReleaseHeld:
+        stats_.dropped += static_cast<std::uint32_t>(slots_.release_held());
+        continue;
+      case SlotWaitPolicy::Action::EvictOldest:
+        if (slots_.evict_oldest()) {
+          stats_.evicted++;
+          ps5_log_printf("hwdec: stream %u: the player shows frames but none of the %d held "
+                         "for %lld ms: evicting the oldest",
+                         id_, slots_.held_count(),
+                         static_cast<long long>(SlotWaitPolicy::kLeakMs));
+          policy.start(now_ms(), show_count_);
+          continue;
+        }
+        continue;
+    }
   }
+  lock.unlock();
+  fail("out of picture slots (the decoder holds them all)");
+  return -1;
 }
 
 void HwStream::send_decoded(std::uint8_t flags, int width, int height, std::int64_t pts) {

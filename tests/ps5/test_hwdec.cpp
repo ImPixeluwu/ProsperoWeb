@@ -723,3 +723,442 @@ TEST_SUITE("hwdec_e2e") {
     CHECK(stream.packetsInFlight() == 0);
   }
 }
+
+namespace {
+
+// Bit writer for parameter sets (Exp-Golomb), RBSP trailing bits included.
+class BitWriter {
+ public:
+  void bits(std::uint32_t value, int n) {
+    for (int i = n - 1; i >= 0; --i) {
+      bit((value >> i) & 1);
+    }
+  }
+  void ue(std::uint32_t value) {
+    const std::uint32_t v = value + 1;
+    int len = 0;
+    while ((v >> len) > 1) {
+      ++len;
+    }
+    bits(0, len);
+    bits(v, len + 1);
+  }
+  Bytes finish() {
+    bit(1);
+    while (count_ % 8) {
+      bit(0);
+    }
+    // Emulation prevention, as an encoder writes it.
+    Bytes out;
+    int zeros = 0;
+    for (std::uint8_t b : bytes_) {
+      if (zeros >= 2 && b <= 3) {
+        out.push_back(3);
+        zeros = 0;
+      }
+      out.push_back(b);
+      zeros = b == 0 ? zeros + 1 : 0;
+    }
+    return out;
+  }
+
+ private:
+  void bit(std::uint32_t b) {
+    if (count_ % 8 == 0) {
+      bytes_.push_back(0);
+    }
+    bytes_.back() |= static_cast<std::uint8_t>(b << (7 - count_ % 8));
+    ++count_;
+  }
+  Bytes bytes_;
+  int count_ = 0;
+};
+
+// An H.264 High profile SPS of width x height (macroblock aligned, cropped).
+Bytes h264_sps(int width, int height) {
+  BitWriter w;
+  w.bits(0x67, 8);
+  w.bits(100, 8);  // profile_idc
+  w.bits(0, 8);
+  w.bits(40, 8);  // level_idc
+  w.ue(0);        // seq_parameter_set_id
+  w.ue(1);        // chroma_format_idc 4:2:0
+  w.ue(0);
+  w.ue(0);
+  w.bits(0, 1);
+  w.bits(0, 1);  // no scaling matrix
+  w.ue(0);       // log2_max_frame_num_minus4
+  w.ue(0);       // pic_order_cnt_type
+  w.ue(0);       // log2_max_pic_order_cnt_lsb_minus4
+  w.ue(4);       // max_num_ref_frames
+  w.bits(0, 1);
+  const int mbs_w = (width + 15) / 16;
+  const int mbs_h = (height + 15) / 16;
+  w.ue(static_cast<std::uint32_t>(mbs_w - 1));
+  w.ue(static_cast<std::uint32_t>(mbs_h - 1));
+  w.bits(1, 1);  // frame_mbs_only_flag
+  w.bits(1, 1);  // direct_8x8_inference_flag
+  const int crop_r = (mbs_w * 16 - width) / 2;
+  const int crop_b = (mbs_h * 16 - height) / 2;
+  w.bits(crop_r || crop_b ? 1 : 0, 1);
+  if (crop_r || crop_b) {
+    w.ue(0);
+    w.ue(static_cast<std::uint32_t>(crop_r));
+    w.ue(0);
+    w.ue(static_cast<std::uint32_t>(crop_b));
+  }
+  w.bits(0, 1);  // vui_parameters_present_flag
+  return w.finish();
+}
+
+// An HEVC Main SPS of width x height (coded in 8-pixel units, conformance
+// window for the rest).
+Bytes hevc_sps(int width, int height) {
+  BitWriter w;
+  w.bits(0x4201, 16);
+  w.bits(0, 4);  // sps_video_parameter_set_id
+  w.bits(0, 3);  // sps_max_sub_layers_minus1
+  w.bits(1, 1);
+  w.bits(0, 2);
+  w.bits(0, 1);
+  w.bits(1, 5);  // general_profile_idc Main
+  w.bits(0x60000000u, 32);
+  w.bits(0, 4);
+  w.bits(0, 32);
+  w.bits(0, 11);
+  w.bits(0, 1);
+  w.bits(120, 8);  // general_level_idc
+  w.ue(0);         // sps_seq_parameter_set_id
+  w.ue(1);         // chroma_format_idc
+  const int coded_w = (width + 7) / 8 * 8;
+  const int coded_h = (height + 7) / 8 * 8;
+  w.ue(static_cast<std::uint32_t>(coded_w));
+  w.ue(static_cast<std::uint32_t>(coded_h));
+  const bool window = coded_w != width || coded_h != height;
+  w.bits(window ? 1 : 0, 1);
+  if (window) {
+    w.ue(0);
+    w.ue(static_cast<std::uint32_t>((coded_w - width) / 2));
+    w.ue(0);
+    w.ue(static_cast<std::uint32_t>((coded_h - height) / 2));
+  }
+  w.bits(0, 1);
+  return w.finish();
+}
+
+// avcC carrying a real SPS.
+Bytes avcc_with_sps(const Bytes& sps) {
+  Bytes r = {1, 0x64, 0x00, 0x28, 0xFF, 0xE1};
+  r.push_back(static_cast<std::uint8_t>(sps.size() >> 8));
+  r.push_back(static_cast<std::uint8_t>(sps.size()));
+  r.insert(r.end(), sps.begin(), sps.end());
+  r.push_back(1);
+  r.push_back(0);
+  r.push_back(static_cast<std::uint8_t>(kPps.size()));
+  r.insert(r.end(), kPps.begin(), kPps.end());
+  r.insert(r.end(), {0xFD, 0xF8, 0xF8, 0});
+  return r;
+}
+
+// Floating-point bilinear with the scaler's sample positions (pixel
+// centres, clamped at the edges).
+std::vector<std::uint32_t> bilinear_reference(const std::vector<std::uint32_t>& src, int sw, int sh,
+                                              int dw, int dh) {
+  std::vector<std::uint32_t> out(static_cast<std::size_t>(dw) * dh);
+  auto coord = [](int i, int s, int d, int& i0, int& i1, double& f) {
+    double p = (i + 0.5) * s / d - 0.5;
+    p = std::clamp(p, 0.0, static_cast<double>(s - 1));
+    i0 = static_cast<int>(p);
+    i1 = std::min(i0 + 1, s - 1);
+    f = p - i0;
+  };
+  for (int y = 0; y < dh; ++y) {
+    int y0, y1;
+    double fy;
+    coord(y, sh, dh, y0, y1, fy);
+    for (int x = 0; x < dw; ++x) {
+      int x0, x1;
+      double fx;
+      coord(x, sw, dw, x0, x1, fx);
+      std::uint32_t pixel = 0;
+      for (int shift : {0, 8, 16, 24}) {
+        auto c = [&](int xx, int yy) {
+          return static_cast<double>((src[static_cast<std::size_t>(yy) * sw + xx] >> shift) & 0xFF);
+        };
+        const double top = c(x0, y0) * (1 - fx) + c(x1, y0) * fx;
+        const double bottom = c(x0, y1) * (1 - fx) + c(x1, y1) * fx;
+        const auto v = static_cast<std::uint32_t>(std::lround(top * (1 - fy) + bottom * fy));
+        pixel |= std::min<std::uint32_t>(v, 255) << shift;
+      }
+      out[static_cast<std::size_t>(y) * dw + x] = pixel;
+    }
+  }
+  return out;
+}
+
+int max_channel_diff(const std::vector<std::uint32_t>& a, const std::vector<std::uint32_t>& b) {
+  int worst = 0;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    for (int shift : {0, 8, 16, 24}) {
+      worst = std::max(worst, std::abs(channel(a[i], shift) - channel(b[i], shift)));
+    }
+  }
+  return worst;
+}
+
+}  // namespace
+
+TEST_SUITE("hwdec_geometry") {
+  TEST_CASE("SPS visible size: H.264 cropping and the HEVC conformance window") {
+    int w = 0;
+    int h = 0;
+    const Bytes avc1080 = h264_sps(1920, 1080);
+    REQUIRE(video::sps_visible_size(VideoCodec::H264, avc1080.data(), avc1080.size(), w, h));
+    CHECK(w == 1920);
+    CHECK(h == 1080);
+    const Bytes avc720 = h264_sps(1280, 720);
+    REQUIRE(video::sps_visible_size(VideoCodec::H264, avc720.data(), avc720.size(), w, h));
+    CHECK(w == 1280);
+    CHECK(h == 720);
+    const Bytes hevc = hevc_sps(1920, 1080);
+    REQUIRE(video::sps_visible_size(VideoCodec::Hevc, hevc.data(), hevc.size(), w, h));
+    CHECK(w == 1920);
+    CHECK(h == 1080);
+    CHECK_FALSE(video::sps_visible_size(VideoCodec::H264, kSps.data(), kSps.size(), w, h));
+
+    // parse_stream_config reports it (avcC and Annex-B extradata).
+    std::string error;
+    const Bytes record = avcc_with_sps(avc1080);
+    auto config = video::parse_stream_config(VideoCodec::H264, record.data(), record.size(), error);
+    REQUIRE(config);
+    CHECK(config->width == 1920);
+    CHECK(config->height == 1080);
+    const Bytes ab = annexb({avc720, kPps});
+    config = video::parse_stream_config(VideoCodec::H264, ab.data(), ab.size(), error);
+    REQUIRE(config);
+    CHECK(config->width == 1280);
+    CHECK(config->height == 720);
+  }
+
+  TEST_CASE("NV12 with a padded pitch and coded rows converts only the visible picture") {
+    // 1080p-like layout, scaled down: visible 38x18, coded 48x32 rows, pitch
+    // 64 bytes, the chroma plane after the coded rows. Padding is garbage.
+    const int vw = 38, vh = 18, coded_h = 32, pitch = 64;
+    std::mt19937 rng(7);
+    Bytes frame(static_cast<std::size_t>(pitch) * coded_h * 3 / 2);
+    for (auto& b : frame) {
+      b = static_cast<std::uint8_t>(rng());
+    }
+    // The same visible picture, packed (pitch == width).
+    Bytes packed_y(static_cast<std::size_t>(vw) * vh);
+    Bytes packed_uv(static_cast<std::size_t>(vw) * vh / 2);
+    for (int y = 0; y < vh; ++y) {
+      std::memcpy(&packed_y[static_cast<std::size_t>(y) * vw], &frame[static_cast<std::size_t>(y) * pitch], vw);
+    }
+    const std::uint8_t* uv = frame.data() + static_cast<std::size_t>(pitch) * coded_h;
+    for (int y = 0; y < vh / 2; ++y) {
+      std::memcpy(&packed_uv[static_cast<std::size_t>(y) * vw], uv + static_cast<std::size_t>(y) * pitch, vw);
+    }
+    const video::Nv12View padded{frame.data(), uv, pitch, pitch, vw, vh};
+    const video::Nv12View packed{packed_y.data(), packed_uv.data(), vw, vw, vw, vh};
+    const video::YuvColor color{video::YuvMatrix::Bt709, false};
+    std::vector<std::int32_t> scratch;
+    std::vector<std::uint32_t> from_padded(static_cast<std::size_t>(vw) * vh);
+    std::vector<std::uint32_t> from_packed(from_padded.size());
+    std::vector<std::uint32_t> reference(from_padded.size());
+    video::nv12_to_argb(padded, color, 1, from_padded.data(), vw, scratch);
+    video::nv12_to_argb(packed, color, 1, from_packed.data(), vw, scratch);
+    video::nv12_to_argb_reference(packed, color, 1, reference.data(), vw);
+    CHECK(from_padded == from_packed);
+    CHECK(max_channel_diff(from_padded, reference) <= 1);
+  }
+
+  TEST_CASE("the converted picture scales to an arbitrary rect like the reference") {
+    std::mt19937 rng(3);
+    const int sw = 64, sh = 36;
+    std::vector<std::uint32_t> src(static_cast<std::size_t>(sw) * sh);
+    // Smooth content (bilinear's 8-bit weights stay within 1-2 per channel).
+    for (int y = 0; y < sh; ++y) {
+      for (int x = 0; x < sw; ++x) {
+        src[static_cast<std::size_t>(y) * sw + x] =
+            0xFF000000u | static_cast<std::uint32_t>(x * 4) << 16 |
+            static_cast<std::uint32_t>(y * 7) << 8 | static_cast<std::uint32_t>((x + y) * 2);
+      }
+    }
+    const display::ImageView view{src.data(), sw, sh, sw};
+    std::vector<std::uint32_t> scratch;
+    for (auto [dw, dh] : {std::pair{96, 54}, {1399 / 8, 787 / 8}, {37, 21}, {150, 31}}) {
+      std::vector<std::uint32_t> got(static_cast<std::size_t>(dw) * dh);
+      display::scale_image(view, got.data(), dw, dh, dw, display::ScaleFilter::Bilinear, scratch);
+      CHECK(max_channel_diff(got, bilinear_reference(src, sw, sh, dw, dh)) <= 2);
+    }
+  }
+
+  TEST_CASE("slot wait policy: wait for the player, never evict frames it will show") {
+    video::SlotWaitPolicy policy;
+    using Action = video::SlotWaitPolicy::Action;
+    policy.start(1000, 50);
+    // Paused (no shows) for a minute: keep waiting.
+    CHECK(policy.on_timeout(61000, 50, false, 0) == Action::Wait);
+    // Shows arriving, the clock trailing the decoder: wait.
+    CHECK(policy.on_timeout(5000, 80, false, 0) == Action::Wait);
+    // Late pictures behind the one on screen go first.
+    CHECK(policy.on_timeout(1500, 50, false, 2) == Action::ReleaseStale);
+    // Hidden: nothing is presented, everything held goes.
+    CHECK(policy.on_timeout(1500, 50, true, 0) == Action::ReleaseHeld);
+    // Shows for 10 s without freeing anything: those pictures leaked.
+    CHECK(policy.on_timeout(1000 + video::SlotWaitPolicy::kLeakMs, 90, false, 0) ==
+          Action::EvictOldest);
+
+    video::FrameSlots slots(4);
+    slots.hold(0, 100);
+    slots.hold(1, 200);
+    CHECK(slots.show(200).slot == 1);
+    slots.hold(2, 150);  // came after the show of a later picture
+    slots.hold(3, 300);
+    CHECK(slots.stale_count() == 1);
+    CHECK(slots.release_stale() == 1);
+    CHECK(slots.held_count() == 1);  // 300 stays: it is shown next
+  }
+}
+
+TEST_SUITE("hwdec_visibility") {
+  struct Harness {
+    std::shared_ptr<FakeShared> shared = std::make_shared<FakeShared>();
+    std::mutex lock;
+    std::vector<wire::Decoded> notices;
+    std::atomic<int> delivered{0};
+    std::atomic<int> last_grey{-1};
+    std::unique_ptr<video::HwStream> stream;
+
+    explicit Harness(const Bytes& record) {
+      std::string error;
+      auto config = video::parse_stream_config(VideoCodec::H264, record.data(), record.size(), error);
+      REQUIRE(config);
+      video::HwStreamCallbacks callbacks;
+      callbacks.send = [this](std::vector<std::uint8_t>&& bytes) {
+        wire::Parser parser;
+        parser.append(bytes.data(), bytes.size());
+        while (parser.next() == wire::Parser::Result::Message) {
+          const auto& m = parser.message();
+          if (m.type == wire::Type::Decoded) {
+            if (auto d = wire::decodeDecoded(m.payload, m.bytes); d && d->hasFrame()) {
+              std::lock_guard<std::mutex> guard(lock);
+              notices.push_back(*d);
+            }
+          }
+        }
+      };
+      callbacks.deliver = [this](const display::ImageView& view) {
+        last_grey = channel(view.pixels[0], 0);
+        delivered++;
+      };
+      stream = std::make_unique<video::HwStream>(
+          1, 1, std::move(*config), video::YuvColor{video::YuvMatrix::Bt709, false},
+          std::make_unique<FakeBackend>(16, 8, shared), std::move(callbacks));
+    }
+    void send(std::int64_t pts, bool key) {
+      const Bytes au = length_prefixed({key ? kIdr : kSlice});
+      stream->packet(0, pts, key, au.data(), au.size());
+    }
+    std::size_t decoded() {
+      std::lock_guard<std::mutex> guard(lock);
+      return notices.size();
+    }
+  };
+
+  TEST_CASE("a paused player: the decoder waits for it instead of evicting the next frames") {
+    Harness h(avcc_record());
+    // 8 slots: 12 pictures cannot all be held; nobody shows (paused).
+    for (int i = 0; i < 12; ++i) {
+      h.send(100 + i, i == 0);
+    }
+    REQUIRE(wait_until([&] { return h.decoded() >= 7; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1300));  // past two slot waits
+    CHECK(h.stream->held_pictures() >= 7);
+    // Playback resumes: the first frame is still there to be shown.
+    h.stream->show(0, 100);
+    REQUIRE(wait_until([&] { return h.last_grey.load() == expected_grey(100); }));
+    // ... and the decoder goes on as the player shows the rest.
+    for (int i = 1; i < 11; ++i) {
+      h.stream->show(0, 100 + i);
+      REQUIRE(wait_until([&] { return h.last_grey.load() == expected_grey(100 + i); }));
+    }
+  }
+
+  TEST_CASE("hidden: held pictures freed, no presenting; shown: the picture comes back") {
+    Harness h(avcc_record());
+    for (int i = 0; i < 4; ++i) {
+      h.send(200 + i, i == 0);
+    }
+    REQUIRE(wait_until([&] { return h.decoded() >= 3; }));
+    h.stream->show(0, 200);
+    REQUIRE(wait_until([&] { return h.last_grey.load() == expected_grey(200); }));
+    CHECK(h.stream->held_pictures() == 2);
+
+    h.stream->set_visible(false);
+    CHECK(h.stream->hidden());
+    CHECK(h.stream->held_pictures() == 0);
+    // Pictures decoded while hidden never block the decoder.
+    for (int i = 4; i < 20; ++i) {
+      h.send(200 + i, false);
+    }
+    REQUIRE(wait_until([&] { return h.decoded() >= 18; }, 5000));
+
+    // Shown again: the picture on screen is presented at once ...
+    const int before = h.delivered.load();
+    h.stream->set_visible(true);
+    CHECK_FALSE(h.stream->hidden());
+    REQUIRE(wait_until([&] { return h.delivered.load() > before; }));
+    CHECK(h.last_grey.load() == expected_grey(200));
+    // ... and the player's flush on the resume keyframe starts it over,
+    // the next show presenting the new picture.
+    h.stream->flush(0);
+    h.send(500, true);
+    h.send(501, false);
+    REQUIRE(wait_until([&] {
+      std::lock_guard<std::mutex> guard(h.lock);
+      return !h.notices.empty() && h.notices.back().pts == 500;
+    }));
+    h.stream->show(0, 500);
+    REQUIRE(wait_until([&] { return h.last_grey.load() == expected_grey(500); }));
+  }
+
+  TEST_CASE("pictures are cropped to the parameter sets' visible size, not the container's") {
+    // The fake decoder outputs 16x16 pictures; the SPS says 16x10 visible.
+    std::string error;
+    const Bytes record = avcc_with_sps(h264_sps(16, 10));
+    auto config = video::parse_stream_config(VideoCodec::H264, record.data(), record.size(), error);
+    REQUIRE(config);
+    std::mutex lock;
+    std::vector<std::pair<int, int>> sizes;
+    video::HwStreamCallbacks callbacks;
+    callbacks.send = [&](std::vector<std::uint8_t>&& bytes) {
+      wire::Parser parser;
+      parser.append(bytes.data(), bytes.size());
+      while (parser.next() == wire::Parser::Result::Message) {
+        const auto& m = parser.message();
+        if (m.type != wire::Type::Decoded) {
+          continue;
+        }
+        if (auto d = wire::decodeDecoded(m.payload, m.bytes); d && d->hasFrame()) {
+          std::lock_guard<std::mutex> guard(lock);
+          sizes.emplace_back(static_cast<int>(d->width), static_cast<int>(d->height));
+        }
+      }
+    };
+    auto shared = std::make_shared<FakeShared>();
+    video::HwStream stream(1, 1, std::move(*config), video::YuvColor{},
+                           std::make_unique<FakeBackend>(16, 16, shared), std::move(callbacks));
+    const Bytes key = length_prefixed({kIdr});
+    const Bytes delta = length_prefixed({kSlice});
+    stream.packet(0, 10, true, key.data(), key.size());
+    stream.packet(0, 11, false, delta.data(), delta.size());
+    REQUIRE(wait_until([&] {
+      std::lock_guard<std::mutex> guard(lock);
+      return !sizes.empty();
+    }));
+    std::lock_guard<std::mutex> guard(lock);
+    CHECK(sizes[0] == std::pair{16, 10});
+  }
+}

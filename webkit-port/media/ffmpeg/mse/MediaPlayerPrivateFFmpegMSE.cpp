@@ -589,6 +589,13 @@ void MediaPlayerPrivateFFmpegMSE::setPageIsVisible(bool visible)
     m_pageVisible = visible;
     if (RefPtr decoder = m_videoDecoder)
         decoder->setSuspended(!visible);
+    // Re-report the video box with its visibility now (not at the next
+    // overlay tick): the UI stops presenting a hidden player at once and
+    // shows the current picture again when it comes back.
+    if (m_overlay) {
+        m_overlay->invalidateGeometry();
+        updateOverlay();
+    }
 }
 
 bool MediaPlayerPrivateFFmpegMSE::hasVideo() const

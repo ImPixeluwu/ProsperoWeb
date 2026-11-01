@@ -130,10 +130,10 @@ class VideoServer {
   // swaps it in. `fresh`: a new frame (not a rescale).
   void render(Connection& c, bool fresh);
   // The same for any source (also from a stream's present thread). False
-  // when nothing was drawn.
+  // when nothing was drawn. `drawn_rect`: where it went (when drawn).
   bool render_frame(std::uint32_t key, const display::ImageView& src,
                     std::vector<std::uint32_t>& back, std::vector<std::uint32_t>& scratch,
-                    bool fresh, double* scale_ms);
+                    bool fresh, double* scale_ms, display::Rect* drawn_rect = nullptr);
   // Sends a complete message to the client (any thread).
   bool send_message(Connection& c, const std::vector<std::uint8_t>& bytes);
   bool handle_stream_message(Connection& c);
