@@ -42,13 +42,16 @@ the NetworkProcess's cookie decisions (first party or page not allowed,
 site not hosted, no storage session, the cookiesEnabled answer) and the
 network session's kind and cookie database file.
 
+SharedMemory::createHandle hands over the object's own descriptor when it
+cannot be duplicated (native title), logging it.
+
 Also: Connection::platformPrepareForOpen() opens the connection even when
 the socket cannot be made non-blocking (logged). The PlayStation
 SocketMonitor waits with select() before it reads, so a blocking socket
 still works, while refusing to open left the child waiting forever (console
 run 23, where fcntl on the socket was refused).
 diff --git a/Source/WebCore/platform/unix/SharedMemoryUnix.cpp b/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
-index 16eb9a0de..78d100069 100644
+index 16eb9a0de..012fb7bc9 100644
 --- a/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
 +++ b/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
 @@ -27,11 +27,24 @@
@@ -160,6 +163,25 @@ index 16eb9a0de..78d100069 100644
  
      RefPtr<SharedMemory> instance = adoptRef(new SharedMemory());
      instance->m_data = data;
+@@ -186,6 +257,18 @@ auto SharedMemory::createHandle(Protection) -> std::optional<Handle>
+     // See https://bugs.webkit.org/show_bug.cgi?id=131542.
+ 
+     UnixFileDescriptor duplicate { m_fileDescriptor.value(), UnixFileDescriptor::Duplicate };
++#if defined(PS5_HOMEBREW)
++    // The native title may not duplicate a descriptor (console runs 28-30).
++    // The mapping does not need the descriptor any more: hand over the
++    // object's own one. A second handle for the same object is then not
++    // possible (logged), which the callers seen so far never ask for.
++    if (!duplicate && m_fileDescriptor) {
++        PS5_TRACE_SOME(handleTransfers, "webkit: SharedMemory::createHandle: duplicate refused (errno %d); handing over the object's descriptor %d (%zu bytes)", errno, m_fileDescriptor.value(), m_size);
++        return { Handle(WTF::move(m_fileDescriptor), m_size) };
++    }
++    if (!duplicate)
++        PS5_TRACE_SOME(handleFailures, "webkit: SharedMemory::createHandle: no descriptor left to hand over (%zu bytes)", m_size);
++#endif
+     if (!duplicate) {
+         ASSERT_NOT_REACHED();
+         return std::nullopt;
 diff --git a/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp b/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp
 index 3f62dc763..4f4617033 100644
 --- a/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp
