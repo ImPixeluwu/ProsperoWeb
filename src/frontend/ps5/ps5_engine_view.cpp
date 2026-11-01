@@ -243,8 +243,11 @@ Ps5EngineFactory::Ps5EngineFactory(const std::string& base_dir,
     WKWebsiteDataStoreConfigurationSetIndexedDBDatabaseDirectory(ds_config, idb.get());
     // WebKit only defaults the cookie file on Cocoa: without one the curl
     // backend keeps no cookie jar and pages read document.cookie back empty
-    // (console run 30: hdrezka "cookies are disabled").
-    const std::string cookie_file = base_dir + "/cookies.db";
+    // (console run 30: hdrezka "cookies are disabled"). The websrv build used
+    // /data/prosperoweb/cookie.jar.db (the curl default); a login persists
+    // across the two builds.
+    // cookie.jar.db, the curl backend's own name, so both builds share it.
+    const std::string cookie_file = base_dir + "/cookie.jar.db";
     auto cookies = make_wk_string(cookie_file);
     WKWebsiteDataStoreConfigurationSetCookieStorageFile(ds_config, cookies.get());
     log_printf("data store: cookies %s, storage %s/storage, local storage %s/localstorage, "
