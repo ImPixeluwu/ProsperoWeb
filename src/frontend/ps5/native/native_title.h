@@ -45,9 +45,13 @@ void native_socket_selftest(void);
 // and closes at once (nothing is sent), and tries opendir("/system_tmp").
 void native_etahen_probe(void);
 // config.json "probe_fork" (level 0: nothing): whether the title can create
-// a child process itself (fork, rfork_thread, vfork, pdfork through
-// libkernel) and the child inherits descriptors; level 2 adds a WebProcess-
-// like IPC step in the child (native_fork_probe.c). Waits for it 15 s at most.
+// a child process itself and the child inherits descriptors. Levels 1/2
+// resolve fork/rfork_thread/vfork/pdfork by name (inconclusive on hardware,
+// SCE functions are keyed by NID); level 2 adds a WebProcess-like IPC step in
+// the child. Levels 3/4 call rfork_thread as a real libkernel NID import:
+// level 3 RFPROC|RFCFDG|RFMEM (shared address space, lowest risk), level 4
+// RFPROC|RFFDG (copied fd table and address space, a panic candidate). Each
+// level is run on its own (native_fork_probe.c). Waits for it 15 s at most.
 void native_fork_probe(int level);
 
 // The direct-memory heap (native_memory.c): its size, 0 when the system

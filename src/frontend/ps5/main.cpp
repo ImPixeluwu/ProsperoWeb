@@ -387,9 +387,10 @@ int main(int argc, char** argv) {
              static_cast<int>(getpid()), argc > 0 && argv[0] ? argv[0] : "(none)");
   g_main_thread = pthread_self();
   thread_selftest();
-  // config.json "probe_fork": true (or 2): can the title create a child
-  // process itself? Before the decoder, the broker and WebKit, so the child
-  // copies as little as possible; bounded, start-up goes on either way.
+  // config.json "probe_fork" (1/2 by name, 3/4 call rfork_thread as a real
+  // NID import): can the title create a child process itself? Before the
+  // decoder, the broker and WebKit, so the child copies as little as possible;
+  // bounded, start-up goes on either way.
   native_fork_probe(config_probe_level(kPs5DataDir, "probe_fork"));
   // First, before any other thread and before any helper is started: the
   // hardware decoder's module and compute queue (VLC for PS5's order). Its

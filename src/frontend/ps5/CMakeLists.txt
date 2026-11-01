@@ -187,6 +187,10 @@ if(PROSPEROWEB_NATIVE_TITLE_TARGET)
     native/native_fork_probe.c
     native/native_memory.c
     native/native_title.c)
+  # native_fork_probe.c links rfork_thread as a real libkernel NID import and
+  # calls it only under this define; without it the file still builds (levels
+  # 1/2, resolved by name) but the rfork levels 3/4 are compiled out.
+  target_compile_definitions(prosperoweb_native_runtime PRIVATE PROSPEROWEB_NATIVE_TITLE=1)
   target_link_libraries(prosperoweb_native_runtime PRIVATE prosperoweb_warnings)
 
   # Third-party code: dlmalloc, without -Werror.

@@ -16,6 +16,32 @@
 // first: its pid, its inherited IPC socket, a new socket pair, one end of it
 // sent over the IPC socket.
 //
+// Levels 3 and 4 call libkernel's rfork_thread as a REAL NID import (linked,
+// not resolved by name): NID bSDxEpGzmUE, the only process-creation primitive
+// the game libkernel exports, the one elfldr/etaHEN use. By-name lookup finds
+// no SCE function (a previous console run resolved none of fork/rfork_thread/
+// vfork/pdfork), because PS5 keys them by NID, so the real import is the only
+// way to actually call it from the title. The signature is
+//   pid_t rfork_thread(int flags, void* stack, int (*func)(void*), void* arg)
+// (FreeBSD/PS5): in the PARENT it returns the child pid (or -1/errno); the
+// CHILD runs func(arg) on the supplied stack top and must _exit(), never
+// return. The stack is mmap'd (MAP_ANON|MAP_PRIVATE, grows down, passed
+// top-aligned), as elfldr does with its malloc'd stack+size-8.
+//   - Level 3 (proven shape, lowest risk): rfork_thread(RFPROC|RFCFDG|RFMEM),
+//     the exact flags elfldr/etaHEN use. The address space is SHARED, so the
+//     child reports by writing its pid and a magic marker into a volatile
+//     struct the parent allocated before the call (RFCFDG cleared the fds, so
+//     no socket); the parent spin-waits on the marker, then waitpid.
+//   - Level 4 (the real supervisor shape, higher risk, a panic candidate):
+//     rfork_thread(RFPROC|RFFDG) copies the fd table and COPIES the address
+//     space (no RFMEM). A socketpair is made before the call; the child writes
+//     one line to its inherited end and _exit(0); the parent reads it. This is
+//     what a forked WebProcess supervisor needs, and copying a vmspace with
+//     direct-memory/GPU mappings is the main panic risk.
+// The level 3/4 child does nothing but report and _exit (no logger, no
+// allocation): in level 3 it shares the parent's heap and locks, in level 4
+// it holds a copy of them; all logging is done by the parent.
+//
 // The parent never blocks: it reads with MSG_DONTWAIT and polls the child
 // with WNOHANG, kills it after a timeout, and the start-up waits for the
 // whole probe (it runs on its own thread) for a bounded time only. Before
@@ -30,6 +56,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -39,19 +66,39 @@
 #include "native_title.h"
 
 #ifndef RFFDG
-#define RFFDG (1 << 2)
+#define RFFDG (1 << 2)  // copy the fd table
 #endif
 #ifndef RFPROC
-#define RFPROC (1 << 4)
+#define RFPROC (1 << 4)  // create a child process
 #endif
 #ifndef RFMEM
-#define RFMEM (1 << 5)
+#define RFMEM (1 << 5)  // share the address space
+#endif
+#ifndef RFCFDG
+#define RFCFDG (1 << 12)  // give the child a clean (empty) fd table
+#endif
+
+#ifndef MAP_ANON
+#ifdef MAP_ANONYMOUS
+#define MAP_ANON MAP_ANONYMOUS
+#else
+#define MAP_ANON 0x1000
+#endif
 #endif
 
 void ps5_log_printf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 int sceKernelLoadStartModule(const char* path, size_t args, const void* argp, uint32_t flags,
                              void* option, int* result);
 int sceKernelDlsym(int handle, const char* symbol, void** address);
+
+#if PROSPEROWEB_NATIVE_TITLE
+// The real NID import of the game libkernel's rfork_thread (NID bSDxEpGzmUE).
+// The native link binds this to libkernel.sprx (CMakeLists links -lkernel
+// first, and libc.a defines no rfork_thread: only fork/vfork/pdfork, in the
+// syscalls.o the native link drops). check-eboot.py confirms it resolves to a
+// start-up module and leaves no raw syscall instruction in the image.
+extern pid_t rfork_thread(int flags, void* stack, int (*func)(void*), void* arg);
+#endif
 
 typedef pid_t (*fork_fn)(void);
 typedef pid_t (*rfork_thread_fn)(int flags, void* stack, int (*func)(void*), void* arg);
@@ -437,6 +484,213 @@ static int try_method(enum method m, int level) {
   return got > 0;
 }
 
+// ---- Levels 3 and 4: the real rfork_thread NID import ------------------------
+#if PROSPEROWEB_NATIVE_TITLE
+
+enum { kRforkStackSize = 4 * 1024 * 1024 };  // a few MiB; the stack grows down
+enum { kReportMarker = 0x50524F42 };          // 'PROB', the child-ran marker
+
+// Level 3: the child shares the parent's address space (RFMEM), so it reports
+// by writing into this struct (static, always mapped and shared). volatile so
+// the parent's spin-wait re-reads it. No fd is needed (RFCFDG cleared them).
+static volatile struct {
+  int marker;  // kReportMarker once pid/ppid are written
+  int pid;
+  int ppid;
+} g_rfork_report;
+
+// Level 3 child: fill the shared struct, publish the marker last, _exit. It
+// does nothing else (the heap and locks are the parent's, shared).
+static int rfork_child_shared(void* arg) {
+  (void)arg;
+  g_rfork_report.pid = (int)getpid();
+  g_rfork_report.ppid = (int)getppid();
+  __sync_synchronize();  // pid/ppid are visible before the marker
+  g_rfork_report.marker = kReportMarker;
+  _exit(0);
+}
+
+// Level 4 child: its own copy of the address space; write one line to the
+// inherited socket end (arg is the fd), then _exit. snprintf on the private
+// stack is fine here.
+static int rfork_child_copied(void* arg) {
+  const int fd = (int)(intptr_t)arg;
+  char line[96];
+  const int n = snprintf(line, sizeof(line),
+                         "l4 child pid %d ppid %d via rfork_thread(RFPROC|RFFDG)",
+                         (int)getpid(), (int)getppid());
+  write(fd, line, (size_t)(n > 0 ? n : 0));
+  _exit(0);
+}
+
+// Calls the real rfork_thread import once for level 3 or 4, waits for the
+// child's report with a timeout, and SIGKILLs + reaps a child that hangs.
+// boot.txt gets a breadcrumb immediately before and after the call, with the
+// flags, so a panic points at the exact flag combination. Returns 1 when the
+// child reported back. Never blocks the start-up beyond the bounded waits.
+static int rfork_probe(int level) {
+  const int flags = (level == 3) ? (RFPROC | RFCFDG | RFMEM) : (RFPROC | RFFDG);
+  const char* ftxt = (level == 3) ? "RFPROC|RFCFDG|RFMEM" : "RFPROC|RFFDG";
+  char step[160];
+
+  void* stack = mmap(NULL, (size_t)kRforkStackSize, PROT_READ | PROT_WRITE,
+                     MAP_ANON | MAP_PRIVATE, -1, 0);
+  if (stack == MAP_FAILED) {
+    const int err = errno;
+    ps5_log_printf("probe: fork level %d: child stack mmap(%d bytes) FAILED: errno %d %s",
+                   level, kRforkStackSize, err, strerror(err));
+    return 0;
+  }
+  char* stack_top = (char*)stack + kRforkStackSize - 16;  // top-aligned (grows down)
+
+  int pair[2] = {-1, -1};
+  void* arg;
+  int (*child_fn)(void*);
+  if (level == 3) {
+    g_rfork_report.marker = 0;
+    g_rfork_report.pid = 0;
+    g_rfork_report.ppid = 0;
+    __sync_synchronize();
+    arg = NULL;
+    child_fn = rfork_child_shared;
+  } else {
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) {
+      const int err = errno;
+      ps5_log_printf("probe: fork level 4: report socketpair FAILED: errno %d %s", err,
+                     strerror(err));
+      munmap(stack, (size_t)kRforkStackSize);
+      return 0;
+    }
+    arg = (void*)(intptr_t)pair[1];
+    child_fn = rfork_child_copied;
+  }
+
+  ps5_log_printf("probe: fork level %d: calling the real rfork_thread import (NID bSDxEpGzmUE) "
+                 "with %s; parent pid %d uid %d, child stack %p..%p",
+                 level, ftxt, (int)getpid(), (int)getuid(), stack, (void*)stack_top);
+  snprintf(step, sizeof(step), "level %d: about to call rfork_thread(%s)", level, ftxt);
+  crumb(step);
+  const long long t0 = now_ms();
+  const pid_t pid = rfork_thread(flags, stack_top, child_fn, arg);
+  const int launch_errno = pid < 0 ? errno : 0;
+  const long long launch_ms = now_ms() - t0;
+  snprintf(step, sizeof(step), "level %d: rfork_thread(%s) returned %d (errno %d) in %lld ms", level,
+           ftxt, (int)pid, launch_errno, launch_ms);
+  crumb(step);
+
+  if (pair[1] >= 0) {
+    close(pair[1]);  // the parent keeps only its own end
+  }
+  if (pid < 0) {
+    ps5_log_printf("probe: fork level %d: rfork_thread(%s) REFUSED: errno %d %s (%lld ms)", level,
+                   ftxt, launch_errno, strerror(launch_errno), launch_ms);
+    if (pair[0] >= 0) {
+      close(pair[0]);
+    }
+    munmap(stack, (size_t)kRforkStackSize);
+    return 0;
+  }
+  ps5_log_printf("probe: fork level %d: child pid %d created in %lld ms (%s); waiting for its report",
+                 level, (int)pid, launch_ms, ftxt);
+
+  // Wait for the child's report: the shared marker (level 3) or a socket line
+  // (level 4). Never a blocking call; also poll the child with WNOHANG.
+  int observed = 0;
+  int reaped = 0;
+  int status = 0;
+  char line[160] = "";
+  const long long start = now_ms();
+  while (now_ms() - start < kReadTimeoutMs) {
+    if (level == 3) {
+      __sync_synchronize();
+      if (g_rfork_report.marker == kReportMarker) {
+        observed = 1;
+        break;
+      }
+    } else {
+      int err = 0;
+      const ssize_t got = read_now(pair[0], line, sizeof(line), &err);
+      if (got > 0) {
+        observed = 1;
+        break;
+      }
+      if (got == 0) {
+        break;  // the child closed its end without writing
+      }
+    }
+    if (!reaped && waitpid(pid, &status, WNOHANG) == pid) {
+      reaped = 1;
+      if (level == 3) {
+        __sync_synchronize();
+        observed = g_rfork_report.marker == kReportMarker;
+      } else {
+        int err = 0;
+        observed = read_now(pair[0], line, sizeof(line), &err) > 0;
+      }
+      break;
+    }
+    sleep_ms(20);
+  }
+  const long long report_ms = now_ms() - start;
+
+  if (level == 3) {
+    ps5_log_printf("probe: fork level 3: child report %s after %lld ms: marker 0x%x pid %d ppid %d "
+                   "(parent pid %d)",
+                   observed ? "OBSERVED" : "NOT SEEN (timeout)", report_ms, g_rfork_report.marker,
+                   g_rfork_report.pid, g_rfork_report.ppid, (int)getpid());
+  } else {
+    ps5_log_printf("probe: fork level 4: child report %s after %lld ms%s%s%s (parent pid %d)",
+                   observed ? "OBSERVED" : "NOT SEEN (timeout/EOF)", report_ms,
+                   observed ? ": '" : "", observed ? line : "", observed ? "'" : "", (int)getpid());
+  }
+
+  // Reap; SIGKILL a child that will not exit, then reap again.
+  const long long wait_start = now_ms();
+  int killed = 0;
+  int wait_errno = 0;
+  while (!reaped) {
+    const pid_t r = waitpid(pid, &status, WNOHANG);
+    if (r == pid) {
+      reaped = 1;
+      break;
+    }
+    if (r < 0 && errno != EINTR) {
+      wait_errno = errno;
+      break;
+    }
+    const long long waited = now_ms() - wait_start;
+    if (!killed && waited >= kExitTimeoutMs) {
+      killed = 1;
+      crumb("rfork child did not exit, sending SIGKILL");
+      if (kill(pid, SIGKILL) != 0) {
+        const int err = errno;
+        ps5_log_printf("probe: fork level %d: kill(%d, SIGKILL) failed: errno %d %s", level,
+                       (int)pid, err, strerror(err));
+      }
+    }
+    if (waited >= kExitTimeoutMs + kKillTimeoutMs) {
+      break;
+    }
+    sleep_ms(20);
+  }
+  char desc[32] = "";
+  if (reaped) {
+    describe_status(status, desc, sizeof(desc));
+  }
+  ps5_log_printf("probe: fork level %d: waitpid(%d) %s%s%s after %lld ms%s", level, (int)pid,
+                 reaped ? "-> " : "FAILED: ", reaped ? desc : "",
+                 reaped ? "" : (wait_errno ? strerror(wait_errno) : "not reaped (timeout)"),
+                 now_ms() - wait_start, killed ? " (KILLED: it hung)" : "");
+
+  if (pair[0] >= 0) {
+    close(pair[0]);
+  }
+  munmap(stack, (size_t)kRforkStackSize);
+  return observed;
+}
+
+#endif  // PROSPEROWEB_NATIVE_TITLE
+
 static atomic_int g_probe_done;
 
 static void* probe_main(void* arg) {
@@ -456,26 +710,41 @@ static void* probe_main(void* arg) {
   describe_symbol(s[4], sizeof(s[4]), "rfork", rfork, h_rfork);
   ps5_log_printf("probe: fork symbols: %s; %s; %s; %s; %s", s[0], s[1], s[2], s[3], s[4]);
 
-  int works = -1;
-  for (int m = 0; m < kMethods && works < 0; m++) {
-    if (!method_available((enum method)m)) {
-      ps5_log_printf("probe: fork %s: not exported to the title, skipped",
-                     method_name((enum method)m));
-      continue;
-    }
-    if (try_method((enum method)m, 1)) {
-      works = m;
-    }
-  }
-  if (works < 0) {
-    ps5_log_printf("probe: fork RESULT: no method created a child that reported back");
+  if (level >= 3) {
+    // The real NID-linked rfork_thread test (level 3 or 4 exactly, no sweep):
+    // each level is run on its own so a panic points at one flag combination.
+#if PROSPEROWEB_NATIVE_TITLE
+    const int ok = rfork_probe(level);
+    ps5_log_printf("probe: fork level %d RESULT: rfork_thread(%s) %s", level,
+                   level == 3 ? "RFPROC|RFCFDG|RFMEM" : "RFPROC|RFFDG",
+                   ok ? "created a child that reported back" : "did NOT report back (see above)");
+#else
+    ps5_log_printf("probe: fork level %d: the rfork_thread import path is not built "
+                   "(needs the native title); nothing attempted",
+                   level);
+#endif
   } else {
-    ps5_log_printf("probe: fork RESULT: %s creates a child that inherits descriptors",
-                   method_name((enum method)works));
-    if (level >= 2) {
-      ps5_log_printf("probe: fork level 2 RESULT: %s",
-                     try_method((enum method)works, 2) ? "child ran its IPC step (see above)"
-                                                       : "child did NOT report back");
+    int works = -1;
+    for (int m = 0; m < kMethods && works < 0; m++) {
+      if (!method_available((enum method)m)) {
+        ps5_log_printf("probe: fork %s: not exported to the title, skipped",
+                       method_name((enum method)m));
+        continue;
+      }
+      if (try_method((enum method)m, 1)) {
+        works = m;
+      }
+    }
+    if (works < 0) {
+      ps5_log_printf("probe: fork RESULT: no method created a child that reported back");
+    } else {
+      ps5_log_printf("probe: fork RESULT: %s creates a child that inherits descriptors",
+                     method_name((enum method)works));
+      if (level >= 2) {
+        ps5_log_printf("probe: fork level 2 RESULT: %s",
+                       try_method((enum method)works, 2) ? "child ran its IPC step (see above)"
+                                                         : "child did NOT report back");
+      }
     }
   }
   crumb("probe finished");
