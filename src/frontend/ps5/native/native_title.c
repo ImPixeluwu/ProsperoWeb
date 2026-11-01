@@ -101,14 +101,19 @@ int sceKeyboardReadState(int handle, void* state) {
 // ---- the end of main() ---------------------------------------------------------
 //
 // Returning from main() or calling exit() crashes a native title (the
-// ps5-homebrew-ui runtime shims); app_crt.cpp calls this hook first. The
-// title stays alive until the system closes it (the PS button, "Close
-// Game").
+// ps5-homebrew-ui runtime shims), so app_crt.cpp calls this hook first.
+// To leave on Quit without a black screen we ask the system software to
+// close the title and return to the home screen with
+// sceSystemServiceLoadExec("exit", ...), the documented title-exit path.
+// If that call is unavailable or returns, fall back to idling until the
+// system closes the title (the PS button, "Close Game").
+int sceSystemServiceLoadExec(const char* path, char* const argv[]);
 
 __attribute__((noreturn)) void catchReturnFromMain(int status) {
-  native_debug_printf("[prosperoweb] main returned %d; waiting for the system to close the "
-                      "title\n",
-                      status);
+  native_debug_printf("[prosperoweb] main returned %d; returning to the home screen\n", status);
+  fflush(NULL);
+  int rc = sceSystemServiceLoadExec("exit", (char* const*)0);
+  native_debug_printf("[prosperoweb] sceSystemServiceLoadExec(exit) = %d; idling\n", rc);
   fflush(NULL);
   for (;;) {
     sceKernelUsleep(1000000);
