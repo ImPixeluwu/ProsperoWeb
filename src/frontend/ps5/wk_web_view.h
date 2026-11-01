@@ -72,6 +72,24 @@ class WkWebView {
 
   WKViewRef view() const { return view_; }
   WKPageRef page() const { return page_; }
+  const std::string& name() const { return name_; }
+
+  // Add-ons: dynamically replace the content rule lists / extra user scripts
+  // on this view's user content controller (the ad blocker and SponsorBlock).
+  // Both take effect on the next navigation; the manager also run_javascript()s
+  // a live update into the current page where it can.
+  //
+  // set_content_filters removes all previously applied filters and adds the
+  // given ones (compiled WKUserContentFilterRef, owned by the caller).
+  void set_content_filters(const std::vector<WKUserContentFilterRef>& filters);
+  // set_addon_user_scripts re-installs the base user scripts (the bridge and
+  // the ones passed at construction) followed by these extra sources, so a
+  // toggle never drops the EME detector / focus reporter / gamepad bridge.
+  void set_addon_user_scripts(const std::vector<std::string>& sources);
+
+  // Every live content view (all views except the HTML chrome), for the
+  // add-ons manager to apply toggles across tabs.
+  static std::vector<WkWebView*> content_views();
 
   // Accessor for the C-API trampolines (which receive this as clientInfo).
   Callbacks& callbacks() { return cb_; }
@@ -153,6 +171,9 @@ class WkWebView {
   void deliver_bridged(const std::string& batch);
 
   Callbacks cb_;
+  // The bridge shim + the user scripts passed at construction, re-added when
+  // set_addon_user_scripts() rebuilds the script list.
+  std::vector<std::string> base_scripts_;
   WKViewRef view_ = nullptr;
   WKPageRef page_ = nullptr;
   WKUserContentControllerRef content_controller_ = nullptr;

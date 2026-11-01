@@ -408,11 +408,10 @@ WkWebView::WkWebView(WKContextRef context, WKWebsiteDataStoreRef data_store,
                      bool fullscreen_enabled, Callbacks callbacks)
     : cb_(std::move(callbacks)), name_(message_handler_name) {
   content_controller_ = WKUserContentControllerCreate();
-  std::vector<std::string> scripts;
-  scripts.reserve(user_scripts.size() + 1);
-  scripts.push_back(bridge_script(message_handler_name));  // before any user of it
-  scripts.insert(scripts.end(), user_scripts.begin(), user_scripts.end());
-  for (const auto& src : scripts) {
+  base_scripts_.reserve(user_scripts.size() + 1);
+  base_scripts_.push_back(bridge_script(message_handler_name));  // before any user of it
+  base_scripts_.insert(base_scripts_.end(), user_scripts.begin(), user_scripts.end());
+  for (const auto& src : base_scripts_) {
     auto s = make_wk_string(src);
     WKUserScriptRef script = WKUserScriptCreateWithSource(
         s.get(), kWKInjectAtDocumentStart, /*forMainFrameOnly=*/false);
@@ -520,6 +519,52 @@ WkWebView::~WkWebView() {
   }
   if (content_controller_) {
     WKRelease(content_controller_);
+  }
+}
+
+// --- add-ons: content filters and extra user scripts ------------------------
+
+std::vector<WkWebView*> WkWebView::content_views() {
+  std::vector<WkWebView*> out;
+  for (WkWebView* v : all_views()) {
+    if (v->name_ != "chrome") {
+      out.push_back(v);
+    }
+  }
+  return out;
+}
+
+void WkWebView::set_content_filters(const std::vector<WKUserContentFilterRef>& filters) {
+  if (!content_controller_) {
+    return;
+  }
+  WKUserContentControllerRemoveAllUserContentFilters(content_controller_);
+  for (WKUserContentFilterRef f : filters) {
+    if (f) {
+      WKUserContentControllerAddUserContentFilter(content_controller_, f);
+    }
+  }
+  log_printf("view %s: applied %zu content filter(s)", name_.c_str(), filters.size());
+}
+
+void WkWebView::set_addon_user_scripts(const std::vector<std::string>& sources) {
+  if (!content_controller_) {
+    return;
+  }
+  // RemoveAllUserScripts drops everything, so re-add the base scripts first.
+  WKUserContentControllerRemoveAllUserScripts(content_controller_);
+  auto add = [&](const std::string& src) {
+    auto s = make_wk_string(src);
+    WKUserScriptRef script = WKUserScriptCreateWithSource(
+        s.get(), kWKInjectAtDocumentStart, /*forMainFrameOnly=*/false);
+    WKUserContentControllerAddUserScript(content_controller_, script);
+    WKRelease(script);
+  };
+  for (const auto& src : base_scripts_) {
+    add(src);
+  }
+  for (const auto& src : sources) {
+    add(src);
   }
 }
 

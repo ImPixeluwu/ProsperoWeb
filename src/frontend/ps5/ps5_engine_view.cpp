@@ -270,8 +270,14 @@ Ps5EngineFactory::~Ps5EngineFactory() {
 
 std::unique_ptr<shell::EngineView> Ps5EngineFactory::create(
     shell::EngineViewClient& client) {
-  return std::make_unique<Ps5EngineView>(client, context_, data_store_, user_scripts_,
-                                         user_agent_);
+  auto view = std::make_unique<Ps5EngineView>(client, context_, data_store_, user_scripts_,
+                                              user_agent_);
+  // Apply the current add-ons (content filters, SponsorBlock) to the new view
+  // so a tab opened after startup or a toggle is covered too.
+  if (on_view_created_) {
+    on_view_created_(view->web());
+  }
+  return view;
 }
 
 }  // namespace prosperoweb::frontend

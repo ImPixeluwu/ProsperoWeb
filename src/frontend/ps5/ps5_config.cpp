@@ -46,8 +46,22 @@ Ps5Config Ps5Config::load(core::Storage& storage) {
   if (auto it = doc.find("height"); it != doc.end() && it->is_number_integer()) {
     cfg.height = it->get<int>();
   }
+  cfg.addons = core::AddonsConfig::from_config_root(doc);
 
   return cfg;
+}
+
+bool Ps5Config::save_addons(core::Storage& storage, const core::AddonsConfig& addons) {
+  // Preserve every other key in config.json: read, merge, write back.
+  nlohmann::json doc = nlohmann::json::object();
+  if (auto raw = storage.read("config")) {
+    nlohmann::json parsed = nlohmann::json::parse(*raw, nullptr, /*allow_exceptions=*/false);
+    if (parsed.is_object()) {
+      doc = std::move(parsed);
+    }
+  }
+  doc["addons"] = addons.to_json();
+  return storage.write("config", doc.dump(2));
 }
 
 }  // namespace prosperoweb::frontend

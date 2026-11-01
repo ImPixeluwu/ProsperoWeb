@@ -289,6 +289,24 @@ int Ps5App::run() {
         }
       });
 
+  // Add-ons: the bundled baseline lives next to the chrome (title dir or
+  // /data/prosperoweb/addons); the writable cache and recompiled rulesets go
+  // in the profile. Apply to every content view as it is created.
+  {
+    std::string addons_parent = chrome_dir;
+    if (auto slash = addons_parent.find_last_of('/'); slash != std::string::npos) {
+      addons_parent = addons_parent.substr(0, slash);
+    }
+    std::string addons_dir = addons_parent + "/addons";
+    if (access(ui_view(addons_dir + "/adblock-ads.json").c_str(), R_OK) != 0) {
+      addons_dir = std::string(kBaseDir) + "/addons";
+    }
+    const std::string addons_cache = std::string(kBaseDir) + "/addons/cache";
+    log_printf("addons: baseline %s, cache %s", addons_dir.c_str(), addons_cache.c_str());
+    addons_ = std::make_unique<Ps5Addons>(addons_dir, addons_cache, config_.addons);
+    factory_->set_on_view_created([this](WkWebView& w) { addons_->apply_to_view(w); });
+  }
+
   shell::ShellController::Config cfg;
   cfg.width = width_;
   cfg.height = height_;
@@ -299,6 +317,13 @@ int Ps5App::run() {
   cfg.user_agent = config_.user_agent;
   cfg.language = config_.language;
   cfg.diagnostics_url = "file://" + chrome_dir + "/diag.html";
+  cfg.addons = config_.addons;
+  cfg.addons_backend = addons_.get();
+  cfg.on_addons_changed = [this](const core::AddonsConfig& a) {
+    if (!Ps5Config::save_addons(*storage_, a)) {
+      log_line("addons: failed to persist config.json");
+    }
+  };
   if (use_system_ime(config_.osk)) {
     ime_input_ = std::make_unique<Ps5ImeTextInput>();
     cfg.text_input = ime_input_.get();
@@ -311,6 +336,11 @@ int Ps5App::run() {
   log_line("shell: starting");
   controller_->start();
   log_line("shell: started");
+  // Now that the first content view exists, compile/apply the add-ons and
+  // wire the refresh-done callback back into the shell menu.
+  addons_->set_on_filters_updated(
+      [this](std::int64_t when) { controller_->on_filters_updated(when); });
+  addons_->start();
   // The hardware decoder only now, and off this thread (ps5_hwdec.h).
   hwdec_startup_done();
 
@@ -580,6 +610,9 @@ void Ps5App::frame() {
   poll_diagnostic_requests(now);
   // Page and chrome script messages (see WkWebView::poll_all()).
   WkWebView::poll_all();
+  if (addons_) {
+    addons_->pump();  // finish a background filter-list refresh, daily cadence
+  }
   controller_->tick(dt);
   composite_and_present();
   collect_and_log_stats(now);

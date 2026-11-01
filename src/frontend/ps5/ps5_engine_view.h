@@ -3,6 +3,7 @@
 // EngineView / EngineFactory implemented on the WebKit PlayStation C API.
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -68,11 +69,18 @@ class Ps5EngineFactory final : public shell::EngineFactory {
   WKContextRef context() const { return context_; }
   WKWebsiteDataStoreRef data_store() const { return data_store_; }
 
+  // Invoked for every content view created, so the add-ons manager can apply
+  // the current content filters / user scripts to it.
+  void set_on_view_created(std::function<void(WkWebView&)> cb) {
+    on_view_created_ = std::move(cb);
+  }
+
  private:
   WKContextRef context_ = nullptr;
   WKWebsiteDataStoreRef data_store_ = nullptr;
   std::vector<std::string> user_scripts_;
   std::string user_agent_;
+  std::function<void(WkWebView&)> on_view_created_;
 };
 
 }  // namespace prosperoweb::frontend

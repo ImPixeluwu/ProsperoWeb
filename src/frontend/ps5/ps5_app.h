@@ -21,6 +21,7 @@
 #include "pointer.h"
 #include "splash.h"
 #include "prosperoweb/shell/shell_controller.h"
+#include "ps5_addons.h"
 #include "ps5_audio_server.h"
 #include "ps5_chrome_ui.h"
 #include "ps5_config.h"
@@ -103,6 +104,9 @@ class Ps5App {
   Ps5Config config_;
   std::unique_ptr<core::FileStorage> storage_;
   std::unique_ptr<Ps5EngineFactory> factory_;
+  // Declared before controller_: the controller holds it as its add-ons
+  // backend, so it must outlive the controller.
+  std::unique_ptr<Ps5Addons> addons_;
   std::unique_ptr<Ps5ChromeUi> chrome_;
   // The system keyboard dialog (nullptr with PROSPEROWEB_OSK=builtin); the
   // controller holds a pointer to it, so it is declared (and outlives) first.

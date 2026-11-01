@@ -285,6 +285,9 @@ if [[ "${NATIVE_SKIP_DATA:-0}" != 1 && -d "${DIST}" ]]; then
     cp -a "${DIST}/chrome" "${APP}/data/chrome"
     cp -a "${DIST}/fonts"  "${APP}/data/fonts"
     cp -a "${DIST}/LICENSES" "${APP}/data/LICENSES"
+    # Add-ons baseline (ad-block rulesets + sponsorblock.js); the browser
+    # recompiles/refreshes into the writable profile at runtime.
+    [[ -d "${DIST}/addons" ]] && cp -a "${DIST}/addons" "${APP}/data/addons"
     [[ -f "${DIST}/cacert.pem" ]] && cp -- "${DIST}/cacert.pem" "${APP}/data/cacert.pem"
     # The install folder is not known here: fontconfig finds the fonts next
     # to fonts.conf (prefix="relative"), its cache stays in the profile.

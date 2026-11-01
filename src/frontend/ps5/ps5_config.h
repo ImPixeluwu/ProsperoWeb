@@ -5,6 +5,8 @@
 
 #include <string>
 
+#include "prosperoweb/core/addons_config.h"
+
 namespace prosperoweb::core {
 class Storage;
 }
@@ -30,10 +32,16 @@ struct Ps5Config {
   std::string osk = "system";
   int width = 1920;
   int height = 1080;
+  // Bundled add-ons (ad blocker, SponsorBlock); defaults when absent.
+  core::AddonsConfig addons;
 
   // Reads "config" from storage (JSON). Missing or invalid keys keep the
   // defaults. Never throws.
   static Ps5Config load(core::Storage& storage);
+
+  // Writes the "addons" object into config.json, preserving every other key
+  // already in the file. Returns false on write failure. Never throws.
+  static bool save_addons(core::Storage& storage, const core::AddonsConfig& addons);
 };
 
 }  // namespace prosperoweb::frontend

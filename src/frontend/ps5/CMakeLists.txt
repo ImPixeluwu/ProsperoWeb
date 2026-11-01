@@ -66,6 +66,7 @@ pkg_check_modules(SDL2 REQUIRED sdl2)
 
 set(_frontend_sources
   main.cpp
+  ps5_addons.cpp
   ps5_app.cpp
   ps5_audio_server.cpp
   ps5_chrome_ui.cpp
@@ -102,6 +103,7 @@ target_include_directories(prosperoweb_frontend_ps5_objs SYSTEM PRIVATE
   "${_wk_fwd}"
   "${PS5_WEBKIT_PREFIX}/include/wpe-1.0"
   "${PS5_WEBKIT_PREFIX}/include/freetype2"  # ps5_splash_text.cpp; libfreetype.a is on WebKit's link line
+  "${PS5_PAYLOAD_SDK}/target/user/homebrew/include"  # ps5_addons.cpp uses libcurl
   "${SDL2_INCLUDE_DIRS}"
   "${PROSPEROWEB_THIRD_PARTY_DIR}")
 # prosperoweb::core / ::shell provide the public headers the frontend consumes.
@@ -172,6 +174,7 @@ if(PROSPEROWEB_NATIVE_TITLE_TARGET)
     "${_wk_fwd}"
     "${PS5_WEBKIT_PREFIX}/include/wpe-1.0"
     "${PS5_WEBKIT_PREFIX}/include/freetype2"
+    "${PS5_PAYLOAD_SDK}/target/user/homebrew/include"  # ps5_addons.cpp uses libcurl
     "${SDL2_INCLUDE_DIRS}"
     "${PROSPEROWEB_THIRD_PARTY_DIR}")
   target_link_libraries(prosperoweb_frontend_ps5_native_objs PRIVATE prosperoweb::core
