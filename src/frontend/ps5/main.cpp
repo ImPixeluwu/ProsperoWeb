@@ -46,6 +46,8 @@
 #include <cstdio>
 #include <thread>
 
+#include <pthread.h>
+
 #include "native/native_title.h"
 #include "ps5_hwdec.h"
 #include "title_paths.h"
@@ -226,6 +228,40 @@ void redirect_stdio() {
 // launcher completes each child's launch on that loop.
 std::atomic<long long> g_heartbeat_posted{0};
 std::atomic<long long> g_heartbeat_ran{0};
+pthread_t g_main_thread;
+std::atomic<int> g_heartbeat_where{0};  // 1 main thread, 2 the posting thread, 3 another
+
+// Threads and thread-local storage as WTF relies on them (isMainThread is
+// pthread_equal(pthread_self(), main); RunLoop::currentSingleton is
+// thread-local): a second thread must see its own identity and storage.
+thread_local int t_tls_probe = 0;
+
+void thread_selftest() {
+  using prosperoweb::frontend::log_printf;
+  pthread_key_t key;
+  const bool key_ok = pthread_key_create(&key, nullptr) == 0;
+  if (key_ok) {
+    pthread_setspecific(key, reinterpret_cast<void*>(0x11));
+  }
+  t_tls_probe = 1;
+  pthread_t other{};
+  bool same_self = true;
+  int other_tls = -1;
+  void* other_key = reinterpret_cast<void*>(-1);
+  std::thread probe([&] {
+    other = pthread_self();
+    same_self = pthread_equal(other, g_main_thread) != 0;
+    other_tls = t_tls_probe;
+    if (key_ok) {
+      other_key = pthread_getspecific(key);
+    }
+  });
+  probe.join();
+  log_printf("threads: second thread pthread_self %s main; thread_local %s (%d); "
+             "pthread_getspecific %s (%p)",
+             same_self ? "EQUALS" : "differs from", other_tls == 0 ? "separate" : "SHARED",
+             other_tls, other_key == nullptr ? "separate" : "SHARED", other_key);
+}
 
 long long now_ms() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -244,12 +280,29 @@ void start_main_loop_watchdog() {
             "main loop: heartbeat posted %lld ms ago has not run: the main run loop is blocked",
             now_ms() - posted);
       } else if (posted) {
-        prosperoweb::frontend::log_printf("main loop: heartbeat ran %lld ms after posting",
-                                          ran - posted);
+        const int where = g_heartbeat_where.load();
+        prosperoweb::frontend::log_printf(
+            "main loop: heartbeat (posted from the watchdog thread) ran %lld ms after posting, "
+            "on %s",
+            ran - posted,
+            where == 1   ? "the main thread"
+            : where == 2 ? "the POSTING thread (inline: isMainThread is wrong there)"
+                         : "ANOTHER thread");
       }
       if (!posted || ran >= posted) {
         g_heartbeat_posted.store(now_ms());
-        WKRunLoopCallOnMainThread([](void*) { g_heartbeat_ran.store(now_ms()); }, nullptr);
+        static thread_local int poster_marker = 0;
+        static int* poster = nullptr;
+        poster = &poster_marker;
+        WKRunLoopCallOnMainThread(
+            [](void*) {
+              const int where = pthread_equal(pthread_self(), g_main_thread)
+                                    ? 1
+                                    : (&poster_marker == poster ? 2 : 3);
+              g_heartbeat_where.store(where);
+              g_heartbeat_ran.store(now_ms());
+            },
+            nullptr);
       }
       std::this_thread::sleep_for(std::chrono::seconds(5));
     }
@@ -283,6 +336,8 @@ int main(int argc, char** argv) {
   native_boot_say("[prosperoweb] main: log.txt open\n");
   log_printf("main: native title %s pid=%d argv0=%s", PROSPEROWEB_TITLE_ID,
              static_cast<int>(getpid()), argc > 0 && argv[0] ? argv[0] : "(none)");
+  g_main_thread = pthread_self();
+  thread_selftest();
   // First, before any other thread and before any helper is started: the
   // hardware decoder's module and compute queue (VLC for PS5's order). Its
   // switches may be in config.json, which is applied later.
