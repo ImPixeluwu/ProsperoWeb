@@ -1,0 +1,25 @@
+Subject: WebKit: fix NetworkCache::Data construction from an 8-bit source span
+
+ENABLE_CONTENT_EXTENSIONS was off on the PlayStation port partly because
+APIContentRuleListStore.cpp does not compile: Data(sourceJSON.span8())
+is an ambiguous functional-style cast from std::span<const Latin1Character>
+(Latin1Character is not uint8_t on this toolchain) between the
+Vector<uint8_t>&& and the CURL Variant<...> constructors. The intended
+constructor is Data(std::span<const uint8_t>); reinterpret the 8-bit span to
+bytes with asBytes(), exactly as the sibling 16-bit branch already does.
+Needed for ENABLE_CONTENT_EXTENSIONS on the PS5 build (the ad blocker's
+WKContentRuleList).
+
+diff --git a/Source/WebKit/UIProcess/API/APIContentRuleListStore.cpp b/Source/WebKit/UIProcess/API/APIContentRuleListStore.cpp
+index 061e4605a..2a9698bec 100644
+--- a/Source/WebKit/UIProcess/API/APIContentRuleListStore.cpp
++++ b/Source/WebKit/UIProcess/API/APIContentRuleListStore.cpp
+@@ -339,7 +339,7 @@ static std::expected<MappedData, std::error_code> compiledToFile(WTF::String&& j
+             writeToFile(sourceJSON.is8Bit());
+             m_sourceWritten += sizeof(bool);
+             if (sourceJSON.is8Bit()) {
+-                writeToFile(WebKit::NetworkCache::Data(sourceJSON.span8()));
++                writeToFile(WebKit::NetworkCache::Data(asBytes(sourceJSON.span8())));
+                 m_sourceWritten += sourceJSON.length();
+             } else {
+                 writeToFile(WebKit::NetworkCache::Data(asBytes(sourceJSON.span16())));
