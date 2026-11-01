@@ -50,6 +50,13 @@ std::string web_domain(std::string d) {
   if (d.empty()) {
     return d;
   }
+  // WebKit rejects the whole list if an if-domain/unless-domain entry is not
+  // lowercase ASCII (ContentExtensionError::JSONDomainNotLowerCaseASCII).
+  for (char& c : d) {
+    if (c >= 'A' && c <= 'Z') {
+      c = static_cast<char>(c - 'A' + 'a');
+    }
+  }
   return "*" + d;
 }
 

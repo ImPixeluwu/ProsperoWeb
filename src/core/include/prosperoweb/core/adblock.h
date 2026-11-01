@@ -21,10 +21,11 @@
 namespace prosperoweb::core::adblock {
 
 struct ConvertOptions {
-  // WKContentRuleList rejects very large lists; Safari's documented ceiling
-  // has been ~50k rules per compiled list. Rules past this cap are dropped
-  // (counted in ConvertStats::dropped_cap) rather than failing the compile.
-  std::size_t max_rules = 50000;
+  // WebKit's content-extension parser rejects a list over maxRuleCount =
+  // 150000 rules (WebCore ContentExtensionParser.cpp). Rules past this cap
+  // are dropped (counted in ConvertStats::dropped_cap) rather than failing
+  // the whole compile.
+  std::size_t max_rules = 150000;
   // Emit css-display-none rules for `##selector` element-hiding filters.
   bool include_element_hiding = true;
 };

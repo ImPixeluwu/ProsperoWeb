@@ -34,6 +34,11 @@ add_subdirectory(src/ps5/video)
 add_subdirectory(src/ps5/cpu)
 add_subdirectory(src/chrome-ui)
 
+# Host-only build tool: the ad-block list -> rule-list converter.
+if(NOT CMAKE_CROSSCOMPILING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/addons_convert/CMakeLists.txt")
+  add_subdirectory(tools/addons_convert)
+endif()
+
 if(PROSPEROWEB_FRONTEND STREQUAL "host-gtk")
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/frontend/host-gtk/CMakeLists.txt")
     add_subdirectory(src/frontend/host-gtk)

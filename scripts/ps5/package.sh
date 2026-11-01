@@ -8,6 +8,7 @@
 #     chrome/                             HTML chrome (src/chrome-ui)
 #     cacert.pem                          curl's CA bundle (MPL-2.0)
 #     fonts/                              Noto, Liberation, DejaVu + fonts.conf (FONTCONFIG_FILE)
+#     addons/                             ad-block rulesets + sponsorblock.js (first-run baseline)
 #     config.json.sample                  copy to config.json to override defaults
 #     LICENSES/                           GPL-3.0 (ProsperoWeb), MPL-2.0 notice (cacert),
 #                                         font licenses
@@ -67,7 +68,7 @@ download "${CACERT_URL}.sha256" cacert.pem.sha256
 
 # --- Assemble. dist/ is generated output, rebuilt from scratch. -------------
 rm -rf -- "${OUT}" "${TILE}"
-mkdir -p "${OUT}/chrome" "${OUT}/fonts" "${OUT}/LICENSES" "${TILE}/sce_sys"
+mkdir -p "${OUT}/chrome" "${OUT}/fonts" "${OUT}/addons" "${OUT}/LICENSES" "${TILE}/sce_sys"
 
 # elfldr and the spawner only need the program headers, the section headers
 # and the SHT_RELA sections, so debug info can go. The symbol table stays
@@ -78,6 +79,11 @@ cp -- "${ROOT}"/src/chrome-ui/*.html "${ROOT}"/src/chrome-ui/*.css "${ROOT}"/src
 cp -- "${DL}/cacert.pem" "${OUT}/cacert.pem"
 # Fonts, their licenses and fonts.conf (pointing at ${INSTALL_DIR}/fonts).
 "${ROOT}/scripts/ps5/fonts/stage-fonts.sh" "${OUT}/fonts" "${OUT}/LICENSES" "${INSTALL_DIR}"
+# Add-ons: the bundled ad-block rulesets (EasyList/EasyPrivacy and the cookie
+# list), the SponsorBlock user script and their attributions. This is the
+# first-run / offline baseline; the browser refetches and recompiles on the
+# console (see docs). Uses tools/addons_convert via core::adblock.
+"${ROOT}/scripts/ps5/addons/stage-addons.sh" "${OUT}/addons" "${OUT}/LICENSES" "${INSTALL_DIR}"
 cp -- "${ROOT}/LICENSE" "${OUT}/LICENSES/GPL-3.0-or-later.txt"
 
 cat > "${OUT}/LICENSES/cacert-MPL-2.0.txt" <<'EOF'
@@ -105,6 +111,10 @@ Noto-Color-Emoji-OFL-1.1.txt, Noto-Sans-CJK-OFL-1.1.txt), Liberation
 Sans, Serif and Mono (SIL OFL 1.1: Liberation-fonts-OFL-1.1.txt), DejaVu
 (DejaVu-fonts.txt). The fonts are unmodified.
 CA bundle: MPL-2.0 (cacert-MPL-2.0.txt).
+Ad-block filter lists (EasyList, EasyPrivacy, EasyList Cookie List) and the
+bundled SponsorBlock user script: see filter-lists.txt. The ad blocker is
+not uBlock Origin and the SponsorBlock script is not the SponsorBlock
+extension; both are independent implementations using the public lists/API.
 EOF
 
 # Defaults from src/frontend/ps5/ps5_config.h; config.json overrides them.
@@ -114,7 +124,11 @@ cat > "${OUT}/config.json.sample" <<EOF
   "language": "en",
   "chrome_dir": "${INSTALL_DIR}/chrome",
   "width": 1920,
-  "height": 1080
+  "height": 1080,
+  "addons": {
+    "adblock": { "enabled": true, "cookie_banners": false, "auto_update": true, "last_updated": 0 },
+    "sponsorblock": { "enabled": false, "categories": ["sponsor"] }
+  }
 }
 EOF
 

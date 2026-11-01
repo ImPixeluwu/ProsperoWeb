@@ -1,0 +1,25 @@
+# Ad-block filter lists bundled into dist/prosperoweb/addons by
+# scripts/ps5/addons/stage-addons.sh.
+#
+#   kind  name              sha256  url
+#
+# kind: ads      part of the ads+privacy ruleset (always active when the ad
+#                blocker is on): compiled into addons/adblock-ads.json
+#       cookie   the cookie-banner ruleset (active only when the "Block cookie
+#                banners" sub-toggle is on): compiled into addons/adblock-cookie.json
+#
+# These are LIVE, frequently-updated lists, so the sha256 pins a point-in-time
+# SNAPSHOT: the bundled baseline shipped with the browser. The on-device
+# updater (ps5_addons.cpp) ignores this sha and refetches the same URLs fresh,
+# recompiling with the same converter (tools/addons_convert / core::adblock).
+#
+# Downloaded text is untrusted data: it is only parsed by the converter, never
+# executed. To refresh the snapshot after upstream changes, re-download and
+# replace the sha256 here (stage-addons.sh verifies it on every build).
+#
+# Snapshot pinned 2026-11-01 (EasyList version 202611011700).
+
+ads easylist.txt c016bee3646cecf6072ff67d9c687d4adf053d6e2df3e810dcb08d2166184f24 https://easylist.to/easylist/easylist.txt
+ads easyprivacy.txt a1a90f9aa4afd4f767ba1fb11613d128cf71af725c0d32ae88b1baea759ce8f7 https://easylist.to/easylist/easyprivacy.txt
+
+cookie fanboy-cookiemonster.txt 38e92c99161d6a4822386fd23c5ef11823be4a0b2a0899ccbf223d548f5ae8ea https://secure.fanboy.co.nz/fanboy-cookiemonster.txt
