@@ -61,13 +61,20 @@ dispatched and how long they waited after being received (median/p90 by
 bucket, max), and the NetworkProcess how many resource loads started,
 finished and failed, plus the first 20 failures.
 
+A SharedMemoryHandle copy takes the source's descriptor when the native
+title cannot duplicate it (console run 36: TransferString copies its handle
+while encoding; the History menu's script went out with an invalid
+attachment and the WebProcess dropped the connection). The last message
+sent is kept for the shell's freeze watchdog (ps5IpcLastSend), and the UI
+logs the first out-of-line bodies it sends.
+
 Also: Connection::platformPrepareForOpen() opens the connection even when
 the socket cannot be made non-blocking (logged). The PlayStation
 SocketMonitor waits with select() before it reads, so a blocking socket
 still works, while refusing to open left the child waiting forever (console
 run 23, where fcntl on the socket was refused).
 diff --git a/Source/WebCore/platform/unix/SharedMemoryUnix.cpp b/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
-index 16eb9a0de..e6d1965e4 100644
+index 16eb9a0de..628e040bb 100644
 --- a/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
 +++ b/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
 @@ -27,11 +27,30 @@
@@ -101,7 +108,25 @@ index 16eb9a0de..e6d1965e4 100644
  #include <stdlib.h>
  #include <sys/mman.h>
  #include <sys/stat.h>
-@@ -119,8 +138,63 @@ static UnixFileDescriptor createSharedMemory()
+@@ -56,6 +75,17 @@ SharedMemoryHandle::SharedMemoryHandle(const SharedMemoryHandle& handle)
+ {
+     m_handle = handle.m_handle.duplicate();
+     m_size = handle.m_size;
++#if defined(PS5_HOMEBREW)
++    // The native title may not duplicate a descriptor (dup() is EPERM). A
++    // copy is made to be sent (TransferString::ipcData copies its handle
++    // while the message is encoded, console run 36: the script for the
++    // History menu went out with an invalid attachment and the WebProcess
++    // dropped the connection): take the source's descriptor instead.
++    if (!m_handle && handle.m_handle) {
++        PS5_TRACE_SOME_LOG(handleCopySteals, "webkit: SharedMemoryHandle copy: duplicate refused (errno %d); taking the source's descriptor %d (%zu bytes)", errno, handle.m_handle.value(), static_cast<size_t>(m_size));
++        m_handle = WTF::move(const_cast<SharedMemoryHandle&>(handle).m_handle);
++    }
++#endif
+ }
+ 
+ UnixFileDescriptor SharedMemoryHandle::releaseHandle()
+@@ -119,8 +149,63 @@ static UnixFileDescriptor createSharedMemory()
      return UnixFileDescriptor { fileDescriptor, UnixFileDescriptor::Adopt };
  }
  
@@ -165,7 +190,7 @@ index 16eb9a0de..e6d1965e4 100644
      auto fileDescriptor = createSharedMemory();
      if (!fileDescriptor) {
          SAFE_WTFLOGALWAYS("Failed to create shared memory: %s", safeStrerror(errno));
-@@ -141,6 +215,7 @@ RefPtr<SharedMemory> SharedMemory::allocate(size_t size)
+@@ -141,6 +226,7 @@ RefPtr<SharedMemory> SharedMemory::allocate(size_t size)
      instance->m_fileDescriptor = WTF::move(fileDescriptor);
      instance->m_size = size;
      return instance;
@@ -173,7 +198,7 @@ index 16eb9a0de..e6d1965e4 100644
  }
  
  RefPtr<SharedMemory> SharedMemory::map(Handle&& handle, Protection protection, CopyOnWrite copyOnWrite)
-@@ -150,8 +225,10 @@ RefPtr<SharedMemory> SharedMemory::map(Handle&& handle, Protection protection, C
+@@ -150,8 +236,10 @@ RefPtr<SharedMemory> SharedMemory::map(Handle&& handle, Protection protection, C
      ASSERT_UNUSED(copyOnWrite, copyOnWrite == CopyOnWrite::No);
  
      void* data = mmap(0, handle.size(), accessModeMMap(protection), MAP_SHARED, handle.m_handle.value(), 0);
@@ -185,7 +210,7 @@ index 16eb9a0de..e6d1965e4 100644
  
      RefPtr<SharedMemory> instance = adoptRef(new SharedMemory());
      instance->m_data = data;
-@@ -186,6 +263,18 @@ auto SharedMemory::createHandle(Protection) -> std::optional<Handle>
+@@ -186,6 +274,18 @@ auto SharedMemory::createHandle(Protection) -> std::optional<Handle>
      // See https://bugs.webkit.org/show_bug.cgi?id=131542.
  
      UnixFileDescriptor duplicate { m_fileDescriptor.value(), UnixFileDescriptor::Duplicate };
@@ -385,10 +410,10 @@ index b3b800c4a..a9bef7e93 100644
              storageSession->setCookieDatabase(makeUniqueRef<CookieJarDB>(parameters.cookiePersistentStorageFile));
          storageSession->setProxySettings(parameters.proxySettings);
 diff --git a/Source/WebKit/Platform/IPC/Connection.cpp b/Source/WebKit/Platform/IPC/Connection.cpp
-index 88ca5b968..bd5b1f745 100644
+index 88ca5b968..b3e52e705 100644
 --- a/Source/WebKit/Platform/IPC/Connection.cpp
 +++ b/Source/WebKit/Platform/IPC/Connection.cpp
-@@ -26,6 +26,103 @@
+@@ -26,6 +26,117 @@
  #include "config.h"
  #include "Connection.h"
  
@@ -414,6 +439,20 @@ index 88ca5b968..bd5b1f745 100644
 +    return fd >= 0 && fd < 256 && ++table[fd] <= 400;
 +}
 +}
++// The last message this process sent and when (for a freeze watchdog in
++// the shell: ps5IpcLastSend).
++static std::atomic<const char*> ps5LastSendName { nullptr };
++static std::atomic<int> ps5LastSendFd { -1 };
++static std::atomic<long long> ps5LastSendMs { 0 };
++extern "C" const char* ps5IpcLastSend(int* fd, long long* atMs)
++{
++    if (fd)
++        *fd = ps5LastSendFd.load();
++    if (atMs)
++        *atMs = ps5LastSendMs.load();
++    return ps5LastSendName.load();
++}
++
 +extern "C" double ps5MonotonicMs()
 +{
 +    timespec ts { };
@@ -492,18 +531,21 @@ index 88ca5b968..bd5b1f745 100644
  #include "Encoder.h"
  #include "GeneratedSerializers.h"
  #include "Logging.h"
-@@ -601,6 +698,10 @@ Error Connection::sendMessage(UniqueRef<Encoder>&& encoder, OptionSet<SendOption
+@@ -601,6 +712,13 @@ Error Connection::sendMessage(UniqueRef<Encoder>&& encoder, OptionSet<SendOption
  
  Error Connection::sendMessageImpl(UniqueRef<Encoder>&& encoder, OptionSet<SendOption> sendOptions, std::optional<Thread::QOS> qos)
  {
 +#if defined(PS5_HOMEBREW)
++    ps5LastSendName.store(description(encoder->messageName()).characters());
++    ps5LastSendFd.store(PS5_IPC_FD());
++    ps5LastSendMs.store(static_cast<long long>(ps5MonotonicMs()));
 +    if (ps5TraceMessage(ps5SentPerFd, PS5_IPC_FD()))
 +        PS5_TRACE("webkit: ipc fd %d send %s%s%s t=%.3f", PS5_IPC_FD(), description(encoder->messageName()).characters(), encoder->isSyncMessage() ? " (sync)" : "", isValid() ? "" : " INVALID CONNECTION", ps5MonotonicMs());
 +#endif
      if (!isValid())
          return Error::InvalidConnection;
  
-@@ -778,6 +879,9 @@ static bool isWaitedForMessage(MessageName messageName, uint64_t destinationID,
+@@ -778,6 +896,9 @@ static bool isWaitedForMessage(MessageName messageName, uint64_t destinationID,
  
  auto Connection::waitForMessage(MessageName messageName, uint64_t destinationID, Timeout timeout, OptionSet<WaitForOption> waitForOptions) -> DecoderOrError
  {
@@ -513,7 +555,7 @@ index 88ca5b968..bd5b1f745 100644
      if (!isValid())
          return makeUnexpected(Error::InvalidConnection);
  
-@@ -1025,6 +1129,7 @@ auto Connection::waitForSyncReply(SyncRequestID syncRequestID, MessageName messa
+@@ -1025,6 +1146,7 @@ auto Connection::waitForSyncReply(SyncRequestID syncRequestID, MessageName messa
  #else
      RELEASE_LOG_ERROR(IPC, "Connection::waitForSyncReply: Timed-out while waiting for reply for %s, id=%" PRIu64, description(messageName).characters(), syncRequestID.toUInt64());
  #endif
@@ -521,7 +563,7 @@ index 88ca5b968..bd5b1f745 100644
  
      return makeUnexpected(Error::Timeout);
  }
-@@ -1449,6 +1554,11 @@ void Connection::enqueueIncomingMessage(UniqueRef<Decoder> incomingMessage)
+@@ -1449,6 +1571,11 @@ void Connection::enqueueIncomingMessage(UniqueRef<Decoder> incomingMessage)
  
  void Connection::dispatchMessage(Decoder& decoder)
  {
@@ -742,13 +784,14 @@ index 0031d7fee..63b19044e 100644
      RELEASE_ASSERT(m_outgoingHardwareBuffers.isEmpty());
      m_outgoingHardwareBuffers = WTF::move(hardwareBuffers);
 diff --git a/Source/WebKit/Platform/IPC/unix/UnixMessage.h b/Source/WebKit/Platform/IPC/unix/UnixMessage.h
-index 10932fbbf..12c333be9 100644
+index 10932fbbf..e6e2c13ee 100644
 --- a/Source/WebKit/Platform/IPC/unix/UnixMessage.h
 +++ b/Source/WebKit/Platform/IPC/unix/UnixMessage.h
-@@ -27,6 +27,11 @@
+@@ -27,6 +27,12 @@
  
  #pragma once
  
++#include <atomic>
 +#include <fcntl.h>
 +#include <sys/mman.h>
 +#include <sys/stat.h>
@@ -757,7 +800,7 @@ index 10932fbbf..12c333be9 100644
  #include "Attachment.h"
  #include "Encoder.h"
  #include <WebCore/SharedMemory.h>
-@@ -147,13 +152,38 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
+@@ -147,13 +153,44 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
  
      bool setBodyOutOfLine()
      {
@@ -775,6 +818,12 @@ index 10932fbbf..12c333be9 100644
 +                    munmap(data, length);
 +                    m_messageInfo.setBodyOutOfLine();
 +                    m_attachments.append(UnixFileDescriptor { fd, UnixFileDescriptor::Adopt });
++#if defined(PS5_LOG)
++                    static std::atomic<unsigned> sent { 0 };
++                    const unsigned n = ++sent;
++                    if (n <= 12 || !(n % 200))
++                        PS5_LOG("ipc: out-of-line body %zu bytes via an anonymous shm object (#%u)", bodySize(), n);
++#endif
 +                    return true;
 +                }
 +            }
