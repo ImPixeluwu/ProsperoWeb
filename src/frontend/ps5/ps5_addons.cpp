@@ -28,6 +28,32 @@ namespace {
 
 std::int64_t now_epoch() { return static_cast<std::int64_t>(std::time(nullptr)); }
 
+// mkdir -p: create path and every missing parent. Ignores EEXIST.
+void make_dirs(const std::string& path) {
+  std::string acc;
+  for (std::size_t i = 0; i < path.size(); ++i) {
+    acc.push_back(path[i]);
+    if (path[i] == '/' && acc.size() > 1) {
+      ::mkdir(acc.c_str(), 0755);
+    }
+  }
+  if (!acc.empty() && acc.back() != '/') {
+    ::mkdir(acc.c_str(), 0755);
+  }
+}
+
+// Cheap rule count: every content-rule-list entry has exactly one "action".
+std::size_t count_rules(const std::string& json) {
+  std::size_t n = 0;
+  std::size_t pos = 0;
+  const std::string key = "\"action\"";
+  while ((pos = json.find(key, pos)) != std::string::npos) {
+    ++n;
+    pos += key.size();
+  }
+  return n;
+}
+
 std::string read_file(const std::string& path) {
   std::ifstream in(path, std::ios::binary);
   if (!in) {
@@ -112,10 +138,14 @@ Ps5Addons::Ps5Addons(std::string addons_dir, std::string cache_dir, core::Addons
       cache_dir_(std::move(cache_dir)),
       cfg_(std::move(initial)) {
   last_updated_ = cfg_.adblock.last_updated;
-  ::mkdir(cache_dir_.c_str(), 0755);
+  // The store directory and all its parents must exist, or
+  // WKUserContentExtensionStoreCreate returns null and nothing compiles.
+  make_dirs(cache_dir_);
   curl_global_init(CURL_GLOBAL_DEFAULT);
   auto path = make_wk_string(cache_dir_);
   store_ = WKUserContentExtensionStoreCreate(path.get());
+  log_printf("addons: content-extension store at %s: %s", cache_dir_.c_str(),
+             store_ ? "ok" : "FAILED (null)");
 }
 
 Ps5Addons::~Ps5Addons() {
@@ -206,7 +236,7 @@ void Ps5Addons::on_lookup(WKUserContentFilterRef filter, std::uint32_t result, v
   delete ctx;
   if (result == kWKUserContentExtensionStoreSuccess && filter) {
     log_printf("addons: loaded cached %s ruleset", is_cookie ? "cookie" : "ads");
-    self->adopt_filter(is_cookie, filter, /*from_update=*/false);
+    self->adopt_filter(is_cookie, filter);
     return;
   }
   const std::string path = is_cookie
@@ -228,8 +258,8 @@ void Ps5Addons::compile_json(const std::string& json, bool is_cookie, bool from_
   if (!store_) {
     return;
   }
-  log_printf("addons: compiling %s ruleset (%zu bytes)%s", is_cookie ? "cookie" : "ads",
-             json.size(), from_update ? " from update" : "");
+  log_printf("addons: compiling %s ruleset (%zu rules, %zu bytes)%s", is_cookie ? "cookie" : "ads",
+             count_rules(json), json.size(), from_update ? " from update" : "");
   auto* ctx = new CompileCtx{this, is_cookie, from_update};
   ++pending_compiles_;
   auto id = make_wk_string(is_cookie ? "cookie" : "ads");
@@ -246,16 +276,25 @@ void Ps5Addons::on_compile(WKUserContentFilterRef filter, std::uint32_t result, 
   if (self->pending_compiles_ > 0) {
     --self->pending_compiles_;
   }
-  if (result != kWKUserContentExtensionStoreSuccess || !filter) {
+  const bool ok = (result == kWKUserContentExtensionStoreSuccess && filter);
+  if (!ok) {
     log_printf("addons: %s ruleset compile FAILED (result %u); keeping previous",
                is_cookie ? "cookie" : "ads", result);
-    return;
+  } else {
+    log_printf("addons: %s ruleset compiled ok", is_cookie ? "cookie" : "ads");
+    self->adopt_filter(is_cookie, filter);
   }
-  log_printf("addons: %s ruleset compiled ok", is_cookie ? "cookie" : "ads");
-  self->adopt_filter(is_cookie, filter, from_update);
+  if (from_update) {
+    if (ok && !is_cookie) {
+      self->update_ads_ok_ = true;
+    }
+    if (self->update_pending_ > 0 && --self->update_pending_ == 0) {
+      self->finish_update();
+    }
+  }
 }
 
-void Ps5Addons::adopt_filter(bool is_cookie, WKUserContentFilterRef filter, bool from_update) {
+void Ps5Addons::adopt_filter(bool is_cookie, WKUserContentFilterRef filter) {
   WKRetain(filter);
   WKUserContentFilterRef& slot = is_cookie ? cookie_filter_ : ads_filter_;
   if (slot) {
@@ -263,13 +302,19 @@ void Ps5Addons::adopt_filter(bool is_cookie, WKUserContentFilterRef filter, bool
   }
   slot = filter;
   apply_filters();
-  if (from_update && !is_cookie) {
-    // The ads ruleset is the one always present; treat its successful update
-    // as the refresh completing.
+}
+
+void Ps5Addons::finish_update() {
+  if (update_ads_ok_) {
     last_updated_ = now_epoch();
-    if (on_filters_updated_) {
-      on_filters_updated_(last_updated_);
-    }
+    log_line("addons: filter-list update complete");
+  } else {
+    log_line("addons: filter-list update finished with errors; kept previous rules");
+  }
+  updating_.store(false);
+  // Refresh the Add-ons menu (clears the "Updating" state, shows the new time).
+  if (on_filters_updated_) {
+    on_filters_updated_(last_updated_);
   }
 }
 
@@ -345,16 +390,18 @@ void Ps5Addons::set_sponsorblock(bool enabled, const std::vector<std::string>& c
 
 void Ps5Addons::update_filters_now() {
   if (!cfg_.adblock.enabled) {
-    log_line("addons: update requested but the ad blocker is off");
+    log_line("addons: manual update requested but the ad blocker is off");
     return;
   }
+  log_line("addons: manual filter-list update requested");
   start_update();
 }
 
 void Ps5Addons::start_update() {
   bool expected = false;
   if (!updating_.compare_exchange_strong(expected, true)) {
-    return;  // already running
+    log_line("addons: a filter-list update is already in progress");
+    return;
   }
   if (worker_.joinable()) {
     worker_.join();
@@ -366,6 +413,8 @@ void Ps5Addons::start_update() {
     fetched_ads_json_.clear();
     fetched_cookie_json_.clear();
   }
+  update_started_at_ = now_epoch();
+  log_line("addons: downloading filter lists in the background");
   worker_ = std::thread([this] { worker_run(); });
 }
 
@@ -442,18 +491,30 @@ void Ps5Addons::pump() {
       if (worker_.joinable()) {
         worker_.join();
       }
-      if (ok && !ads_json.empty()) {
+      if (ok && !ads_json.empty() && store_) {
+        // Recompile on the main thread; finish_update() fires when the async
+        // compiles complete (it clears "updating" and refreshes the menu).
+        log_line("addons: fetched filter lists, recompiling");
+        update_ads_ok_ = false;
+        update_pending_ = 1;
         write_file(cache_dir_ + "/adblock-ads.json", ads_json);
         compile_json(ads_json, /*is_cookie=*/false, /*from_update=*/true);
         if (!cookie_json.empty()) {
+          ++update_pending_;
           write_file(cache_dir_ + "/adblock-cookie.json", cookie_json);
           compile_json(cookie_json, /*is_cookie=*/true, /*from_update=*/true);
         }
-        log_line("addons: background refresh fetched + recompiled filter lists");
       } else {
-        log_line("addons: background refresh failed; keeping cached/bundled lists");
+        log_line("addons: filter-list refresh failed; keeping cached/bundled lists");
+        update_ads_ok_ = false;
+        finish_update();  // clears "updating" and refreshes the menu
       }
-      updating_.store(false);
+    } else if (update_started_at_ > 0 && now_epoch() - update_started_at_ > 240) {
+      // Safety net: the download should be bounded by curl timeouts; if it is
+      // somehow still not ready after 4 minutes, stop showing "Updating".
+      log_line("addons: filter-list update timed out; keeping cached/bundled lists");
+      update_ads_ok_ = false;
+      finish_update();
     }
   }
 

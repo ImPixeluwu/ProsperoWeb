@@ -69,7 +69,10 @@ class Ps5Addons final : public shell::AddonsBackend {
   void ensure_filter(bool is_cookie);
   void compile_from_file(const std::string& json_path, bool is_cookie, bool from_update);
   void compile_json(const std::string& json, bool is_cookie, bool from_update);
-  void adopt_filter(bool is_cookie, WKUserContentFilterRef filter, bool from_update);
+  void adopt_filter(bool is_cookie, WKUserContentFilterRef filter);
+  // Called when all compiles of a background/manual refresh have finished
+  // (success or failure): clears the updating state and refreshes the menu.
+  void finish_update();
   // WKUserContentExtensionStore callbacks (ctx is a heap CompileCtx*).
   static void on_lookup(WKUserContentFilterRef filter, std::uint32_t result, void* ctx);
   static void on_compile(WKUserContentFilterRef filter, std::uint32_t result, void* ctx);
@@ -107,7 +110,10 @@ class Ps5Addons final : public shell::AddonsBackend {
   std::string fetched_cookie_json_;   // guarded by mutex_ (empty if not fetched)
   std::int64_t last_updated_ = 0;     // atomic-ish; written on main thread
   std::int64_t last_check_ = 0;       // last daily-cadence check (main thread)
+  std::int64_t update_started_at_ = 0;  // when the current refresh began (0 = none)
   int pending_compiles_ = 0;          // outstanding async compiles (main thread)
+  int update_pending_ = 0;            // outstanding compiles for the current refresh
+  bool update_ads_ok_ = false;        // the refresh's ads compile succeeded
 };
 
 }  // namespace prosperoweb::frontend
