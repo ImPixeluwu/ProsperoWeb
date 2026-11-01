@@ -8,6 +8,7 @@
 #include <cstring>
 #include <optional>
 
+#include <sys/resource.h>
 #include <unistd.h>
 
 #include <WebKit/WKRunLoop.h>
@@ -200,6 +201,23 @@ int Ps5App::run() {
                channel_mode.c_str(),
                audio_server_ ? (audio_server_->listening() ? "ok" : "refused") : "off",
                video_overlay_ ? (video_overlay_->listening() ? "ok" : "refused") : "off");
+  }
+
+  // Widen the file-descriptor budget: each attached ad-block content rule list
+  // hands a SharedMemory descriptor to the WebProcess (the sandbox cannot dup
+  // handles), so more fds let more/bigger lists fit. Best-effort.
+  {
+    struct rlimit rl {};
+    if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
+      const rlim_t before = rl.rlim_cur;
+      rl.rlim_cur = rl.rlim_max;  // raise soft limit to the hard ceiling
+      const bool raised = setrlimit(RLIMIT_NOFILE, &rl) == 0;
+      struct rlimit now {};
+      getrlimit(RLIMIT_NOFILE, &now);
+      log_printf("fd budget: RLIMIT_NOFILE %ld -> %ld (max %ld)%s", static_cast<long>(before),
+                 static_cast<long>(now.rlim_cur), static_cast<long>(now.rlim_max),
+                 raised ? "" : " (raise failed)");
+    }
   }
 
   storage_ = std::make_unique<core::FileStorage>(kBaseDir);

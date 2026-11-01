@@ -2,6 +2,7 @@
 #include "ps5_addons.h"
 
 #include <sys/stat.h>
+#include <sys/resource.h>
 #include <sys/sysctl.h>
 #include <sys/types.h>
 #include <sys/user.h>
@@ -208,6 +209,16 @@ void Ps5Addons::start() {
     if (auto v = manifest.find("max_total"); v != manifest.end() && v->is_number_integer()) {
       max_total_ = v->get<std::size_t>();
     }
+    if (auto v = manifest.find("max_lists"); v != manifest.end() && v->is_number_integer()) {
+      max_lists_ = v->get<std::size_t>();
+    }
+  }
+  {
+    struct rlimit rl {};
+    if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
+      log_printf("addons: fd budget RLIMIT_NOFILE cur=%ld max=%ld; max_lists=%zu",
+                 static_cast<long>(rl.rlim_cur), static_cast<long>(rl.rlim_max), max_lists_);
+    }
   }
   ads_.filters.assign(static_cast<std::size_t>(ads_.chunks), nullptr);
   cookie_.filters.assign(static_cast<std::size_t>(cookie_.chunks), nullptr);
@@ -269,6 +280,15 @@ void Ps5Addons::start_set(bool is_cookie, bool from_update) {
 void Ps5Addons::process_next(bool is_cookie) {
   RuleSet& set = set_for(is_cookie);
   if (set.cursor >= set.chunks) {
+    set.processing = false;
+    on_set_done(is_cookie);
+    return;
+  }
+  // Descriptor backstop: each attached list hands a SharedMemory fd to the
+  // WebProcess and the sandbox cannot dup, so stop well under the budget.
+  if (attached_total() >= max_lists_) {
+    log_printf("addons: descriptor budget: %zu list(s) attached (max %zu); skipping rest of %s",
+               attached_total(), max_lists_, is_cookie ? "cookie" : "ads");
     set.processing = false;
     on_set_done(is_cookie);
     return;
@@ -412,18 +432,35 @@ void Ps5Addons::adopt_filter(bool is_cookie, int index, WKUserContentFilterRef f
   slot = filter;
   apply_filters();
 }
-void Ps5Addons::collect_filters(std::vector<WKUserContentFilterRef>& out) const {
-  if (cfg_.adblock.enabled) {
-    for (auto* f : ads_.filters) {
-      if (f) {
-        out.push_back(f);
-      }
+std::size_t Ps5Addons::attached_total() const {
+  std::size_t n = 0;
+  for (auto* f : ads_.filters) {
+    if (f) {
+      ++n;
     }
-    if (cfg_.adblock.cookie_banners) {
-      for (auto* f : cookie_.filters) {
-        if (f) {
-          out.push_back(f);
-        }
+  }
+  for (auto* f : cookie_.filters) {
+    if (f) {
+      ++n;
+    }
+  }
+  return n;
+}
+
+void Ps5Addons::collect_filters(std::vector<WKUserContentFilterRef>& out) const {
+  if (!cfg_.adblock.enabled) {
+    return;
+  }
+  // Cap at max_lists_ (descriptor budget); ads (network) first.
+  for (auto* f : ads_.filters) {
+    if (f && out.size() < max_lists_) {
+      out.push_back(f);
+    }
+  }
+  if (cfg_.adblock.cookie_banners) {
+    for (auto* f : cookie_.filters) {
+      if (f && out.size() < max_lists_) {
+        out.push_back(f);
       }
     }
   }

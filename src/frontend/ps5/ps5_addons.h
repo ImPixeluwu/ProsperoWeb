@@ -84,6 +84,7 @@ class Ps5Addons final : public shell::AddonsBackend {
   std::string identifier(bool is_cookie, int index) const;
   std::string chunk_path(const RuleSet& set, int index) const;  // cache if present else bundled
   void collect_filters(std::vector<WKUserContentFilterRef>& out) const;
+  std::size_t attached_total() const;  // compiled+retained lists across both sets
   void apply_filters();
   // Process RSS in MB (-1 if unavailable); logged per step. True if above the
   // backstop limit (stop attaching more).
@@ -104,8 +105,13 @@ class Ps5Addons final : public shell::AddonsBackend {
   WKUserContentExtensionStoreRef store_ = nullptr;
   RuleSet ads_;
   RuleSet cookie_;
-  std::size_t per_chunk_ = 10000;
-  std::size_t max_total_ = 30000;
+  std::size_t per_chunk_ = 20000;
+  std::size_t max_total_ = 40000;
+  // Hard cap on attached content rule lists: each one hands a SharedMemory
+  // descriptor to the WebProcess and the title sandbox cannot dup handles, so
+  // ~5 lists exhaust the budget and the next createHandle fails. Stay well
+  // under it; attach network (ads) lists first. Tunable via sources.json.
+  std::size_t max_lists_ = 3;
   // Backstop: stop attaching more chunks if process RSS exceeds this (MB).
   long rss_limit_mb_ = 1400;
 

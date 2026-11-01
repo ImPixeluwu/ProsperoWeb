@@ -100,10 +100,14 @@ done < "${LOCK}"
 # several small lists: WebKit's on-device compiler traps/OOMs on one huge
 # list, so each chunk is kept small (<= PER_CHUNK rules). Network rules come
 # first; cosmetic overflow past MAX_TOTAL is dropped.
-# Conservative defaults: the console OOMs holding many large compiled lists,
-# so keep each chunk small and the total low (network rules are prioritised).
-PER_CHUNK="${ADDONS_PER_CHUNK:-10000}"
-MAX_TOTAL="${ADDONS_MAX_TOTAL:-30000}"
+# Each attached content rule list costs one SharedMemory descriptor in the
+# WebProcess, and the title sandbox cannot dup handles (~5 lists exhaust the
+# budget). So ship FEW lists: ~20000 rules/chunk (known to compile) and a
+# total that yields only 2 ads chunks; MAX_LISTS caps attaches at runtime.
+# Network rules are prioritised. All tunable via sources.json.
+PER_CHUNK="${ADDONS_PER_CHUNK:-20000}"
+MAX_TOTAL="${ADDONS_MAX_TOTAL:-40000}"
+MAX_LISTS="${ADDONS_MAX_LISTS:-3}"
 log "building ads ruleset -> adblock-ads-*.json (per-chunk ${PER_CHUNK}, total ${MAX_TOTAL})"
 ADS_CHUNKS="$("${CONVERT}" --chunked --per-chunk "${PER_CHUNK}" --max-total "${MAX_TOTAL}" \
     "${ADDONS}/adblock-ads.json" "${ADS_INPUTS[@]}")"
@@ -133,6 +137,7 @@ join_json() {
   printf '  "install_dir": "%s",\n' "${INSTALL_DIR}"
   printf '  "per_chunk": %s,\n' "${PER_CHUNK}"
   printf '  "max_total": %s,\n' "${MAX_TOTAL}"
+  printf '  "max_lists": %s,\n' "${MAX_LISTS}"
   printf '  "ads": { "prefix": "adblock-ads", "chunks": %s, "sources": [%s] },\n' \
       "${ADS_CHUNKS}" "$(join_json "${ADS_SOURCES[@]}")"
   printf '  "cookie": { "prefix": "adblock-cookie", "chunks": %s, "sources": [%s] }\n' \
