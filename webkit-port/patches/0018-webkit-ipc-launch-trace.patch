@@ -14,6 +14,10 @@ SharedMemory maps in the UI; the WebProcess side of Update and
 PlayStationWebView::setViewNeedsDisplay are traced in patches 0013 and 0011
 (the files they own).
 
+Also traced (console run 25: the UI sent the page's WebProcess one message
+and then nothing): the name of the first 40 messages sent and dispatched on
+each connection, every waitForMessage, and sync replies that time out.
+
 Also: Connection::platformPrepareForOpen() opens the connection even when
 the socket cannot be made non-blocking (logged). The PlayStation
 SocketMonitor waits with select() before it reads, so a blocking socket
@@ -54,6 +58,77 @@ index 16eb9a0de..14257155c 100644
  
      RefPtr<SharedMemory> instance = adoptRef(new SharedMemory());
      instance->m_data = data;
+diff --git a/Source/WebKit/Platform/IPC/Connection.cpp b/Source/WebKit/Platform/IPC/Connection.cpp
+index 88ca5b968..e02360944 100644
+--- a/Source/WebKit/Platform/IPC/Connection.cpp
++++ b/Source/WebKit/Platform/IPC/Connection.cpp
+@@ -26,6 +26,26 @@
+ #include "config.h"
+ #include "Connection.h"
+ 
++#if defined(PS5_HOMEBREW)
++#include <atomic>
++// ProsperoWeb diagnostics (console run 25: the UI sent the page's WebProcess
++// one message and then nothing): the message names on each connection.
++extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
++#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++namespace {
++std::atomic<unsigned> ps5SentPerFd[256];
++std::atomic<unsigned> ps5DispatchedPerFd[256];
++// The first 40 messages each way on a descriptor are logged.
++bool ps5TraceMessage(std::atomic<unsigned>* table, int fd)
++{
++    return fd >= 0 && fd < 256 && ++table[fd] <= 40;
++}
++}
++#define PS5_IPC_FD() (socketDescriptor())
++#else
++#define PS5_TRACE(...) do { } while (0)
++#endif
++
+ #include "Encoder.h"
+ #include "GeneratedSerializers.h"
+ #include "Logging.h"
+@@ -601,6 +621,10 @@ Error Connection::sendMessage(UniqueRef<Encoder>&& encoder, OptionSet<SendOption
+ 
+ Error Connection::sendMessageImpl(UniqueRef<Encoder>&& encoder, OptionSet<SendOption> sendOptions, std::optional<Thread::QOS> qos)
+ {
++#if defined(PS5_HOMEBREW)
++    if (ps5TraceMessage(ps5SentPerFd, PS5_IPC_FD()))
++        PS5_TRACE("webkit: ipc fd %d send %s%s%s", PS5_IPC_FD(), description(encoder->messageName()).characters(), encoder->isSyncMessage() ? " (sync)" : "", isValid() ? "" : " INVALID CONNECTION");
++#endif
+     if (!isValid())
+         return Error::InvalidConnection;
+ 
+@@ -778,6 +802,9 @@ static bool isWaitedForMessage(MessageName messageName, uint64_t destinationID,
+ 
+ auto Connection::waitForMessage(MessageName messageName, uint64_t destinationID, Timeout timeout, OptionSet<WaitForOption> waitForOptions) -> DecoderOrError
+ {
++#if defined(PS5_HOMEBREW)
++    PS5_TRACE("webkit: ipc fd %d waitForMessage %s", PS5_IPC_FD(), description(messageName).characters());
++#endif
+     if (!isValid())
+         return makeUnexpected(Error::InvalidConnection);
+ 
+@@ -1025,6 +1052,7 @@ auto Connection::waitForSyncReply(SyncRequestID syncRequestID, MessageName messa
+ #else
+     RELEASE_LOG_ERROR(IPC, "Connection::waitForSyncReply: Timed-out while waiting for reply for %s, id=%" PRIu64, description(messageName).characters(), syncRequestID.toUInt64());
+ #endif
++    PS5_TRACE("webkit: ipc fd %d sync reply TIMED OUT for %s", PS5_IPC_FD(), description(messageName).characters());
+ 
+     return makeUnexpected(Error::Timeout);
+ }
+@@ -1449,6 +1477,10 @@ void Connection::enqueueIncomingMessage(UniqueRef<Decoder> incomingMessage)
+ 
+ void Connection::dispatchMessage(Decoder& decoder)
+ {
++#if defined(PS5_HOMEBREW)
++    if (ps5TraceMessage(ps5DispatchedPerFd, PS5_IPC_FD()))
++        PS5_TRACE("webkit: ipc fd %d dispatch %s", PS5_IPC_FD(), description(decoder.messageName()).characters());
++#endif
+     assertIsCurrent(dispatcher());
+     RefPtr client = m_client.get();
+     RELEASE_ASSERT(client);
 diff --git a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
 index 0031d7fee..879a19447 100644
 --- a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
