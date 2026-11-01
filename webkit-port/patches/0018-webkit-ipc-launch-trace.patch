@@ -25,16 +25,24 @@ many attachments, an invalid descriptor attachment, no shared memory for an
 out-of-line body, a missing or unmappable out-of-line body, a message that
 cannot be decoded), and every out-of-line body sent or received.
 
+Fixes for the native title (console run 27: "DROPS outgoing
+WebProcess_CreateWebPage: no shared memory for its 7746-byte body (errno
+1)"): SharedMemory::allocate sizes the object in whole 16 KiB pages and
+falls back to an unlinked file in TMPDIR, logging each failed step; when no
+shared memory can be had at all, a message up to 64 KiB is sent inline
+instead of being dropped (receivers accept and buffer inline bodies that
+large; the launcher's socket buffers are 256 KiB, patch 0005).
+
 Also: Connection::platformPrepareForOpen() opens the connection even when
 the socket cannot be made non-blocking (logged). The PlayStation
 SocketMonitor waits with select() before it reads, so a blocking socket
 still works, while refusing to open left the child waiting forever (console
 run 23, where fcntl on the socket was refused).
 diff --git a/Source/WebCore/platform/unix/SharedMemoryUnix.cpp b/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
-index 16eb9a0de..14257155c 100644
+index 16eb9a0de..78d100069 100644
 --- a/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
 +++ b/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
-@@ -27,6 +27,18 @@
+@@ -27,11 +27,24 @@
  
  #include "config.h"
  #include "SharedMemory.h"
@@ -53,7 +61,85 @@ index 16eb9a0de..14257155c 100644
  
  #if USE(UNIX_DOMAIN_SOCKETS) && !OS(ANDROID)
  
-@@ -150,8 +162,10 @@ RefPtr<SharedMemory> SharedMemory::map(Handle&& handle, Protection protection, C
+ #include <errno.h>
+ #include <fcntl.h>
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <sys/mman.h>
+ #include <sys/stat.h>
+@@ -119,8 +132,63 @@ static UnixFileDescriptor createSharedMemory()
+     return UnixFileDescriptor { fileDescriptor, UnixFileDescriptor::Adopt };
+ }
+ 
++#if defined(PS5_HOMEBREW)
++// The native PS5 title could not allocate the out-of-line body of a 7746-byte
++// IPC message (console run 27: errno 1), although an anonymous shm object of
++// 16 KiB worked in the same process. Size the object in whole 16 KiB pages,
++// and fall back to an unlinked file in TMPDIR (the profile's tmp directory),
++// which is also passable by descriptor. Every failed step is logged.
++static void* ps5MapShared(int fd, size_t length)
++{
++    void* data = mmap(nullptr, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++    return data == MAP_FAILED ? nullptr : data;
++}
++#endif
++
+ RefPtr<SharedMemory> SharedMemory::allocate(size_t size)
+ {
++#if defined(PS5_HOMEBREW)
++    auto ps5Allocate = [](size_t size, UnixFileDescriptor&& fileDescriptor, void* data) {
++        RefPtr<SharedMemory> instance = adoptRef(new SharedMemory());
++        instance->m_data = data;
++        instance->m_fileDescriptor = WTF::move(fileDescriptor);
++        instance->m_size = size;
++        return instance;
++    };
++    const size_t length = (size + 0x3fff) & ~static_cast<size_t>(0x3fff);
++    {
++        auto fileDescriptor = createSharedMemory();
++        if (!fileDescriptor)
++            PS5_TRACE_SOME(shmOpenFailures, "webkit: SharedMemory::allocate %zu: shm_open(SHM_ANON) failed: errno %d", size, errno);
++        else if (ftruncate(fileDescriptor.value(), length) == -1)
++            PS5_TRACE_SOME(shmTruncateFailures, "webkit: SharedMemory::allocate %zu: ftruncate(shm, %zu) failed: errno %d", size, length, errno);
++        else if (void* data = ps5MapShared(fileDescriptor.value(), length))
++            return ps5Allocate(size, WTF::move(fileDescriptor), data);
++        else
++            PS5_TRACE_SOME(shmMapFailures, "webkit: SharedMemory::allocate %zu: mmap(shm, %zu) failed: errno %d", size, length, errno);
++    }
++    const char* tmp = getenv("TMPDIR");
++    char path[512];
++    snprintf(path, sizeof(path), "%s/wk-shm-%d-%u", tmp && tmp[0] ? tmp : "/data/prosperoweb/tmp", static_cast<int>(getpid()), cryptographicallyRandomNumber<unsigned>());
++    int fd = open(path, O_RDWR | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
++    if (fd < 0) {
++        PS5_TRACE_SOME(fileOpenFailures, "webkit: SharedMemory::allocate %zu: file fallback open(%s) failed: errno %d", size, path, errno);
++        return nullptr;
++    }
++    unlink(path);
++    UnixFileDescriptor fileDescriptor { fd, UnixFileDescriptor::Adopt };
++    if (ftruncate(fd, length) == -1) {
++        PS5_TRACE_SOME(fileTruncateFailures, "webkit: SharedMemory::allocate %zu: file fallback ftruncate failed: errno %d", size, errno);
++        return nullptr;
++    }
++    void* data = ps5MapShared(fd, length);
++    if (!data) {
++        PS5_TRACE_SOME(fileMapFailures, "webkit: SharedMemory::allocate %zu: file fallback mmap failed: errno %d", size, errno);
++        return nullptr;
++    }
++    PS5_TRACE_SOME(fileAllocations, "webkit: SharedMemory::allocate %zu: using an unlinked file in %s", size, tmp && tmp[0] ? tmp : "/data/prosperoweb/tmp");
++    return ps5Allocate(size, WTF::move(fileDescriptor), data);
++#else
+     auto fileDescriptor = createSharedMemory();
+     if (!fileDescriptor) {
+         SAFE_WTFLOGALWAYS("Failed to create shared memory: %s", safeStrerror(errno));
+@@ -141,6 +209,7 @@ RefPtr<SharedMemory> SharedMemory::allocate(size_t size)
+     instance->m_fileDescriptor = WTF::move(fileDescriptor);
+     instance->m_size = size;
+     return instance;
++#endif
+ }
+ 
+ RefPtr<SharedMemory> SharedMemory::map(Handle&& handle, Protection protection, CopyOnWrite copyOnWrite)
+@@ -150,8 +219,10 @@ RefPtr<SharedMemory> SharedMemory::map(Handle&& handle, Protection protection, C
      ASSERT_UNUSED(copyOnWrite, copyOnWrite == CopyOnWrite::No);
  
      void* data = mmap(0, handle.size(), accessModeMMap(protection), MAP_SHARED, handle.m_handle.value(), 0);
@@ -137,7 +223,7 @@ index 88ca5b968..e02360944 100644
      RefPtr client = m_client.get();
      RELEASE_ASSERT(client);
 diff --git a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
-index 0031d7fee..9b615922d 100644
+index 0031d7fee..2350667c0 100644
 --- a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
 +++ b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
 @@ -28,6 +28,15 @@
@@ -156,15 +242,47 @@ index 0031d7fee..9b615922d 100644
  #include "IPCUtilities.h"
  #include "Logging.h"
  #include "UnixMessage.h"
-@@ -135,6 +144,7 @@ bool Connection::processMessage()
+@@ -63,6 +72,12 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN // Unix port
+ namespace IPC {
+ 
+ static const size_t messageMaxSize = 4096;
++#if defined(PS5_HOMEBREW)
++// When no shared memory can be allocated for an out-of-line body (console run
++// 27, the native title), a message up to this size is sent inline instead of
++// being dropped; receivers accept and buffer inline bodies this large.
++static const size_t messageInlineFallbackMaxSize = 64 * 1024;
++#endif
+ static const size_t attachmentMaxAmount = 254;
+ 
+ class AttachmentInfo {
+@@ -102,7 +117,11 @@ int Connection::socketDescriptor() const
+ void Connection::platformInitialize(Identifier&& identifier)
+ {
+     m_socketDescriptor = WTF::move(identifier.handle);
++#if defined(PS5_HOMEBREW)
++    m_readBuffer.reserveInitialCapacity(messageInlineFallbackMaxSize);
++#else
+     m_readBuffer.reserveInitialCapacity(messageMaxSize);
++#endif
+     m_fileDescriptors.reserveInitialCapacity(attachmentMaxAmount);
+ }
+ 
+@@ -134,7 +153,13 @@ bool Connection::processMessage()
+     MessageInfo messageInfo;
      memcpySpan(asMutableByteSpan(messageInfo), consumeSpan(messageData, sizeof(messageInfo)));
  
-     if (messageInfo.attachmentCount() > attachmentMaxAmount || (!messageInfo.isBodyOutOfLine() && messageInfo.bodySize() > messageMaxSize)) {
+-    if (messageInfo.attachmentCount() > attachmentMaxAmount || (!messageInfo.isBodyOutOfLine() && messageInfo.bodySize() > messageMaxSize)) {
++#if defined(PS5_HOMEBREW)
++    const size_t inlineMaxSize = messageInlineFallbackMaxSize;
++#else
++    const size_t inlineMaxSize = messageMaxSize;
++#endif
++    if (messageInfo.attachmentCount() > attachmentMaxAmount || (!messageInfo.isBodyOutOfLine() && messageInfo.bodySize() > inlineMaxSize)) {
 +        PS5_TRACE("webkit: ipc fd %d DROPS a message: %zu attachments, body %zu bytes%s", socketDescriptor(), messageInfo.attachmentCount(), messageInfo.bodySize(), messageInfo.isBodyOutOfLine() ? " out of line" : "");
          ASSERT_NOT_REACHED();
          return false;
      }
-@@ -171,12 +181,16 @@ bool Connection::processMessage()
+@@ -171,12 +196,16 @@ bool Connection::processMessage()
          ASSERT(messageInfo.bodySize());
  
          if (attachmentInfo[attachmentCount].isNull()) {
@@ -181,7 +299,7 @@ index 0031d7fee..9b615922d 100644
              ASSERT_NOT_REACHED();
              return false;
          }
-@@ -184,9 +198,11 @@ bool Connection::processMessage()
+@@ -184,9 +213,11 @@ bool Connection::processMessage()
          auto handle = WebCore::SharedMemory::Handle { WTF::move(fd), messageInfo.bodySize() };
          oolMessageBody = WebCore::SharedMemory::map(WTF::move(handle), WebCore::SharedMemory::Protection::ReadOnly);
          if (!oolMessageBody) {
@@ -193,7 +311,7 @@ index 0031d7fee..9b615922d 100644
      }
  
      ASSERT(attachments.size() == (messageInfo.isBodyOutOfLine() ? messageInfo.attachmentCount() - 1 : messageInfo.attachmentCount()));
-@@ -197,8 +213,10 @@ bool Connection::processMessage()
+@@ -197,8 +228,10 @@ bool Connection::processMessage()
  
      auto decoder = Decoder::create(messageBody.first(messageInfo.bodySize()), WTF::move(attachments));
      ASSERT(decoder);
@@ -205,7 +323,7 @@ index 0031d7fee..9b615922d 100644
  
      processIncomingMessage(makeUniqueRefFromNonNullUniquePtr(WTF::move(decoder)));
  
-@@ -326,8 +344,16 @@ bool Connection::platformPrepareForOpen()
+@@ -326,8 +359,16 @@ bool Connection::platformPrepareForOpen()
  {
      if (setNonBlock(socketDescriptor()))
          return true;
@@ -222,7 +340,7 @@ index 0031d7fee..9b615922d 100644
  }
  
  void Connection::platformOpen()
-@@ -336,8 +362,10 @@ void Connection::platformOpen()
+@@ -336,8 +377,10 @@ void Connection::platformOpen()
      m_isConnected = true;
  
  #if PLATFORM(PLAYSTATION)
@@ -233,7 +351,7 @@ index 0031d7fee..9b615922d 100644
              int fd;
              while ((fd = protectedThis->socketDescriptor()) != -1) {
                  int maxFd = fd;
-@@ -373,14 +401,22 @@ bool Connection::sendOutgoingMessage(UniqueRef<Encoder>&& encoder)
+@@ -373,14 +416,28 @@ bool Connection::sendOutgoingMessage(UniqueRef<Encoder>&& encoder)
  
      UnixMessage outputMessage(encoder.get());
      if (outputMessage.attachments().size() > (attachmentMaxAmount - 1)) {
@@ -250,6 +368,12 @@ index 0031d7fee..9b615922d 100644
      if (messageSizeWithBodyInline > messageMaxSize && outputMessage.bodySize()) {
 -        if (!outputMessage.setBodyOutOfLine())
 +        if (!outputMessage.setBodyOutOfLine()) {
++#if defined(PS5_HOMEBREW)
++            if (messageSizeWithBodyInline <= messageInlineFallbackMaxSize) {
++                PS5_TRACE("webkit: ipc fd %d sends %s INLINE (%zu bytes): no shared memory for an out-of-line body (errno %d)", socketDescriptor(), description(encoder->messageName()).characters(), messageSizeWithBodyInline, errno);
++                return sendOutputMessage(WTF::move(outputMessage));
++            }
++#endif
 +            PS5_TRACE("webkit: ipc fd %d DROPS outgoing %s: no shared memory for its %zu-byte body (errno %d)", socketDescriptor(), description(encoder->messageName()).characters(), outputMessage.bodySize(), errno);
              return false;
 +        }
@@ -257,6 +381,24 @@ index 0031d7fee..9b615922d 100644
      }
  
      return sendOutputMessage(WTF::move(outputMessage));
+diff --git a/Source/WebKit/Platform/IPC/unix/UnixMessage.h b/Source/WebKit/Platform/IPC/unix/UnixMessage.h
+index 10932fbbf..a68307c1c 100644
+--- a/Source/WebKit/Platform/IPC/unix/UnixMessage.h
++++ b/Source/WebKit/Platform/IPC/unix/UnixMessage.h
+@@ -152,8 +152,12 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
+             return false;
+ 
+         auto handle = oolMessageBody->createHandle(WebCore::SharedMemory::Protection::ReadOnly);
+-        if (!handle)
++        if (!handle) {
++#if defined(PS5_HOMEBREW) && defined(PS5_TRACE)
++            PS5_TRACE("webkit: ipc out-of-line body: shared memory allocated, but no handle for it (descriptor duplicate failed: errno %d)", errno);
++#endif
+             return false;
++        }
+ 
+         m_messageInfo.setBodyOutOfLine();
+         memcpySpan(oolMessageBody->mutableSpan(), m_body);
 diff --git a/Source/WebKit/UIProcess/AuxiliaryProcessProxy.cpp b/Source/WebKit/UIProcess/AuxiliaryProcessProxy.cpp
 index 1c0a468db..e4a51be35 100644
 --- a/Source/WebKit/UIProcess/AuxiliaryProcessProxy.cpp

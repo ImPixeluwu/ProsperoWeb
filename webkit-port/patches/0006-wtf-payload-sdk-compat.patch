@@ -8,6 +8,7 @@ on FreeBSD), and upstream WTF assumes clang >= 19 accepts
  - setNonBlock() uses fcntl(O_NONBLOCK), and falls back to the console's
    SO_NBIO socket option (0x1200) where fcntl on a socket is refused (a
    native title: EINVAL),
+ - dupCloseOnExec() falls back to fcntl(F_DUPFD) when dup() is refused,
  - AvailableMemory/RAMSize/MemoryPressureHandlerUnix do not include
    <sys/sysinfo.h>/<malloc.h>; available memory is the generic 1.5 GB
    guess instead of the console's physical RAM,
@@ -86,7 +87,7 @@ index e869451aa..5a031de66 100644
      return languages;
  }
 diff --git a/Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp b/Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp
-index 2f8fdd858..f0981dfe0 100644
+index 2f8fdd858..c50cf60c3 100644
 --- a/Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp
 +++ b/Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp
 @@ -26,6 +26,7 @@
@@ -97,7 +98,21 @@ index 2f8fdd858..f0981dfe0 100644
  #include <sys/socket.h>
  
  namespace WTF {
-@@ -53,8 +54,21 @@ int dupCloseOnExec(int fileDescriptor)
+@@ -45,6 +46,13 @@ int dupCloseOnExec(int fileDescriptor)
+     int duplicatedFileDescriptor = -1;
+ 
+     while ((duplicatedFileDescriptor = dup(fileDescriptor)) == -1 && errno == EINTR) { }
++#if defined(PS5_HOMEBREW)
++    // dup() may be refused where fcntl is not, or the other way round (a
++    // native title refuses fcntl on sockets): try the other one.
++    if (duplicatedFileDescriptor == -1) {
++        while ((duplicatedFileDescriptor = fcntl(fileDescriptor, F_DUPFD, 0)) == -1 && errno == EINTR) { }
++    }
++#endif
+     if (duplicatedFileDescriptor == -1)
+         return -1;
+ 
+@@ -53,8 +61,21 @@ int dupCloseOnExec(int fileDescriptor)
  
  bool setNonBlock(int fileDescriptor)
  {
