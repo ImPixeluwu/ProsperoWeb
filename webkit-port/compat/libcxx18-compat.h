@@ -8,13 +8,18 @@
 // minimal implementation on top of the __atomic builtins. __cpp_lib_atomic_ref
 // is deliberately left undefined so feature-testing code (simdutf) keeps its
 // fallback.
+//
+// The body is guarded on C++20 (it uses concepts): this header is force-
+// included into every translation unit through CMAKE_CXX_FLAGS, which also
+// reaches CMake's compiler-ABI TryCompile, and that test compiles without the
+// project's -std=c++20. Without the guard it fails to configure the build.
 #pragma once
 
 #if defined(__cplusplus)
 #include <version>
 #endif
 
-#if defined(__cplusplus) && defined(_LIBCPP_VERSION) && _LIBCPP_VERSION < 190000
+#if defined(__cplusplus) && (__cplusplus >= 202002L) && defined(_LIBCPP_VERSION) && _LIBCPP_VERSION < 190000
 
 #include <atomic>
 #include <cstddef>
