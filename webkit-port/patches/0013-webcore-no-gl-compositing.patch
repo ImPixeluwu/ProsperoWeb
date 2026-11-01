@@ -73,10 +73,10 @@ index 9acfd0a4d..ad8177811 100644
          m_compositing = enable;
          
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp
-index efd16800d..8f06c5c28 100644
+index efd16800d..e52a29382 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp
-@@ -27,6 +27,18 @@
+@@ -27,6 +27,24 @@
  
  #include "config.h"
  #include "DrawingAreaCoordinatedGraphics.h"
@@ -86,16 +86,22 @@ index efd16800d..8f06c5c28 100644
 +// ProsperoWeb diagnostics (console run 24: page updates never reached the
 +// screen in the native title): the shell's logger, when linked.
 +extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
-+#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++extern "C" bool ps5_trace_enabled(void) __attribute__((weak));
++// Routine traces only with PROSPEROWEB_TRACE=1 (ps5_trace_enabled, the shell);
++// failures and one-time events always (PS5_LOG).
++#define PS5_TRACE(...) do { if (ps5_log_printf && ps5_trace_enabled && ps5_trace_enabled()) ps5_log_printf(__VA_ARGS__); } while (0)
++#define PS5_LOG(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
 +#elif !defined(PS5_TRACE)
 +#define PS5_TRACE(...) do { } while (0)
++#define PS5_LOG(...) do { } while (0)
 +#endif
 +// Logs the first 12 occurrences and then every 200th.
 +#define PS5_TRACE_SOME(counter, ...) do { static std::atomic<unsigned> counter { 0 }; unsigned n_ = ++counter; if (n_ <= 12 || !(n_ % 200)) PS5_TRACE(__VA_ARGS__); } while (0)
++#define PS5_TRACE_SOME_LOG(counter, ...) do { static std::atomic<unsigned> counter { 0 }; unsigned n_ = ++counter; if (n_ <= 12 || !(n_ % 200)) PS5_LOG(__VA_ARGS__); } while (0)
  
  #include "DrawingAreaProxyMessages.h"
  #include "MessageSenderInlines.h"
-@@ -42,6 +54,7 @@
+@@ -42,6 +60,7 @@
  #include <WebCore/LocalFrameView.h>
  #include <WebCore/Page.h>
  #include <WebCore/PageOverlayController.h>
@@ -103,7 +109,7 @@ index efd16800d..8f06c5c28 100644
  #include <WebCore/Region.h>
  #include <WebCore/Settings.h>
  #include <WebCore/ShareableBitmap.h>
-@@ -369,7 +382,7 @@ void DrawingAreaCoordinatedGraphics::updateGeometry(const IntSize& size, Complet
+@@ -369,7 +388,7 @@ void DrawingAreaCoordinatedGraphics::updateGeometry(const IntSize& size, Complet
          } else
              display(updateInfo);
          if (!m_layerTreeHost)
@@ -112,7 +118,7 @@ index efd16800d..8f06c5c28 100644
      }
  
      completionHandler();
-@@ -440,6 +453,14 @@ void DrawingAreaCoordinatedGraphics::resumePainting()
+@@ -440,6 +459,14 @@ void DrawingAreaCoordinatedGraphics::resumePainting()
  
  void DrawingAreaCoordinatedGraphics::enterAcceleratedCompositingMode(GraphicsLayer* graphicsLayer)
  {
@@ -127,7 +133,7 @@ index efd16800d..8f06c5c28 100644
      m_exitCompositingTimer.stop();
      m_wantsToExitAcceleratedCompositingMode = false;
  
-@@ -529,7 +550,7 @@ void DrawingAreaCoordinatedGraphics::exitAcceleratedCompositingMode()
+@@ -529,7 +556,7 @@ void DrawingAreaCoordinatedGraphics::exitAcceleratedCompositingMode()
      } else {
          // If we left accelerated compositing mode before we sent an EnterAcceleratedCompositingMode message to the
          // UI process, we still need to let it know about the new contents, so send an Update message.
@@ -136,7 +142,7 @@ index efd16800d..8f06c5c28 100644
      }
  }
  
-@@ -584,7 +605,7 @@ void DrawingAreaCoordinatedGraphics::display()
+@@ -584,7 +611,7 @@ void DrawingAreaCoordinatedGraphics::display()
          send(Messages::DrawingAreaProxy::ExitAcceleratedCompositingMode(0, WTF::move(updateInfo)));
          m_compositingAccordingToProxyMessages = false;
      } else

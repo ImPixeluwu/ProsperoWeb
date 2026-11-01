@@ -220,10 +220,10 @@ index 674924662..96fc98abe 100644
  }
  #endif
 diff --git a/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp b/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp
-index f5ba02041..12e9a1936 100644
+index f5ba02041..4587b982e 100644
 --- a/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp
 +++ b/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp
-@@ -25,6 +25,18 @@
+@@ -25,6 +25,24 @@
  
  #include "config.h"
  #include "PlayStationWebView.h"
@@ -233,16 +233,22 @@ index f5ba02041..12e9a1936 100644
 +// ProsperoWeb diagnostics (console run 24: page updates never reached the
 +// screen in the native title): the shell's logger, when linked.
 +extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
-+#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++extern "C" bool ps5_trace_enabled(void) __attribute__((weak));
++// Routine traces only with PROSPEROWEB_TRACE=1 (ps5_trace_enabled, the shell);
++// failures and one-time events always (PS5_LOG).
++#define PS5_TRACE(...) do { if (ps5_log_printf && ps5_trace_enabled && ps5_trace_enabled()) ps5_log_printf(__VA_ARGS__); } while (0)
++#define PS5_LOG(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
 +#elif !defined(PS5_TRACE)
 +#define PS5_TRACE(...) do { } while (0)
++#define PS5_LOG(...) do { } while (0)
 +#endif
 +// Logs the first 12 occurrences and then every 200th.
 +#define PS5_TRACE_SOME(counter, ...) do { static std::atomic<unsigned> counter { 0 }; unsigned n_ = ++counter; if (n_ <= 12 || !(n_ % 200)) PS5_TRACE(__VA_ARGS__); } while (0)
++#define PS5_TRACE_SOME_LOG(counter, ...) do { static std::atomic<unsigned> counter { 0 }; unsigned n_ = ++counter; if (n_ <= 12 || !(n_ % 200)) PS5_LOG(__VA_ARGS__); } while (0)
  
  #include "APIPageConfiguration.h"
  #include "DrawingAreaProxyCoordinatedGraphics.h"
-@@ -95,6 +107,14 @@ void PlayStationWebView::setClient(std::unique_ptr<API::ViewClient>&& client)
+@@ -95,6 +113,14 @@ void PlayStationWebView::setClient(std::unique_ptr<API::ViewClient>&& client)
  void PlayStationWebView::setViewSize(WebCore::IntSize viewSize)
  {
      m_viewSize = viewSize;
@@ -257,7 +263,7 @@ index f5ba02041..12e9a1936 100644
  }
  
  void PlayStationWebView::setViewState(OptionSet<WebCore::ActivityState> flags)
-@@ -108,6 +128,7 @@ void PlayStationWebView::setViewState(OptionSet<WebCore::ActivityState> flags)
+@@ -108,6 +134,7 @@ void PlayStationWebView::setViewState(OptionSet<WebCore::ActivityState> flags)
  
  void PlayStationWebView::setViewNeedsDisplay(const WebCore::Region& region)
  {
@@ -265,7 +271,7 @@ index f5ba02041..12e9a1936 100644
      if (m_client)
          m_client->setViewNeedsDisplay(*this, region);
  }
-@@ -139,10 +160,25 @@ bool PlayStationWebView::isFullScreen()
+@@ -139,10 +166,25 @@ bool PlayStationWebView::isFullScreen()
  
  void PlayStationWebView::enterFullScreen(CompletionHandler<void(bool)>&& completionHandler)
  {

@@ -50,16 +50,21 @@ first 400 messages each way on a descriptor are logged with the
 system-wide monotonic time at each hop (send, written by sendmsg,
 received, dispatched), and every sendmsg that takes over 20 ms.
 
+Routine traces (per message, per update, cookie decisions) are logged only
+when the shell's ps5_trace_enabled() says so (PROSPEROWEB_TRACE=1): console
+run 32 showed them stalling the children's run loops. Failures and one-time
+events (process launch, connection open) are always logged (PS5_LOG).
+
 Also: Connection::platformPrepareForOpen() opens the connection even when
 the socket cannot be made non-blocking (logged). The PlayStation
 SocketMonitor waits with select() before it reads, so a blocking socket
 still works, while refusing to open left the child waiting forever (console
 run 23, where fcntl on the socket was refused).
 diff --git a/Source/WebCore/platform/unix/SharedMemoryUnix.cpp b/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
-index 16eb9a0de..012fb7bc9 100644
+index 16eb9a0de..e6d1965e4 100644
 --- a/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
 +++ b/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
-@@ -27,11 +27,24 @@
+@@ -27,11 +27,30 @@
  
  #include "config.h"
  #include "SharedMemory.h"
@@ -69,12 +74,18 @@ index 16eb9a0de..012fb7bc9 100644
 +// ProsperoWeb diagnostics (console run 24: page updates never reached the
 +// screen in the native title): the shell's logger, when linked.
 +extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
-+#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++extern "C" bool ps5_trace_enabled(void) __attribute__((weak));
++// Routine traces only with PROSPEROWEB_TRACE=1 (ps5_trace_enabled, the shell);
++// failures and one-time events always (PS5_LOG).
++#define PS5_TRACE(...) do { if (ps5_log_printf && ps5_trace_enabled && ps5_trace_enabled()) ps5_log_printf(__VA_ARGS__); } while (0)
++#define PS5_LOG(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
 +#elif !defined(PS5_TRACE)
 +#define PS5_TRACE(...) do { } while (0)
++#define PS5_LOG(...) do { } while (0)
 +#endif
 +// Logs the first 12 occurrences and then every 200th.
 +#define PS5_TRACE_SOME(counter, ...) do { static std::atomic<unsigned> counter { 0 }; unsigned n_ = ++counter; if (n_ <= 12 || !(n_ % 200)) PS5_TRACE(__VA_ARGS__); } while (0)
++#define PS5_TRACE_SOME_LOG(counter, ...) do { static std::atomic<unsigned> counter { 0 }; unsigned n_ = ++counter; if (n_ <= 12 || !(n_ % 200)) PS5_LOG(__VA_ARGS__); } while (0)
  
  #if USE(UNIX_DOMAIN_SOCKETS) && !OS(ANDROID)
  
@@ -84,7 +95,7 @@ index 16eb9a0de..012fb7bc9 100644
  #include <stdlib.h>
  #include <sys/mman.h>
  #include <sys/stat.h>
-@@ -119,8 +132,63 @@ static UnixFileDescriptor createSharedMemory()
+@@ -119,8 +138,63 @@ static UnixFileDescriptor createSharedMemory()
      return UnixFileDescriptor { fileDescriptor, UnixFileDescriptor::Adopt };
  }
  
@@ -115,31 +126,31 @@ index 16eb9a0de..012fb7bc9 100644
 +    {
 +        auto fileDescriptor = createSharedMemory();
 +        if (!fileDescriptor)
-+            PS5_TRACE_SOME(shmOpenFailures, "webkit: SharedMemory::allocate %zu: shm_open(SHM_ANON) failed: errno %d", size, errno);
++            PS5_TRACE_SOME_LOG(shmOpenFailures, "webkit: SharedMemory::allocate %zu: shm_open(SHM_ANON) failed: errno %d", size, errno);
 +        else if (ftruncate(fileDescriptor.value(), length) == -1)
-+            PS5_TRACE_SOME(shmTruncateFailures, "webkit: SharedMemory::allocate %zu: ftruncate(shm, %zu) failed: errno %d", size, length, errno);
++            PS5_TRACE_SOME_LOG(shmTruncateFailures, "webkit: SharedMemory::allocate %zu: ftruncate(shm, %zu) failed: errno %d", size, length, errno);
 +        else if (void* data = ps5MapShared(fileDescriptor.value(), length))
 +            return ps5Allocate(size, WTF::move(fileDescriptor), data);
 +        else
-+            PS5_TRACE_SOME(shmMapFailures, "webkit: SharedMemory::allocate %zu: mmap(shm, %zu) failed: errno %d", size, length, errno);
++            PS5_TRACE_SOME_LOG(shmMapFailures, "webkit: SharedMemory::allocate %zu: mmap(shm, %zu) failed: errno %d", size, length, errno);
 +    }
 +    const char* tmp = getenv("TMPDIR");
 +    char path[512];
 +    snprintf(path, sizeof(path), "%s/wk-shm-%d-%u", tmp && tmp[0] ? tmp : "/data/prosperoweb/tmp", static_cast<int>(getpid()), cryptographicallyRandomNumber<unsigned>());
 +    int fd = open(path, O_RDWR | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
 +    if (fd < 0) {
-+        PS5_TRACE_SOME(fileOpenFailures, "webkit: SharedMemory::allocate %zu: file fallback open(%s) failed: errno %d", size, path, errno);
++        PS5_TRACE_SOME_LOG(fileOpenFailures, "webkit: SharedMemory::allocate %zu: file fallback open(%s) failed: errno %d", size, path, errno);
 +        return nullptr;
 +    }
 +    unlink(path);
 +    UnixFileDescriptor fileDescriptor { fd, UnixFileDescriptor::Adopt };
 +    if (ftruncate(fd, length) == -1) {
-+        PS5_TRACE_SOME(fileTruncateFailures, "webkit: SharedMemory::allocate %zu: file fallback ftruncate failed: errno %d", size, errno);
++        PS5_TRACE_SOME_LOG(fileTruncateFailures, "webkit: SharedMemory::allocate %zu: file fallback ftruncate failed: errno %d", size, errno);
 +        return nullptr;
 +    }
 +    void* data = ps5MapShared(fd, length);
 +    if (!data) {
-+        PS5_TRACE_SOME(fileMapFailures, "webkit: SharedMemory::allocate %zu: file fallback mmap failed: errno %d", size, errno);
++        PS5_TRACE_SOME_LOG(fileMapFailures, "webkit: SharedMemory::allocate %zu: file fallback mmap failed: errno %d", size, errno);
 +        return nullptr;
 +    }
 +    PS5_TRACE_SOME(fileAllocations, "webkit: SharedMemory::allocate %zu: using an unlinked file in %s", size, tmp && tmp[0] ? tmp : "/data/prosperoweb/tmp");
@@ -148,7 +159,7 @@ index 16eb9a0de..012fb7bc9 100644
      auto fileDescriptor = createSharedMemory();
      if (!fileDescriptor) {
          SAFE_WTFLOGALWAYS("Failed to create shared memory: %s", safeStrerror(errno));
-@@ -141,6 +209,7 @@ RefPtr<SharedMemory> SharedMemory::allocate(size_t size)
+@@ -141,6 +215,7 @@ RefPtr<SharedMemory> SharedMemory::allocate(size_t size)
      instance->m_fileDescriptor = WTF::move(fileDescriptor);
      instance->m_size = size;
      return instance;
@@ -156,19 +167,19 @@ index 16eb9a0de..012fb7bc9 100644
  }
  
  RefPtr<SharedMemory> SharedMemory::map(Handle&& handle, Protection protection, CopyOnWrite copyOnWrite)
-@@ -150,8 +219,10 @@ RefPtr<SharedMemory> SharedMemory::map(Handle&& handle, Protection protection, C
+@@ -150,8 +225,10 @@ RefPtr<SharedMemory> SharedMemory::map(Handle&& handle, Protection protection, C
      ASSERT_UNUSED(copyOnWrite, copyOnWrite == CopyOnWrite::No);
  
      void* data = mmap(0, handle.size(), accessModeMMap(protection), MAP_SHARED, handle.m_handle.value(), 0);
 -    if (data == MAP_FAILED)
 +    if (data == MAP_FAILED) {
-+        PS5_TRACE_SOME(mapFailures, "webkit: SharedMemory::map fd %d size %zu FAILED: errno %d", handle.m_handle.value(), static_cast<size_t>(handle.size()), errno);
++        PS5_TRACE_SOME_LOG(mapFailures, "webkit: SharedMemory::map fd %d size %zu FAILED: errno %d", handle.m_handle.value(), static_cast<size_t>(handle.size()), errno);
          return nullptr;
 +    }
  
      RefPtr<SharedMemory> instance = adoptRef(new SharedMemory());
      instance->m_data = data;
-@@ -186,6 +257,18 @@ auto SharedMemory::createHandle(Protection) -> std::optional<Handle>
+@@ -186,6 +263,18 @@ auto SharedMemory::createHandle(Protection) -> std::optional<Handle>
      // See https://bugs.webkit.org/show_bug.cgi?id=131542.
  
      UnixFileDescriptor duplicate { m_fileDescriptor.value(), UnixFileDescriptor::Duplicate };
@@ -182,16 +193,16 @@ index 16eb9a0de..012fb7bc9 100644
 +        return { Handle(WTF::move(m_fileDescriptor), m_size) };
 +    }
 +    if (!duplicate)
-+        PS5_TRACE_SOME(handleFailures, "webkit: SharedMemory::createHandle: no descriptor left to hand over (%zu bytes)", m_size);
++        PS5_TRACE_SOME_LOG(handleFailures, "webkit: SharedMemory::createHandle: no descriptor left to hand over (%zu bytes)", m_size);
 +#endif
      if (!duplicate) {
          ASSERT_NOT_REACHED();
          return std::nullopt;
 diff --git a/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp b/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp
-index 3f62dc763..4f4617033 100644
+index 3f62dc763..d4d4f2bf3 100644
 --- a/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp
 +++ b/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp
-@@ -26,6 +26,15 @@
+@@ -26,6 +26,20 @@
  #include "config.h"
  #include "NetworkConnectionToWebProcess.h"
  
@@ -199,15 +210,20 @@ index 3f62dc763..4f4617033 100644
 +// ProsperoWeb diagnostics (console run 29: "cookies are disabled" in the
 +// native title): the shell's logger, when linked.
 +extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
-+#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++extern "C" bool ps5_trace_enabled(void) __attribute__((weak));
++// Routine traces only with PROSPEROWEB_TRACE=1 (ps5_trace_enabled, the shell);
++// failures and one-time events always (PS5_LOG).
++#define PS5_TRACE(...) do { if (ps5_log_printf && ps5_trace_enabled && ps5_trace_enabled()) ps5_log_printf(__VA_ARGS__); } while (0)
++#define PS5_LOG(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
 +#elif !defined(PS5_TRACE)
 +#define PS5_TRACE(...) do { } while (0)
++#define PS5_LOG(...) do { } while (0)
 +#endif
 +
  #include "BlobDataFileReferenceWithSandboxExtension.h"
  #include "LogInitialization.h"
  #include "Logging.h"
-@@ -932,6 +941,8 @@ bool NetworkConnectionToWebProcess::hostsDomain(const RegistrableDomain& domain)
+@@ -932,6 +946,8 @@ bool NetworkConnectionToWebProcess::hostsDomain(const RegistrableDomain& domain)
  auto NetworkConnectionToWebProcess::validateCookieAccess(ASCIILiteral messageName, const URL& firstParty, const URL& url, const SameSiteInfo* sameSiteInfo, std::optional<WebPageProxyIdentifier> webPageProxyID, AllowUnhostedURL allowUnhostedURL) -> CookieAccess
  {
      auto allowCookieAccess = NetworkProcess::singleton().allowsFirstPartyForCookies(m_webProcessIdentifier, firstParty);
@@ -216,7 +232,7 @@ index 3f62dc763..4f4617033 100644
      if (allowCookieAccess == NetworkProcess::AllowCookieAccess::Terminate)
          return CookieAccess::Terminate;
  
-@@ -939,6 +950,7 @@ auto NetworkConnectionToWebProcess::validateCookieAccess(ASCIILiteral messageNam
+@@ -939,6 +955,7 @@ auto NetworkConnectionToWebProcess::validateCookieAccess(ASCIILiteral messageNam
      // teardown, and terminating it for that would be a regression.
      if (!NetworkProcess::singleton().allowsWebPageProxyIdentifier(m_webProcessIdentifier, webPageProxyID)) {
          CONNECTION_RELEASE_LOG_ERROR(IPC, "%" PUBLIC_LOG_STRING ": dropping request from process %" PRIu64 " for pageID not in allow-list", messageName.characters(), m_webProcessIdentifier.toUInt64());
@@ -224,7 +240,7 @@ index 3f62dc763..4f4617033 100644
          return CookieAccess::Disallow;
      }
  
-@@ -949,6 +961,7 @@ auto NetworkConnectionToWebProcess::validateCookieAccess(ASCIILiteral messageNam
+@@ -949,6 +966,7 @@ auto NetworkConnectionToWebProcess::validateCookieAccess(ASCIILiteral messageNam
      // first party, so it could otherwise name the embedder's URL and get the embedder's own cookies.
      if (allowUnhostedURL == AllowUnhostedURL::No && !hostsDomain(RegistrableDomain { url })) {
          CONNECTION_RELEASE_LOG_ERROR(IPC, "%" PUBLIC_LOG_STRING ": Rejecting cookie access for a site this process does not host", messageName.characters());
@@ -232,11 +248,11 @@ index 3f62dc763..4f4617033 100644
          return CookieAccess::Disallow;
      }
  
-@@ -1014,12 +1027,15 @@ void NetworkConnectionToWebProcess::cookiesEnabled(const URL& firstParty, const
+@@ -1014,12 +1032,15 @@ void NetworkConnectionToWebProcess::cookiesEnabled(const URL& firstParty, const
  
      CheckedPtr networkStorageSession = storageSession();
      if (!networkStorageSession) {
-+        PS5_TRACE("webkit: cookies: cookiesEnabled: NO storage session");
++        PS5_LOG("webkit: cookies: cookiesEnabled: NO storage session");
          completionHandler(false);
          return;
      }
@@ -250,10 +266,10 @@ index 3f62dc763..4f4617033 100644
  
  // The only caller never passed frame, page or web page proxy identifiers, so relaxed third-party cookie blocking never applied here.
 diff --git a/Source/WebKit/NetworkProcess/curl/NetworkSessionCurl.cpp b/Source/WebKit/NetworkProcess/curl/NetworkSessionCurl.cpp
-index b3b800c4a..9cb0c24de 100644
+index b3b800c4a..a9bef7e93 100644
 --- a/Source/WebKit/NetworkProcess/curl/NetworkSessionCurl.cpp
 +++ b/Source/WebKit/NetworkProcess/curl/NetworkSessionCurl.cpp
-@@ -26,6 +26,15 @@
+@@ -26,6 +26,20 @@
  #include "config.h"
  #include "NetworkSessionCurl.h"
  
@@ -261,27 +277,32 @@ index b3b800c4a..9cb0c24de 100644
 +// ProsperoWeb diagnostics (console run 29: "cookies are disabled" in the
 +// native title): the shell's logger, when linked.
 +extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
-+#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++extern "C" bool ps5_trace_enabled(void) __attribute__((weak));
++// Routine traces only with PROSPEROWEB_TRACE=1 (ps5_trace_enabled, the shell);
++// failures and one-time events always (PS5_LOG).
++#define PS5_TRACE(...) do { if (ps5_log_printf && ps5_trace_enabled && ps5_trace_enabled()) ps5_log_printf(__VA_ARGS__); } while (0)
++#define PS5_LOG(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
 +#elif !defined(PS5_TRACE)
 +#define PS5_TRACE(...) do { } while (0)
++#define PS5_LOG(...) do { } while (0)
 +#endif
 +
  #include "AuthenticationManager.h"
  #include "NetworkProcess.h"
  #include "NetworkSessionCreationParameters.h"
-@@ -43,6 +52,7 @@ NetworkSessionCurl::NetworkSessionCurl(NetworkProcess& networkProcess, const Net
+@@ -43,6 +57,7 @@ NetworkSessionCurl::NetworkSessionCurl(NetworkProcess& networkProcess, const Net
      : NetworkSession(networkProcess, parameters)
  {
      if (auto* storageSession = networkStorageSession()) {
-+        PS5_TRACE("webkit: cookies: network session %s, cookie file '%s'", parameters.sessionID.isEphemeral() ? "EPHEMERAL" : "persistent", parameters.cookiePersistentStorageFile.utf8().data());
++        PS5_LOG("webkit: cookies: network session %s, cookie file '%s'", parameters.sessionID.isEphemeral() ? "EPHEMERAL" : "persistent", parameters.cookiePersistentStorageFile.utf8().data());
          if (!parameters.cookiePersistentStorageFile.isEmpty())
              storageSession->setCookieDatabase(makeUniqueRef<CookieJarDB>(parameters.cookiePersistentStorageFile));
          storageSession->setProxySettings(parameters.proxySettings);
 diff --git a/Source/WebKit/Platform/IPC/Connection.cpp b/Source/WebKit/Platform/IPC/Connection.cpp
-index 88ca5b968..00fa25a2d 100644
+index 88ca5b968..ec39d7aa4 100644
 --- a/Source/WebKit/Platform/IPC/Connection.cpp
 +++ b/Source/WebKit/Platform/IPC/Connection.cpp
-@@ -26,6 +26,35 @@
+@@ -26,6 +26,40 @@
  #include "config.h"
  #include "Connection.h"
  
@@ -291,7 +312,11 @@ index 88ca5b968..00fa25a2d 100644
 +// ProsperoWeb diagnostics (console run 25: the UI sent the page's WebProcess
 +// one message and then nothing): the message names on each connection.
 +extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
-+#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++extern "C" bool ps5_trace_enabled(void) __attribute__((weak));
++// Routine traces only with PROSPEROWEB_TRACE=1 (ps5_trace_enabled, the shell);
++// failures and one-time events always (PS5_LOG).
++#define PS5_TRACE(...) do { if (ps5_log_printf && ps5_trace_enabled && ps5_trace_enabled()) ps5_log_printf(__VA_ARGS__); } while (0)
++#define PS5_LOG(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
 +namespace {
 +std::atomic<unsigned> ps5SentPerFd[256];
 +std::atomic<unsigned> ps5DispatchedPerFd[256];
@@ -312,12 +337,13 @@ index 88ca5b968..00fa25a2d 100644
 +#define PS5_IPC_FD() (socketDescriptor())
 +#else
 +#define PS5_TRACE(...) do { } while (0)
++#define PS5_LOG(...) do { } while (0)
 +#endif
 +
  #include "Encoder.h"
  #include "GeneratedSerializers.h"
  #include "Logging.h"
-@@ -601,6 +630,10 @@ Error Connection::sendMessage(UniqueRef<Encoder>&& encoder, OptionSet<SendOption
+@@ -601,6 +635,10 @@ Error Connection::sendMessage(UniqueRef<Encoder>&& encoder, OptionSet<SendOption
  
  Error Connection::sendMessageImpl(UniqueRef<Encoder>&& encoder, OptionSet<SendOption> sendOptions, std::optional<Thread::QOS> qos)
  {
@@ -328,7 +354,7 @@ index 88ca5b968..00fa25a2d 100644
      if (!isValid())
          return Error::InvalidConnection;
  
-@@ -778,6 +811,9 @@ static bool isWaitedForMessage(MessageName messageName, uint64_t destinationID,
+@@ -778,6 +816,9 @@ static bool isWaitedForMessage(MessageName messageName, uint64_t destinationID,
  
  auto Connection::waitForMessage(MessageName messageName, uint64_t destinationID, Timeout timeout, OptionSet<WaitForOption> waitForOptions) -> DecoderOrError
  {
@@ -338,15 +364,15 @@ index 88ca5b968..00fa25a2d 100644
      if (!isValid())
          return makeUnexpected(Error::InvalidConnection);
  
-@@ -1025,6 +1061,7 @@ auto Connection::waitForSyncReply(SyncRequestID syncRequestID, MessageName messa
+@@ -1025,6 +1066,7 @@ auto Connection::waitForSyncReply(SyncRequestID syncRequestID, MessageName messa
  #else
      RELEASE_LOG_ERROR(IPC, "Connection::waitForSyncReply: Timed-out while waiting for reply for %s, id=%" PRIu64, description(messageName).characters(), syncRequestID.toUInt64());
  #endif
-+    PS5_TRACE("webkit: ipc fd %d sync reply TIMED OUT for %s", PS5_IPC_FD(), description(messageName).characters());
++    PS5_LOG("webkit: ipc fd %d sync reply TIMED OUT for %s", PS5_IPC_FD(), description(messageName).characters());
  
      return makeUnexpected(Error::Timeout);
  }
-@@ -1449,6 +1486,10 @@ void Connection::enqueueIncomingMessage(UniqueRef<Decoder> incomingMessage)
+@@ -1449,6 +1491,10 @@ void Connection::enqueueIncomingMessage(UniqueRef<Decoder> incomingMessage)
  
  void Connection::dispatchMessage(Decoder& decoder)
  {
@@ -358,10 +384,10 @@ index 88ca5b968..00fa25a2d 100644
      RefPtr client = m_client.get();
      RELEASE_ASSERT(client);
 diff --git a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
-index 0031d7fee..88f31a430 100644
+index 0031d7fee..d4a812b69 100644
 --- a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
 +++ b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
-@@ -28,9 +28,22 @@
+@@ -28,9 +28,27 @@
  #include "config.h"
  #include "Connection.h"
  
@@ -369,9 +395,14 @@ index 0031d7fee..88f31a430 100644
 +// ProsperoWeb diagnostics (console run 22: the UI never opened its IPC
 +// connections in the native title): the shell's logger, when linked.
 +extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
-+#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++extern "C" bool ps5_trace_enabled(void) __attribute__((weak));
++// Routine traces only with PROSPEROWEB_TRACE=1 (ps5_trace_enabled, the shell);
++// failures and one-time events always (PS5_LOG).
++#define PS5_TRACE(...) do { if (ps5_log_printf && ps5_trace_enabled && ps5_trace_enabled()) ps5_log_printf(__VA_ARGS__); } while (0)
++#define PS5_LOG(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
 +#else
 +#define PS5_TRACE(...) do { } while (0)
++#define PS5_LOG(...) do { } while (0)
 +#endif
 +
  #include "IPCUtilities.h"
@@ -384,7 +415,7 @@ index 0031d7fee..88f31a430 100644
  #include <WebCore/SharedMemory.h>
  #include <sys/socket.h>
  #include <unistd.h>
-@@ -63,6 +76,12 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN // Unix port
+@@ -63,6 +81,12 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN // Unix port
  namespace IPC {
  
  static const size_t messageMaxSize = 4096;
@@ -397,7 +428,7 @@ index 0031d7fee..88f31a430 100644
  static const size_t attachmentMaxAmount = 254;
  
  class AttachmentInfo {
-@@ -102,7 +121,11 @@ int Connection::socketDescriptor() const
+@@ -102,7 +126,11 @@ int Connection::socketDescriptor() const
  void Connection::platformInitialize(Identifier&& identifier)
  {
      m_socketDescriptor = WTF::move(identifier.handle);
@@ -409,7 +440,7 @@ index 0031d7fee..88f31a430 100644
      m_fileDescriptors.reserveInitialCapacity(attachmentMaxAmount);
  }
  
-@@ -134,7 +157,13 @@ bool Connection::processMessage()
+@@ -134,7 +162,13 @@ bool Connection::processMessage()
      MessageInfo messageInfo;
      memcpySpan(asMutableByteSpan(messageInfo), consumeSpan(messageData, sizeof(messageInfo)));
  
@@ -420,32 +451,32 @@ index 0031d7fee..88f31a430 100644
 +    const size_t inlineMaxSize = messageMaxSize;
 +#endif
 +    if (messageInfo.attachmentCount() > attachmentMaxAmount || (!messageInfo.isBodyOutOfLine() && messageInfo.bodySize() > inlineMaxSize)) {
-+        PS5_TRACE("webkit: ipc fd %d DROPS a message: %zu attachments, body %zu bytes%s", socketDescriptor(), messageInfo.attachmentCount(), messageInfo.bodySize(), messageInfo.isBodyOutOfLine() ? " out of line" : "");
++        PS5_LOG("webkit: ipc fd %d DROPS a message: %zu attachments, body %zu bytes%s", socketDescriptor(), messageInfo.attachmentCount(), messageInfo.bodySize(), messageInfo.isBodyOutOfLine() ? " out of line" : "");
          ASSERT_NOT_REACHED();
          return false;
      }
-@@ -171,12 +200,16 @@ bool Connection::processMessage()
+@@ -171,12 +205,16 @@ bool Connection::processMessage()
          ASSERT(messageInfo.bodySize());
  
          if (attachmentInfo[attachmentCount].isNull()) {
-+            PS5_TRACE("webkit: ipc fd %d out-of-line message (%zu bytes) without its body descriptor", socketDescriptor(), messageInfo.bodySize());
++            PS5_LOG("webkit: ipc fd %d out-of-line message (%zu bytes) without its body descriptor", socketDescriptor(), messageInfo.bodySize());
              ASSERT_NOT_REACHED();
              return false;
          }
  
 +        if (attachmentFileDescriptorCount > m_fileDescriptors.size())
-+            PS5_TRACE("webkit: ipc fd %d message expects %zu descriptors, %zu received", socketDescriptor(), attachmentFileDescriptorCount, m_fileDescriptors.size());
++            PS5_LOG("webkit: ipc fd %d message expects %zu descriptors, %zu received", socketDescriptor(), attachmentFileDescriptorCount, m_fileDescriptors.size());
          auto fd = UnixFileDescriptor { m_fileDescriptors[attachmentFileDescriptorCount - 1], UnixFileDescriptor::Adopt };
          if (!fd) {
-+            PS5_TRACE("webkit: ipc fd %d out-of-line body descriptor invalid", socketDescriptor());
++            PS5_LOG("webkit: ipc fd %d out-of-line body descriptor invalid", socketDescriptor());
              ASSERT_NOT_REACHED();
              return false;
          }
-@@ -184,9 +217,11 @@ bool Connection::processMessage()
+@@ -184,9 +222,11 @@ bool Connection::processMessage()
          auto handle = WebCore::SharedMemory::Handle { WTF::move(fd), messageInfo.bodySize() };
          oolMessageBody = WebCore::SharedMemory::map(WTF::move(handle), WebCore::SharedMemory::Protection::ReadOnly);
          if (!oolMessageBody) {
-+            PS5_TRACE("webkit: ipc fd %d cannot map an out-of-line body of %zu bytes", socketDescriptor(), messageInfo.bodySize());
++            PS5_LOG("webkit: ipc fd %d cannot map an out-of-line body of %zu bytes", socketDescriptor(), messageInfo.bodySize());
              ASSERT_NOT_REACHED();
              return false;
          }
@@ -453,13 +484,13 @@ index 0031d7fee..88f31a430 100644
      }
  
      ASSERT(attachments.size() == (messageInfo.isBodyOutOfLine() ? messageInfo.attachmentCount() - 1 : messageInfo.attachmentCount()));
-@@ -197,9 +232,19 @@ bool Connection::processMessage()
+@@ -197,9 +237,19 @@ bool Connection::processMessage()
  
      auto decoder = Decoder::create(messageBody.first(messageInfo.bodySize()), WTF::move(attachments));
      ASSERT(decoder);
 -    if (!decoder)
 +    if (!decoder) {
-+        PS5_TRACE("webkit: ipc fd %d cannot decode a message of %zu bytes", socketDescriptor(), messageInfo.bodySize());
++        PS5_LOG("webkit: ipc fd %d cannot decode a message of %zu bytes", socketDescriptor(), messageInfo.bodySize());
          return false;
 +    }
  
@@ -474,7 +505,7 @@ index 0031d7fee..88f31a430 100644
      processIncomingMessage(makeUniqueRefFromNonNullUniquePtr(WTF::move(decoder)));
  
      if (m_readBuffer.size() > messageLength) {
-@@ -326,8 +371,16 @@ bool Connection::platformPrepareForOpen()
+@@ -326,8 +376,16 @@ bool Connection::platformPrepareForOpen()
  {
      if (setNonBlock(socketDescriptor()))
          return true;
@@ -482,7 +513,7 @@ index 0031d7fee..88f31a430 100644
 +    // The PlayStation SocketMonitor waits with select() before reading, so a
 +    // blocking socket still works; refusing to open would leave the child
 +    // waiting forever (console run 23).
-+    PS5_TRACE("webkit: IPC::Connection: cannot make fd %d non-blocking (errno %d); opening it blocking", socketDescriptor(), errno);
++    PS5_LOG("webkit: IPC::Connection: cannot make fd %d non-blocking (errno %d); opening it blocking", socketDescriptor(), errno);
 +    return true;
 +#else
      ASSERT_NOT_REACHED();
@@ -491,28 +522,28 @@ index 0031d7fee..88f31a430 100644
  }
  
  void Connection::platformOpen()
-@@ -336,8 +389,10 @@ void Connection::platformOpen()
+@@ -336,8 +394,10 @@ void Connection::platformOpen()
      m_isConnected = true;
  
  #if PLATFORM(PLAYSTATION)
-+    PS5_TRACE("webkit: IPC::Connection::platformOpen fd %d, starting SocketMonitor", m_socketDescriptor.value());
++    PS5_LOG("webkit: IPC::Connection::platformOpen fd %d, starting SocketMonitor", m_socketDescriptor.value());
      m_socketMonitor = Thread::create("SocketMonitor"_s, [protectedThis] {
          {
-+            PS5_TRACE("webkit: SocketMonitor running for fd %d", protectedThis->socketDescriptor());
++            PS5_LOG("webkit: SocketMonitor running for fd %d", protectedThis->socketDescriptor());
              int fd;
              while ((fd = protectedThis->socketDescriptor()) != -1) {
                  int maxFd = fd;
-@@ -373,14 +428,28 @@ bool Connection::sendOutgoingMessage(UniqueRef<Encoder>&& encoder)
+@@ -373,14 +433,28 @@ bool Connection::sendOutgoingMessage(UniqueRef<Encoder>&& encoder)
  
      UnixMessage outputMessage(encoder.get());
      if (outputMessage.attachments().size() > (attachmentMaxAmount - 1)) {
-+        PS5_TRACE("webkit: ipc fd %d DROPS outgoing %s: %zu attachments", socketDescriptor(), description(encoder->messageName()).characters(), outputMessage.attachments().size());
++        PS5_LOG("webkit: ipc fd %d DROPS outgoing %s: %zu attachments", socketDescriptor(), description(encoder->messageName()).characters(), outputMessage.attachments().size());
          ASSERT_NOT_REACHED();
          return false;
      }
 +    for (auto& attachment : outputMessage.attachments()) {
 +        if (!attachment)
-+            PS5_TRACE("webkit: ipc fd %d outgoing %s carries an INVALID descriptor attachment", socketDescriptor(), description(encoder->messageName()).characters());
++            PS5_LOG("webkit: ipc fd %d outgoing %s carries an INVALID descriptor attachment", socketDescriptor(), description(encoder->messageName()).characters());
 +    }
  
      size_t messageSizeWithBodyInline = sizeof(MessageInfo) + (outputMessage.attachments().size() * sizeof(AttachmentInfo)) + outputMessage.bodySize();
@@ -521,18 +552,18 @@ index 0031d7fee..88f31a430 100644
 +        if (!outputMessage.setBodyOutOfLine()) {
 +#if defined(PS5_HOMEBREW)
 +            if (messageSizeWithBodyInline <= messageInlineFallbackMaxSize) {
-+                PS5_TRACE("webkit: ipc fd %d sends %s INLINE (%zu bytes): no shared memory for an out-of-line body (errno %d)", socketDescriptor(), description(encoder->messageName()).characters(), messageSizeWithBodyInline, errno);
++                PS5_LOG("webkit: ipc fd %d sends %s INLINE (%zu bytes): no shared memory for an out-of-line body (errno %d)", socketDescriptor(), description(encoder->messageName()).characters(), messageSizeWithBodyInline, errno);
 +                return sendOutputMessage(WTF::move(outputMessage));
 +            }
 +#endif
-+            PS5_TRACE("webkit: ipc fd %d DROPS outgoing %s: no shared memory for its %zu-byte body (errno %d)", socketDescriptor(), description(encoder->messageName()).characters(), outputMessage.bodySize(), errno);
++            PS5_LOG("webkit: ipc fd %d DROPS outgoing %s: no shared memory for its %zu-byte body (errno %d)", socketDescriptor(), description(encoder->messageName()).characters(), outputMessage.bodySize(), errno);
              return false;
 +        }
 +        PS5_TRACE("webkit: ipc fd %d sends %s with an out-of-line body of %zu bytes", socketDescriptor(), description(encoder->messageName()).characters(), outputMessage.bodySize());
      }
  
      return sendOutputMessage(WTF::move(outputMessage));
-@@ -450,6 +519,9 @@ bool Connection::sendOutputMessage(UnixMessage&& outputMessage)
+@@ -450,6 +524,9 @@ bool Connection::sendOutputMessage(UnixMessage&& outputMessage)
  
      message.msg_iovlen = iovLength;
  
@@ -542,7 +573,7 @@ index 0031d7fee..88f31a430 100644
      while (sendmsg(socketDescriptor(), &message, MSG_NOSIGNAL) == -1) {
          if (errno == EINTR)
              continue;
-@@ -479,6 +551,15 @@ bool Connection::sendOutputMessage(UnixMessage&& outputMessage)
+@@ -479,6 +556,15 @@ bool Connection::sendOutputMessage(UnixMessage&& outputMessage)
          return false;
      }
  
@@ -559,7 +590,7 @@ index 0031d7fee..88f31a430 100644
      RELEASE_ASSERT(m_outgoingHardwareBuffers.isEmpty());
      m_outgoingHardwareBuffers = WTF::move(hardwareBuffers);
 diff --git a/Source/WebKit/Platform/IPC/unix/UnixMessage.h b/Source/WebKit/Platform/IPC/unix/UnixMessage.h
-index 10932fbbf..dca413f92 100644
+index 10932fbbf..12c333be9 100644
 --- a/Source/WebKit/Platform/IPC/unix/UnixMessage.h
 +++ b/Source/WebKit/Platform/IPC/unix/UnixMessage.h
 @@ -27,6 +27,11 @@
@@ -606,8 +637,8 @@ index 10932fbbf..dca413f92 100644
          auto handle = oolMessageBody->createHandle(WebCore::SharedMemory::Protection::ReadOnly);
 -        if (!handle)
 +        if (!handle) {
-+#if defined(PS5_HOMEBREW) && defined(PS5_TRACE)
-+            PS5_TRACE("webkit: ipc out-of-line body: shared memory allocated, but no handle for it (descriptor duplicate failed: errno %d)", errno);
++#if defined(PS5_HOMEBREW) && defined(PS5_LOG)
++            PS5_LOG("webkit: ipc out-of-line body: shared memory allocated, but no handle for it (descriptor duplicate failed: errno %d)", errno);
 +#endif
              return false;
 +        }
@@ -615,10 +646,10 @@ index 10932fbbf..dca413f92 100644
          m_messageInfo.setBodyOutOfLine();
          memcpySpan(oolMessageBody->mutableSpan(), m_body);
 diff --git a/Source/WebKit/UIProcess/AuxiliaryProcessProxy.cpp b/Source/WebKit/UIProcess/AuxiliaryProcessProxy.cpp
-index 1c0a468db..e4a51be35 100644
+index 1c0a468db..a07ee924c 100644
 --- a/Source/WebKit/UIProcess/AuxiliaryProcessProxy.cpp
 +++ b/Source/WebKit/UIProcess/AuxiliaryProcessProxy.cpp
-@@ -26,6 +26,15 @@
+@@ -26,6 +26,20 @@
  #include "config.h"
  #include "AuxiliaryProcessProxy.h"
  
@@ -626,35 +657,40 @@ index 1c0a468db..e4a51be35 100644
 +// ProsperoWeb diagnostics (console run 22: the UI never opened its IPC
 +// connections in the native title): the shell's logger, when linked.
 +extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
-+#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++extern "C" bool ps5_trace_enabled(void) __attribute__((weak));
++// Routine traces only with PROSPEROWEB_TRACE=1 (ps5_trace_enabled, the shell);
++// failures and one-time events always (PS5_LOG).
++#define PS5_TRACE(...) do { if (ps5_log_printf && ps5_trace_enabled && ps5_trace_enabled()) ps5_log_printf(__VA_ARGS__); } while (0)
++#define PS5_LOG(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
 +#else
 +#define PS5_TRACE(...) do { } while (0)
++#define PS5_LOG(...) do { } while (0)
 +#endif
 +
  #include "AuxiliaryProcessCreationParameters.h"
  #include "AuxiliaryProcessMessages.h"
  #include "Connection.h"
-@@ -425,6 +434,7 @@ void AuxiliaryProcessProxy::didFinishLaunching(ProcessLauncher* launcher, IPC::C
+@@ -425,6 +439,7 @@ void AuxiliaryProcessProxy::didFinishLaunching(ProcessLauncher* launcher, IPC::C
      if (launchTime > 1_s)
          RELEASE_LOG_FAULT(Process, "%s process (%p) took %f seconds to launch", processName().characters(), this, launchTime.value());
      
-+    PS5_TRACE("webkit: AuxiliaryProcessProxy::didFinishLaunching %s, identifier %s", processName().characters(), connectionIdentifier ? "valid" : "INVALID (launch failed)");
++    PS5_LOG("webkit: AuxiliaryProcessProxy::didFinishLaunching %s, identifier %s", processName().characters(), connectionIdentifier ? "valid" : "INVALID (launch failed)");
      if (!connectionIdentifier)
          return;
  
-@@ -455,6 +465,7 @@ void AuxiliaryProcessProxy::didFinishLaunching(ProcessLauncher* launcher, IPC::C
+@@ -455,6 +470,7 @@ void AuxiliaryProcessProxy::didFinishLaunching(ProcessLauncher* launcher, IPC::C
  
      connectionWillOpen(*connection);
      connection->open(*this);
-+    PS5_TRACE("webkit: AuxiliaryProcessProxy: %s connection opened", processName().characters());
++    PS5_LOG("webkit: AuxiliaryProcessProxy: %s connection opened", processName().characters());
      connection->setOutgoingMessageQueueIsGrowingLargeCallback([weakThis = WeakPtr { *this }] {
          ensureOnMainRunLoop([weakThis] {
              if (RefPtr protectedThis = weakThis.get())
 diff --git a/Source/WebKit/UIProcess/CoordinatedGraphics/DrawingAreaProxyCoordinatedGraphics.cpp b/Source/WebKit/UIProcess/CoordinatedGraphics/DrawingAreaProxyCoordinatedGraphics.cpp
-index 886d1f9b3..b86ddbfbf 100644
+index 886d1f9b3..6103e6c85 100644
 --- a/Source/WebKit/UIProcess/CoordinatedGraphics/DrawingAreaProxyCoordinatedGraphics.cpp
 +++ b/Source/WebKit/UIProcess/CoordinatedGraphics/DrawingAreaProxyCoordinatedGraphics.cpp
-@@ -27,6 +27,18 @@
+@@ -27,6 +27,24 @@
  
  #include "config.h"
  #include "DrawingAreaProxyCoordinatedGraphics.h"
@@ -664,16 +700,22 @@ index 886d1f9b3..b86ddbfbf 100644
 +// ProsperoWeb diagnostics (console run 24: page updates never reached the
 +// screen in the native title): the shell's logger, when linked.
 +extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
-+#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++extern "C" bool ps5_trace_enabled(void) __attribute__((weak));
++// Routine traces only with PROSPEROWEB_TRACE=1 (ps5_trace_enabled, the shell);
++// failures and one-time events always (PS5_LOG).
++#define PS5_TRACE(...) do { if (ps5_log_printf && ps5_trace_enabled && ps5_trace_enabled()) ps5_log_printf(__VA_ARGS__); } while (0)
++#define PS5_LOG(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
 +#elif !defined(PS5_TRACE)
 +#define PS5_TRACE(...) do { } while (0)
++#define PS5_LOG(...) do { } while (0)
 +#endif
 +// Logs the first 12 occurrences and then every 200th.
 +#define PS5_TRACE_SOME(counter, ...) do { static std::atomic<unsigned> counter { 0 }; unsigned n_ = ++counter; if (n_ <= 12 || !(n_ % 200)) PS5_TRACE(__VA_ARGS__); } while (0)
++#define PS5_TRACE_SOME_LOG(counter, ...) do { static std::atomic<unsigned> counter { 0 }; unsigned n_ = ++counter; if (n_ <= 12 || !(n_ % 200)) PS5_LOG(__VA_ARGS__); } while (0)
  
  #include "DrawingAreaMessages.h"
  #include "DrawingAreaProxyMessages.h"
-@@ -108,6 +120,7 @@ bool DrawingAreaProxyCoordinatedGraphics::forceUpdateIfNeeded()
+@@ -108,6 +126,7 @@ bool DrawingAreaProxyCoordinatedGraphics::forceUpdateIfNeeded()
          return false;
  
      SetForScope inForceUpdate(m_inForceUpdate, true);
@@ -681,7 +723,7 @@ index 886d1f9b3..b86ddbfbf 100644
      send(Messages::DrawingArea::ForceUpdate());
      webProcessProxy().connection().waitForAndDispatchImmediately<Messages::DrawingAreaProxy::Update>(identifier(), 500_ms);
      return !!m_backingStore;
-@@ -124,13 +137,16 @@ void DrawingAreaProxyCoordinatedGraphics::incorporateUpdate(UpdateInfo&& updateI
+@@ -124,13 +143,16 @@ void DrawingAreaProxyCoordinatedGraphics::incorporateUpdate(UpdateInfo&& updateI
          m_backingStore = makeUnique<BackingStore>(updateInfo.viewSize, updateInfo.deviceScaleFactor);
  
      if (m_inForceUpdate) {
@@ -699,7 +741,7 @@ index 886d1f9b3..b86ddbfbf 100644
  
      Region damageRegion;
      if (updateInfo.scrollRect.isEmpty()) {
-@@ -209,6 +225,7 @@ void DrawingAreaProxyCoordinatedGraphics::enterAcceleratedCompositingMode(uint64
+@@ -209,6 +231,7 @@ void DrawingAreaProxyCoordinatedGraphics::enterAcceleratedCompositingMode(uint64
  #if !PLATFORM(WPE) && !PLATFORM(GTK)
  void DrawingAreaProxyCoordinatedGraphics::update(uint64_t, UpdateInfo&& updateInfo)
  {
@@ -708,10 +750,10 @@ index 886d1f9b3..b86ddbfbf 100644
          send(Messages::DrawingArea::DisplayDidRefresh(MonotonicTime::now()));
          return;
 diff --git a/Source/WebKit/UIProcess/Launcher/ProcessLauncher.cpp b/Source/WebKit/UIProcess/Launcher/ProcessLauncher.cpp
-index 4c9b9d6cc..ccee8c6a5 100644
+index 4c9b9d6cc..5ec026612 100644
 --- a/Source/WebKit/UIProcess/Launcher/ProcessLauncher.cpp
 +++ b/Source/WebKit/UIProcess/Launcher/ProcessLauncher.cpp
-@@ -26,6 +26,15 @@
+@@ -26,6 +26,20 @@
  #include "config.h"
  #include "ProcessLauncher.h"
  
@@ -719,27 +761,32 @@ index 4c9b9d6cc..ccee8c6a5 100644
 +// ProsperoWeb diagnostics (console run 22: the UI never opened its IPC
 +// connections in the native title): the shell's logger, when linked.
 +extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
-+#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++extern "C" bool ps5_trace_enabled(void) __attribute__((weak));
++// Routine traces only with PROSPEROWEB_TRACE=1 (ps5_trace_enabled, the shell);
++// failures and one-time events always (PS5_LOG).
++#define PS5_TRACE(...) do { if (ps5_log_printf && ps5_trace_enabled && ps5_trace_enabled()) ps5_log_printf(__VA_ARGS__); } while (0)
++#define PS5_LOG(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
 +#else
 +#define PS5_TRACE(...) do { } while (0)
++#define PS5_LOG(...) do { } while (0)
 +#endif
 +
  #include <wtf/StdLibExtras.h>
  #include <wtf/SystemTracing.h>
  #include <wtf/WorkQueue.h>
-@@ -67,6 +76,7 @@ void ProcessLauncher::didFinishLaunchingProcess(ProcessID processIdentifier, IPC
+@@ -67,6 +81,7 @@ void ProcessLauncher::didFinishLaunchingProcess(ProcessID processIdentifier, IPC
      tracePoint(ProcessLaunchEnd, m_launchOptions.processIdentifier.toUInt64(), static_cast<uint64_t>(m_launchOptions.processType), static_cast<uint64_t>(m_processID));
  
      RefPtr client = m_client.get();
-+    PS5_TRACE("webkit: ProcessLauncher::didFinishLaunchingProcess pid %d, client %s", static_cast<int>(processIdentifier), client ? "present" : "GONE (connection dropped)");
++    PS5_LOG("webkit: ProcessLauncher::didFinishLaunchingProcess pid %d, client %s", static_cast<int>(processIdentifier), client ? "present" : "GONE (connection dropped)");
      if (!client) {
  #if OS(DARWIN) && !USE(UNIX_DOMAIN_SOCKETS)
          // FIXME: Release port rights/connections in the Connection::Identifier destructor.
 diff --git a/Source/WebKit/UIProcess/skia/BackingStoreSkia.cpp b/Source/WebKit/UIProcess/skia/BackingStoreSkia.cpp
-index 05e0e9a5a..cdcbbb43a 100644
+index 05e0e9a5a..6ee582e32 100644
 --- a/Source/WebKit/UIProcess/skia/BackingStoreSkia.cpp
 +++ b/Source/WebKit/UIProcess/skia/BackingStoreSkia.cpp
-@@ -25,6 +25,18 @@
+@@ -25,6 +25,24 @@
  
  #include "config.h"
  #include "BackingStore.h"
@@ -749,22 +796,28 @@ index 05e0e9a5a..cdcbbb43a 100644
 +// ProsperoWeb diagnostics (console run 24: page updates never reached the
 +// screen in the native title): the shell's logger, when linked.
 +extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
-+#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++extern "C" bool ps5_trace_enabled(void) __attribute__((weak));
++// Routine traces only with PROSPEROWEB_TRACE=1 (ps5_trace_enabled, the shell);
++// failures and one-time events always (PS5_LOG).
++#define PS5_TRACE(...) do { if (ps5_log_printf && ps5_trace_enabled && ps5_trace_enabled()) ps5_log_printf(__VA_ARGS__); } while (0)
++#define PS5_LOG(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
 +#elif !defined(PS5_TRACE)
 +#define PS5_TRACE(...) do { } while (0)
++#define PS5_LOG(...) do { } while (0)
 +#endif
 +// Logs the first 12 occurrences and then every 200th.
 +#define PS5_TRACE_SOME(counter, ...) do { static std::atomic<unsigned> counter { 0 }; unsigned n_ = ++counter; if (n_ <= 12 || !(n_ % 200)) PS5_TRACE(__VA_ARGS__); } while (0)
++#define PS5_TRACE_SOME_LOG(counter, ...) do { static std::atomic<unsigned> counter { 0 }; unsigned n_ = ++counter; if (n_ <= 12 || !(n_ % 200)) PS5_LOG(__VA_ARGS__); } while (0)
  
  #if USE(SKIA)
  
-@@ -67,8 +79,10 @@ void BackingStore::incorporateUpdate(UpdateInfo&& updateInfo)
+@@ -67,8 +85,10 @@ void BackingStore::incorporateUpdate(UpdateInfo&& updateInfo)
          return;
  
      auto bitmap = WebCore::ShareableBitmap::create(WTF::move(*updateInfo.bitmapHandle));
 -    if (!bitmap)
 +    if (!bitmap) {
-+        PS5_TRACE_SOME(bitmapFailures, "webkit: BackingStore::incorporateUpdate: the update bitmap could not be mapped (%dx%d)", updateInfo.updateRectBounds.width(), updateInfo.updateRectBounds.height());
++        PS5_TRACE_SOME_LOG(bitmapFailures, "webkit: BackingStore::incorporateUpdate: the update bitmap could not be mapped (%dx%d)", updateInfo.updateRectBounds.width(), updateInfo.updateRectBounds.height());
          return;
 +    }
  
