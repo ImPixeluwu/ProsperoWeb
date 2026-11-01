@@ -137,14 +137,17 @@ tid = app["titleId"]
 assert re.fullmatch(r"[A-Z]{4}\d{5}", tid), f"bad titleId {tid!r}"
 assert re.fullmatch(r"[A-Z]{2}\d{4}-" + tid + r"_00-[A-Z0-9]{16}", app["contentId"])
 assert re.fullmatch(r"\d{2}\.\d{3}\.\d{3}", app["contentVersion"])
-# Category 65536 (Prospero Native Media App) + badge 2 puts the title on the
-# home-screen Media row, like SmartTube and ytps5-sponsorblock (its sce_sys/
-# param.json uses exactly 65536 + badge 2). Driven by assets/app.json so it can
-# be changed without editing this script. The Games shelf (category 0 + badge
-# 1) is the alternative; it reliably gives the game memory budget, while the
-# media category is not yet confirmed on this title (see NOTES / docs).
-category = int(app.get("applicationCategoryType", 65536))
-badge = int(app.get("contentBadgeType", 2))
+# Category 0 + badge 1 is the Games shelf, as ProsperoStore and websrv's own
+# loader title use it; this gives the title the game memory budget AND, on the
+# console, lets it listen() on loopback TCP for its own audio (127.0.0.1:17772)
+# and video-overlay (17773) servers. Driven by assets/app.json so the shelf is
+# configurable. Category 65536 (Prospero Native Media App) + badge 2 moves the
+# title to the home-screen Media row (like SmartTube and ytps5-sponsorblock),
+# but the media-category sandbox REFUSES those listen() calls (EACCES), which
+# kills audio and hardware video; it needs the audio/overlay transports moved
+# off a title listen() first (see docs/native-title.md). Defaulted to 0/1.
+category = int(app.get("applicationCategoryType", 0))
+badge = int(app.get("contentBadgeType", 1))
 param = {
     "applicationCategoryType": category,
     "applicationDrmType": "free",
@@ -163,9 +166,7 @@ param = {
     # 256 MiB (sce_sys/param.json, on fw 13.42); this image alone is about
     # 130 MiB, hence 512 MiB by default (NATIVE_FLEXIBLE_MB). The largest
     # value the system accepts is not known; docs/native-title.md says how
-    # to lower it on the console if the title does not start. SmartTube omits
-    # this field under the media category; kept at 512 MiB for now, revisit if
-    # the title fails to launch as a media app.
+    # to lower it on the console if the title does not start.
     "kernel": {"flexibleMemorySize": flexible_mb << 20},
     "localizedParameters": {
         "defaultLanguage": app["language"],
