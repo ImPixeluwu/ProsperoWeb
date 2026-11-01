@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <unistd.h>
+
 #include <WebKit/WKPagePrivate.h>
 #include <WebKit/WKPagePrivatePlayStation.h>
 
@@ -53,6 +55,9 @@ std::unique_ptr<Ps5VideoOverlay> Ps5VideoOverlay::start(std::function<void()> on
   options.filter = scale && !std::strcmp(scale, "nearest") ? display::ScaleFilter::Nearest
                                                             : display::ScaleFilter::Bilinear;
   options.on_update = std::move(on_update);
+  // Keep serving even if listen() is refused (media category): players then
+  // arrive over control sockets (ps5_spawn_set_media_control).
+  options.listen_optional = true;
   // Remote decoding: players send compressed video when the UI can decode
   // it (ps5_hwdec.h); without a factory every stream is refused.
   options.decoder_factory = hwdec_factory();
@@ -71,6 +76,16 @@ std::unique_ptr<Ps5VideoOverlay> Ps5VideoOverlay::start(std::function<void()> on
 Ps5VideoOverlay::~Ps5VideoOverlay() {
   if (server_) {
     server_->stop();
+  }
+}
+
+bool Ps5VideoOverlay::listening() const { return server_ && server_->listening(); }
+
+void Ps5VideoOverlay::add_control_fd(int fd) {
+  if (server_) {
+    server_->add_control_fd(fd);
+  } else {
+    ::close(fd);
   }
 }
 

@@ -27,6 +27,7 @@
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -231,6 +232,19 @@ bool start_broker(const std::string& self_path) {
 std::atomic<ps5_spawn_progress_fn> g_progress{nullptr};
 std::atomic<void*> g_progress_data{nullptr};
 
+// Media control-socket delivery (ps5_spawn_set_media_control). Both set turns
+// on the per-WebProcess control sockets for audio and video.
+std::atomic<ps5_media_control_fn> g_media_audio_cb{nullptr};
+std::atomic<ps5_media_control_fn> g_media_video_cb{nullptr};
+std::atomic<void*> g_media_cb_data{nullptr};
+
+// One AF_UNIX SOCK_SEQPACKET control socket handed to a WebProcess: the UI
+// end goes to a media server, the child end is injected as an inherited fd.
+struct ControlPair {
+  int ui_fd = -1;
+  int child_fd = -1;
+};
+
 void report_progress(const char* event) {
   if (const ps5_spawn_progress_fn fn = g_progress.load(std::memory_order_acquire)) {
     fn(event, g_progress_data.load(std::memory_order_acquire));
@@ -358,12 +372,70 @@ int spawn_via_broker(const char* const* argv, const int* fds, int nfds) {
   if (!ui_root.empty() && !child_root.empty() && ui_root != child_root) {
     env = rebase_env(env, ui_root, child_root);
   }
+  // Media control sockets for a WebProcess under the media-category sandbox,
+  // where the UI cannot listen() (docs/native-title.md). One AF_UNIX
+  // SOCK_SEQPACKET socketpair per service: the child end is injected as an
+  // inherited fd (child fd 3+i, named to the child through the environment),
+  // the UI end goes to the audio/video server. When socketpair fails the
+  // WebProcess keeps the loopback-TCP path (clean degradation).
+  const ps5_media_control_fn audio_cb = g_media_audio_cb.load();
+  const ps5_media_control_fn video_cb = g_media_video_cb.load();
+  std::vector<ControlPair> control;
+  std::vector<int> all_fds(fds, fds + nfds);
+  if (audio_cb && video_cb && std::strcmp(role, "WebProcess") == 0 && nfds + 2 <= kBrokerMaxFds) {
+    int a[2] = {-1, -1};
+    int v[2] = {-1, -1};
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, a) == 0 &&
+        socketpair(AF_UNIX, SOCK_SEQPACKET, 0, v) == 0) {
+      const int audio_child = 3 + nfds;
+      const int video_child = 3 + nfds + 1;
+      env.push_back("PROSPEROWEB_AUDIO_CONTROL_FD=" + std::to_string(audio_child));
+      env.push_back("PROSPEROWEB_VIDEO_CONTROL_FD=" + std::to_string(video_child));
+      control.push_back({a[0], a[1]});
+      control.push_back({v[0], v[1]});
+      all_fds.push_back(a[1]);
+      all_fds.push_back(v[1]);
+      ps5_log_printf("spawn: role=%s media control sockets: audio child fd %d, video child fd %d",
+                     role, audio_child, video_child);
+    } else {
+      if (a[0] >= 0) {
+        close(a[0]);
+        close(a[1]);
+      }
+      ps5_log_printf("spawn: role=%s media control socketpair failed (%s); using tcp", role,
+                     std::strerror(errno));
+    }
+  }
+
   json jenv = json::array();
   for (const auto& entry : env) {
     jenv.push_back(entry);
   }
   msg["argv"] = std::move(jargv);
   msg["env"] = std::move(jenv);
+
+  void* const cb_data = g_media_cb_data.load();
+  auto deliver_control = [&] {
+    if (control.size() != 2) {
+      return;
+    }
+    close(control[0].child_fd);
+    close(control[1].child_fd);
+    audio_cb(control[0].ui_fd, cb_data);
+    video_cb(control[1].ui_fd, cb_data);
+    control.clear();
+  };
+  auto discard_control = [&] {
+    for (const auto& c : control) {
+      if (c.ui_fd >= 0) {
+        close(c.ui_fd);
+      }
+      if (c.child_fd >= 0) {
+        close(c.child_fd);
+      }
+    }
+    control.clear();
+  };
 
   // With the direct fallback a missing broker costs no websrv round-trips
   // after the first, so there is nothing to back off from.
@@ -382,24 +454,26 @@ int spawn_via_broker(const char* const* argv, const int* fds, int nfds) {
     // ps5_spawn_self() returns), so they still exist when the broker injects
     // them into the child.
     const bool tcp = g_client->endpoint().tcp;
-    int send_n = nfds;
+    int send_n = static_cast<int>(all_fds.size());
     if (tcp) {
       msg["nfds"] = 0;
       msg["src_pid"] = static_cast<int>(getpid());
-      msg["src_fds"] = json(std::vector<int>(fds, fds + nfds));
+      msg["src_fds"] = json(all_fds);
       send_n = 0;
     } else {
-      msg["nfds"] = nfds;
+      msg["nfds"] = static_cast<int>(all_fds.size());
     }
     const auto t0 = Clock::now();
     json reply;
-    if (g_client->request(msg, fds, send_n, &reply, kSpawnTimeoutMs)) {
+    if (g_client->request(msg, all_fds.data(), send_n, &reply, kSpawnTimeoutMs)) {
       if (broker_get_bool(reply, "ok", false)) {
         const int pid = static_cast<int>(broker_get_int(reply, "pid", -1));
+        deliver_control();
         ps5_log_printf("spawn: role=%s pid=%d via broker (%s) in %lldms", role, pid,
                        tcp ? "tcp, rdup" : "unix, SCM_RIGHTS", ms_since(t0));
         return pid;
       }
+      discard_control();
       const int err = static_cast<int>(broker_get_int(reply, "errno", 0));
       ps5_log_printf("spawn: role=%s FAILED via broker at %s: errno %d (%s) %s", role,
                      broker_get_string(reply, "stage", "?").c_str(), err,
@@ -414,12 +488,16 @@ int spawn_via_broker(const char* const* argv, const int* fds, int nfds) {
     ps5_log_printf("spawn: role=%s: no broker, PROSPEROWEB_SPAWN_FALLBACK=direct, "
                    "spawning in-process",
                    role);
-    const int pid = ps5_spawn_direct(argv, fds, nfds);
+    const int pid = ps5_spawn_direct(argv, all_fds.data(), static_cast<int>(all_fds.size()));
     if (pid > 0) {
       g_direct_pids.insert(pid);
+      deliver_control();
+    } else {
+      discard_control();
     }
     return pid;
   }
+  discard_control();
   ps5_log_printf("spawn: role=%s FAILED: no spawn broker (in-process spawning from the "
                  "big app panics the console; PROSPEROWEB_SPAWN_FALLBACK=direct forces it)",
                  role);
@@ -549,6 +627,13 @@ extern "C" int ps5_spawn_self(const char* const* argv, const int* fds, int nfds)
 extern "C" void ps5_spawn_set_progress(ps5_spawn_progress_fn fn, void* data) {
   g_progress_data.store(data, std::memory_order_release);
   g_progress.store(fn, std::memory_order_release);
+}
+
+extern "C" void ps5_spawn_set_media_control(ps5_media_control_fn audio, ps5_media_control_fn video,
+                                            void* data) {
+  g_media_cb_data.store(data, std::memory_order_release);
+  g_media_audio_cb.store(audio, std::memory_order_release);
+  g_media_video_cb.store(video, std::memory_order_release);
 }
 
 extern "C" int ps5_terminate_process(int pid) {

@@ -60,6 +60,10 @@ class Ps5App {
   void mark_splash_stage(unsigned stage);
   void update_splash_progress(SDL_Surface* surface);
   static void splash_spawn_progress(const char* event, void* self);
+  // Media control-socket delivery (ps5_spawn_set_media_control): route a
+  // WebProcess's inherited control socket to the matching server.
+  static void audio_control_fd(int fd, void* self);
+  static void video_control_fd(int fd, void* self);
   // Frame-pipeline statistics: one log line every kStatsWindowMs while
   // anything is painted or presented.
   void collect_and_log_stats(std::uint64_t now);

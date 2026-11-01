@@ -30,6 +30,14 @@ class Ps5AudioServer {
 
   void play_test_tone();
 
+  // Whether the server is listening on its TCP port. False under the media
+  // application-category sandbox, where clients must arrive over a control
+  // socket (add_control_fd).
+  bool listening() const;
+  // Adopts a WebProcess control socket (ps5_spawn_set_media_control). Takes
+  // ownership of fd.
+  void add_control_fd(int fd);
+
  private:
   Ps5AudioServer() = default;
   static void callback(void* user, Uint8* stream, int length);

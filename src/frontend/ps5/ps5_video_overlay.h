@@ -36,6 +36,14 @@ class Ps5VideoOverlay {
   static std::unique_ptr<Ps5VideoOverlay> start(std::function<void()> on_update);
   ~Ps5VideoOverlay();
 
+  // Whether the server is listening on its TCP port. False under the media
+  // application-category sandbox, where players must arrive over a control
+  // socket (add_control_fd).
+  bool listening() const;
+  // Adopts a WebProcess control socket (ps5_spawn_set_media_control). Takes
+  // ownership of fd.
+  void add_control_fd(int fd);
+
   // Which WebProcess and page a WKPage is, as its players report it.
   static video::PageKey page_key(WKPageRef page);
 

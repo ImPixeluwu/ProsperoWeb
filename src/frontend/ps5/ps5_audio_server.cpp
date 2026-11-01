@@ -6,6 +6,8 @@
 #include <cstring>
 #include <vector>
 
+#include <unistd.h>
+
 #include "FFmpegAudioWire.h"
 #include "ps5_log.h"
 
@@ -72,12 +74,25 @@ std::unique_ptr<Ps5AudioServer> Ps5AudioServer::start() {
   options.port = port;
   // The callback fills one buffer while the device plays the previous one.
   options.output_latency_frames = 2u * obtained.samples;
+  // Keep serving even if listen() is refused (media category): clients then
+  // arrive over control sockets (ps5_spawn_set_media_control).
+  options.listen_optional = true;
   self->server_ = std::make_unique<audio::AudioServer>(self->mixer_, options);
   if (!self->server_->start()) {
     return nullptr;  // the destructor closes the device
   }
   SDL_PauseAudioDevice(self->device_, 0);
   return self;
+}
+
+bool Ps5AudioServer::listening() const { return server_ && server_->listening(); }
+
+void Ps5AudioServer::add_control_fd(int fd) {
+  if (server_) {
+    server_->add_control_fd(fd);
+  } else {
+    ::close(fd);
+  }
 }
 
 Ps5AudioServer::~Ps5AudioServer() {

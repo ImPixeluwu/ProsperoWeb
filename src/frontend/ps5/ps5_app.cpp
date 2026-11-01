@@ -149,6 +149,7 @@ Ps5App::Ps5App() = default;
 
 Ps5App::~Ps5App() {
   ps5_spawn_set_progress(nullptr, nullptr);
+  ps5_spawn_set_media_control(nullptr, nullptr, nullptr);
   WkWebView::set_damage_hook(nullptr, nullptr);
   video_overlay_.reset();  // its thread calls request_frame()
   presenter_.reset();     // before the window goes
@@ -181,6 +182,24 @@ int Ps5App::run() {
   if (const char* test = std::getenv("PROSPEROWEB_AUDIO_TEST");
       audio_server_ && test && !std::strcmp(test, "1")) {
     audio_server_->play_test_tone();
+  }
+  // Media control sockets: when a server could not listen() (the media
+  // application-category sandbox refuses it), WebProcess media must reach it
+  // over an inherited socketpair instead (spawn_glue.cpp passes one end to
+  // each child). PROSPEROWEB_MEDIA_CHANNEL forces it: socketpair (always),
+  // tcp (never, keeps the listen path even if it fails). Default: auto.
+  const char* channel = std::getenv("PROSPEROWEB_MEDIA_CHANNEL");
+  const std::string channel_mode = channel ? channel : "auto";
+  const bool listen_failed = (audio_server_ && !audio_server_->listening()) ||
+                             (video_overlay_ && !video_overlay_->listening());
+  const bool use_control = channel_mode == "socketpair" || (channel_mode != "tcp" && listen_failed);
+  if (use_control && (audio_server_ || video_overlay_)) {
+    ps5_spawn_set_media_control(&Ps5App::audio_control_fd, &Ps5App::video_control_fd, this);
+    log_printf("media: WebProcess audio/video arrive over control sockets (%s; audio listen %s, "
+               "video listen %s)",
+               channel_mode.c_str(),
+               audio_server_ ? (audio_server_->listening() ? "ok" : "refused") : "off",
+               video_overlay_ ? (video_overlay_->listening() ? "ok" : "refused") : "off");
   }
 
   storage_ = std::make_unique<core::FileStorage>(kBaseDir);
@@ -380,6 +399,24 @@ void Ps5App::splash_spawn_progress(const char* event, void* data) {
   }
   if (stage) {
     self->mark_splash_stage(stage);
+  }
+}
+
+void Ps5App::audio_control_fd(int fd, void* data) {
+  auto* self = static_cast<Ps5App*>(data);
+  if (self && self->audio_server_) {
+    self->audio_server_->add_control_fd(fd);
+  } else {
+    ::close(fd);
+  }
+}
+
+void Ps5App::video_control_fd(int fd, void* data) {
+  auto* self = static_cast<Ps5App*>(data);
+  if (self && self->video_overlay_) {
+    self->video_overlay_->add_control_fd(fd);
+  } else {
+    ::close(fd);
   }
 }
 

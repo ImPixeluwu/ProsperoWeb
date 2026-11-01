@@ -40,6 +40,20 @@ int ps5_spawn_broker_main(void);
 typedef void (*ps5_spawn_progress_fn)(const char* event, void* data);
 void ps5_spawn_set_progress(ps5_spawn_progress_fn fn, void* data);
 
+// Media control-socket rendezvous for the Media application-category sandbox,
+// where the UI cannot listen() (docs/native-title.md). When both callbacks
+// are set, ps5_spawn_self() gives every WebProcess an inherited AF_UNIX
+// SOCK_SEQPACKET socket per media service: the child's end is named by
+// PROSPEROWEB_AUDIO_CONTROL_FD / PROSPEROWEB_VIDEO_CONTROL_FD in its
+// environment, and the UI end is handed to the matching callback (audio, then
+// video) once the child is spawned. The callback takes ownership of the fd
+// (AudioServer/VideoServer::add_control_fd). Called on the spawning thread;
+// the callbacks must be thread-safe. Both NULL (the default) disables this and
+// keeps the loopback-TCP path. See src/ps5/spawn/spawn_glue.cpp.
+typedef void (*ps5_media_control_fn)(int fd, void* data);
+void ps5_spawn_set_media_control(ps5_media_control_fn audio, ps5_media_control_fn video,
+                                 void* data);
+
 // --- Logging, provided by the executable (src/frontend/ps5/ps5_log.cpp). ---
 //
 // The spawner reports every spawn and every child-side failure through these,
