@@ -50,13 +50,18 @@ class Ps5Addons final : public shell::AddonsBackend {
   bool filters_updating() const override;
 
  private:
-  // One ruleset (ads or cookie), compiled as several small content rule lists.
+  // One ruleset (ads or cookie), compiled as several small content rule lists
+  // ONE AT A TIME (serial) to bound peak memory.
   struct RuleSet {
     bool is_cookie = false;
     std::string prefix;                           // e.g. "adblock-ads"
     int chunks = 0;                               // number of chunk files
     std::vector<WKUserContentFilterRef> filters;  // compiled, by chunk index (may hold nullptr)
     std::vector<std::string> sources;             // refetch URLs
+    int cursor = 0;                               // next chunk to process
+    bool processing = false;                      // a serial walk is in flight
+    bool from_update = false;                     // this walk is a refresh
+    std::vector<std::string> pending;             // in-memory chunk JSON (refresh only)
   };
   struct CompileCtx {
     Ps5Addons* self;
@@ -66,8 +71,12 @@ class Ps5Addons final : public shell::AddonsBackend {
   };
 
   RuleSet& set_for(bool is_cookie) { return is_cookie ? cookie_ : ads_; }
-  void ensure_filters(bool is_cookie);
-  void compile_from_file(bool is_cookie, int index, const std::string& json_path, bool from_update);
+  // Begin a serial walk of a set's chunks (startup compile/lookup).
+  void start_set(bool is_cookie, bool from_update);
+  // Process set.cursor, or finish the walk; one compile/lookup in flight.
+  void process_next(bool is_cookie);
+  void advance(bool is_cookie);
+  void on_set_done(bool is_cookie);
   void compile_json(bool is_cookie, int index, const std::string& json, bool from_update);
   void adopt_filter(bool is_cookie, int index, WKUserContentFilterRef filter);
   static void on_lookup(WKUserContentFilterRef filter, std::uint32_t result, void* ctx);
@@ -76,6 +85,10 @@ class Ps5Addons final : public shell::AddonsBackend {
   std::string chunk_path(const RuleSet& set, int index) const;  // cache if present else bundled
   void collect_filters(std::vector<WKUserContentFilterRef>& out) const;
   void apply_filters();
+  // Process RSS in MB (-1 if unavailable); logged per step. True if above the
+  // backstop limit (stop attaching more).
+  long rss_mb() const;
+  void log_mem(const char* step) const;
   void apply_user_scripts();
   std::vector<std::string> build_user_scripts() const;
   void finish_update(bool ok);
@@ -91,8 +104,10 @@ class Ps5Addons final : public shell::AddonsBackend {
   WKUserContentExtensionStoreRef store_ = nullptr;
   RuleSet ads_;
   RuleSet cookie_;
-  std::size_t per_chunk_ = 20000;
-  std::size_t max_total_ = 100000;
+  std::size_t per_chunk_ = 10000;
+  std::size_t max_total_ = 30000;
+  // Backstop: stop attaching more chunks if process RSS exceeds this (MB).
+  long rss_limit_mb_ = 1400;
 
   std::function<void(std::int64_t)> on_filters_updated_;
 
@@ -106,7 +121,6 @@ class Ps5Addons final : public shell::AddonsBackend {
   std::int64_t last_updated_ = 0;
   std::int64_t last_check_ = 0;
   std::int64_t update_started_at_ = 0;
-  int update_pending_ = 0;    // outstanding compiles for the current refresh
   bool update_ads_ok_ = false;
 };
 

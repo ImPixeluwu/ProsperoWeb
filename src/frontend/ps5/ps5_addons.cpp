@@ -2,6 +2,10 @@
 #include "ps5_addons.h"
 
 #include <sys/stat.h>
+#include <sys/sysctl.h>
+#include <sys/types.h>
+#include <sys/user.h>
+#include <unistd.h>
 
 #include <cstdlib>
 #include <ctime>
@@ -216,10 +220,9 @@ void Ps5Addons::start() {
              ads_.chunks, cookie_.chunks, per_chunk_, max_total_);
 
   if (cfg_.adblock.enabled) {
-    ensure_filters(/*is_cookie=*/false);
-    if (cfg_.adblock.cookie_banners) {
-      ensure_filters(/*is_cookie=*/true);
-    }
+    // Serial walk: ads chunks one at a time, then cookie (chained in
+    // on_set_done) if that sub-toggle is on. Bounds peak memory.
+    start_set(/*is_cookie=*/false, /*from_update=*/false);
   }
   apply_user_scripts();
 
@@ -231,19 +234,109 @@ void Ps5Addons::start() {
   }
 }
 
-void Ps5Addons::ensure_filters(bool is_cookie) {
-  if (!store_) {
+long Ps5Addons::rss_mb() const {
+  int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};
+  struct kinfo_proc kp {};
+  size_t len = sizeof(kp);
+  if (sysctl(mib, 4, &kp, &len, nullptr, 0) != 0 || len == 0) {
+    return -1;
+  }
+  const long page = sysconf(_SC_PAGESIZE);
+  if (page <= 0) {
+    return -1;
+  }
+  return static_cast<long>(kp.ki_rssize) * (page / 1024) / 1024;
+}
+
+void Ps5Addons::log_mem(const char* step) const {
+  const long rss = rss_mb();
+  if (rss >= 0) {
+    log_printf("addons: mem after %s: RSS %ld MB", step, rss);
+  }
+}
+
+void Ps5Addons::start_set(bool is_cookie, bool from_update) {
+  RuleSet& set = set_for(is_cookie);
+  if (set.processing) {
+    return;  // a serial walk is already in flight for this set
+  }
+  set.cursor = 0;
+  set.from_update = from_update;
+  set.processing = true;
+  process_next(is_cookie);
+}
+
+void Ps5Addons::process_next(bool is_cookie) {
+  RuleSet& set = set_for(is_cookie);
+  if (set.cursor >= set.chunks) {
+    set.processing = false;
+    on_set_done(is_cookie);
     return;
   }
-  RuleSet& set = set_for(is_cookie);
-  for (int i = 0; i < set.chunks; ++i) {
-    if (set.filters[static_cast<std::size_t>(i)]) {
-      continue;  // already compiled/loaded
-    }
-    auto* ctx = new CompileCtx{this, is_cookie, i, /*from_update=*/false};
-    auto id = make_wk_string(identifier(is_cookie, i));
-    WKUserContentExtensionStoreLookup(store_, id.get(), ctx, &Ps5Addons::on_lookup);
+  // Memory backstop: never OOM the UIProcess - stop attaching more chunks.
+  const long rss = rss_mb();
+  if (rss > 0 && rss >= rss_limit_mb_) {
+    log_printf("addons: RSS %ld MB >= limit %ld MB; stopping %s at %d chunk(s)", rss, rss_limit_mb_,
+               is_cookie ? "cookie" : "ads", set.cursor);
+    set.processing = false;
+    on_set_done(is_cookie);
+    return;
   }
+  const int i = set.cursor;
+  if (set.from_update) {
+    std::string json =
+        (i < static_cast<int>(set.pending.size())) ? std::move(set.pending[i]) : std::string();
+    if (i < static_cast<int>(set.pending.size())) {
+      set.pending[i].clear();
+      set.pending[i].shrink_to_fit();
+    }
+    write_file(cache_dir_ + "/" + set.prefix + "-" + std::to_string(i) + ".json", json);
+    compile_json(is_cookie, i, json, /*from_update=*/true);  // -> on_compile -> advance
+    return;
+  }
+  if (!store_) {
+    set.processing = false;
+    return;
+  }
+  auto* ctx = new CompileCtx{this, is_cookie, i, /*from_update=*/false};
+  auto id = make_wk_string(identifier(is_cookie, i));
+  WKUserContentExtensionStoreLookup(store_, id.get(), ctx, &Ps5Addons::on_lookup);
+}
+
+void Ps5Addons::advance(bool is_cookie) {
+  RuleSet& set = set_for(is_cookie);
+  ++set.cursor;
+  process_next(is_cookie);
+}
+
+void Ps5Addons::on_set_done(bool is_cookie) {
+  RuleSet& set = set_for(is_cookie);
+  log_printf("addons: %s set done (%d chunk(s) processed, %zu attached)",
+             is_cookie ? "cookie" : "ads", set.cursor,
+             [&] {
+               std::size_t n = 0;
+               for (auto* f : set.filters) {
+                 if (f) {
+                   ++n;
+                 }
+               }
+               return n;
+             }());
+  const bool was_update = set.from_update;
+  set.from_update = false;
+  if (!was_update) {
+    // Startup: after ads, process the cookie set if that sub-toggle is on.
+    if (!is_cookie && cfg_.adblock.enabled && cfg_.adblock.cookie_banners && !cookie_.processing) {
+      start_set(/*is_cookie=*/true, /*from_update=*/false);
+    }
+    return;
+  }
+  // Refresh: ads first, then cookie, then report completion.
+  if (!is_cookie && cfg_.adblock.cookie_banners && !cookie_.pending.empty()) {
+    start_set(/*is_cookie=*/true, /*from_update=*/true);
+    return;
+  }
+  finish_update(update_ads_ok_);
 }
 
 void Ps5Addons::on_lookup(WKUserContentFilterRef filter, std::uint32_t result, void* ctx_raw) {
@@ -255,38 +348,31 @@ void Ps5Addons::on_lookup(WKUserContentFilterRef filter, std::uint32_t result, v
   if (result == kWKUserContentExtensionStoreSuccess && filter) {
     log_printf("addons: loaded cached %s chunk %d", is_cookie ? "cookie" : "ads", index);
     self->adopt_filter(is_cookie, index, filter);
+    self->log_mem("attach");
+    self->advance(is_cookie);
     return;
   }
+  // Lookup miss: compile the chunk from the cache/bundled file (async).
   const RuleSet& set = is_cookie ? self->cookie_ : self->ads_;
-  self->compile_from_file(is_cookie, index, self->chunk_path(set, index), /*from_update=*/false);
-}
-
-void Ps5Addons::compile_from_file(bool is_cookie, int index, const std::string& json_path,
-                                  bool from_update) {
-  const std::string json = read_file(json_path);
+  const std::string json = read_file(self->chunk_path(set, index));
   if (json.empty()) {
-    log_printf("addons: %s chunk %d missing at %s", is_cookie ? "cookie" : "ads", index,
-               json_path.c_str());
-    if (from_update && update_pending_ > 0 && --update_pending_ == 0) {
-      finish_update(update_ads_ok_);
-    }
+    log_printf("addons: %s chunk %d missing; skipping", is_cookie ? "cookie" : "ads", index);
+    self->advance(is_cookie);
     return;
   }
-  compile_json(is_cookie, index, json, from_update);
+  self->compile_json(is_cookie, index, json, /*from_update=*/false);  // -> on_compile -> advance
 }
 
 void Ps5Addons::compile_json(bool is_cookie, int index, const std::string& json, bool from_update) {
-  if (!store_) {
-    if (from_update && update_pending_ > 0 && --update_pending_ == 0) {
-      finish_update(update_ads_ok_);
-    }
+  if (!store_ || json.empty()) {
+    advance(is_cookie);
     return;
   }
   log_printf("addons: compiling %s chunk %d (%zu rules, %zu bytes)%s", is_cookie ? "cookie" : "ads",
              index, count_rules(json), json.size(), from_update ? " from update" : "");
   auto* ctx = new CompileCtx{this, is_cookie, index, from_update};
   auto id = make_wk_string(identifier(is_cookie, index));
-  auto src = make_wk_string(json);
+  auto src = make_wk_string(json);  // WebKit copies the source; our std::string frees on return
   WKUserContentExtensionStoreCompile(store_, id.get(), src.get(), ctx, &Ps5Addons::on_compile);
 }
 
@@ -300,20 +386,17 @@ void Ps5Addons::on_compile(WKUserContentFilterRef filter, std::uint32_t result, 
   const bool ok = (result == kWKUserContentExtensionStoreSuccess && filter);
   if (ok) {
     log_printf("addons: %s chunk %d compiled ok", is_cookie ? "cookie" : "ads", index);
-    self->adopt_filter(is_cookie, index, filter);
+    self->adopt_filter(is_cookie, index, filter);  // attaches incrementally
+    self->log_mem("attach");
+    if (from_update && !is_cookie) {
+      self->update_ads_ok_ = true;
+    }
   } else {
     // A chunk that will not compile is skipped, never fatal.
     log_printf("addons: %s chunk %d compile FAILED (result %u); skipping",
                is_cookie ? "cookie" : "ads", index, result);
   }
-  if (from_update) {
-    if (ok && !is_cookie) {
-      self->update_ads_ok_ = true;
-    }
-    if (self->update_pending_ > 0 && --self->update_pending_ == 0) {
-      self->finish_update(self->update_ads_ok_);
-    }
-  }
+  self->advance(is_cookie);
 }
 
 void Ps5Addons::adopt_filter(bool is_cookie, int index, WKUserContentFilterRef filter) {
@@ -329,7 +412,6 @@ void Ps5Addons::adopt_filter(bool is_cookie, int index, WKUserContentFilterRef f
   slot = filter;
   apply_filters();
 }
-
 void Ps5Addons::collect_filters(std::vector<WKUserContentFilterRef>& out) const {
   if (cfg_.adblock.enabled) {
     for (auto* f : ads_.filters) {
@@ -400,11 +482,18 @@ void Ps5Addons::apply_to_view(WkWebView& view) {
 void Ps5Addons::set_adblock(bool enabled, bool cookie_banners) {
   cfg_.adblock.enabled = enabled;
   cfg_.adblock.cookie_banners = cookie_banners;
-  if (enabled) {
-    ensure_filters(/*is_cookie=*/false);
-    if (cookie_banners) {
-      ensure_filters(/*is_cookie=*/true);
+  auto needs_compile = [](const RuleSet& s) {
+    for (auto* f : s.filters) {
+      if (!f) {
+        return s.chunks > 0;
+      }
     }
+    return false;
+  };
+  if (enabled && !ads_.processing && needs_compile(ads_)) {
+    start_set(/*is_cookie=*/false, /*from_update=*/false);  // cookie chains after ads
+  } else if (enabled && cookie_banners && !cookie_.processing && needs_compile(cookie_)) {
+    start_set(/*is_cookie=*/true, /*from_update=*/false);
   }
   apply_filters();
   apply_user_scripts();
@@ -508,27 +597,15 @@ void Ps5Addons::pump() {
         log_printf("addons: fetched filter lists, recompiling (%zu ads + %zu cookie chunks)",
                    ads_chunks.size(), cookie_chunks.size());
         update_ads_ok_ = false;
-        update_pending_ = static_cast<int>(ads_chunks.size() + cookie_chunks.size());
-        // New chunk counts: resize the filter vectors.
+        // Hand the new chunks to the serial walker (ads first, cookie chained);
+        // it recompiles one at a time and finish_update() fires when done.
         ads_.chunks = static_cast<int>(ads_chunks.size());
         ads_.filters.resize(ads_chunks.size(), nullptr);
+        ads_.pending = std::move(ads_chunks);
         cookie_.chunks = static_cast<int>(cookie_chunks.size());
         cookie_.filters.resize(cookie_chunks.size(), nullptr);
-        for (std::size_t i = 0; i < ads_chunks.size(); ++i) {
-          write_file(cache_dir_ + "/" + ads_.prefix + "-" + std::to_string(i) + ".json",
-                     ads_chunks[i]);
-          compile_json(/*is_cookie=*/false, static_cast<int>(i), ads_chunks[i],
-                       /*from_update=*/true);
-        }
-        for (std::size_t i = 0; i < cookie_chunks.size(); ++i) {
-          write_file(cache_dir_ + "/" + cookie_.prefix + "-" + std::to_string(i) + ".json",
-                     cookie_chunks[i]);
-          compile_json(/*is_cookie=*/true, static_cast<int>(i), cookie_chunks[i],
-                       /*from_update=*/true);
-        }
-        if (update_pending_ == 0) {
-          finish_update(false);  // nothing to compile
-        }
+        cookie_.pending = std::move(cookie_chunks);
+        start_set(/*is_cookie=*/false, /*from_update=*/true);
       } else {
         log_line("addons: filter-list refresh failed; keeping cached/bundled lists");
         finish_update(/*ok=*/false);
@@ -559,7 +636,6 @@ void Ps5Addons::finish_update(bool ok) {
     log_line("addons: filter-list update finished with errors; kept previous rules");
   }
   update_started_at_ = 0;
-  update_pending_ = 0;
   updating_.store(false);
   if (on_filters_updated_) {
     on_filters_updated_(last_updated_);

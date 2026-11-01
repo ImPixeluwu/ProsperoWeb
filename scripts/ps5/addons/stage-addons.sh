@@ -100,8 +100,10 @@ done < "${LOCK}"
 # several small lists: WebKit's on-device compiler traps/OOMs on one huge
 # list, so each chunk is kept small (<= PER_CHUNK rules). Network rules come
 # first; cosmetic overflow past MAX_TOTAL is dropped.
-PER_CHUNK="${ADDONS_PER_CHUNK:-20000}"
-MAX_TOTAL="${ADDONS_MAX_TOTAL:-100000}"
+# Conservative defaults: the console OOMs holding many large compiled lists,
+# so keep each chunk small and the total low (network rules are prioritised).
+PER_CHUNK="${ADDONS_PER_CHUNK:-10000}"
+MAX_TOTAL="${ADDONS_MAX_TOTAL:-30000}"
 log "building ads ruleset -> adblock-ads-*.json (per-chunk ${PER_CHUNK}, total ${MAX_TOTAL})"
 ADS_CHUNKS="$("${CONVERT}" --chunked --per-chunk "${PER_CHUNK}" --max-total "${MAX_TOTAL}" \
     "${ADDONS}/adblock-ads.json" "${ADS_INPUTS[@]}")"
