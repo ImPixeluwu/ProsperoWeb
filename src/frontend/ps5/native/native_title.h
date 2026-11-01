@@ -31,6 +31,9 @@ void native_file_selftest(const char* ui_root, const char* child_root);
 // fresh unbuffered FILEs (native_libc.c). Returns 0 on success.
 int native_stdio_redirect(const char* path);
 
+// "fdN sent/received+fds ..." for every descriptor sendmsg/recvmsg used.
+void native_trace_io_summary(char* out, size_t len);
+
 // The direct-memory heap (native_memory.c): its size, 0 when the system
 // heap is in use, and how much of it is in use.
 size_t native_heap_size(void);

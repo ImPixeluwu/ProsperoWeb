@@ -127,6 +127,13 @@ int __wrap_fcntl(int fd, int command, ...) {
 // ---- IPC tracing ----------------------------------------------------------------
 
 #define kTraceFirst 64
+#define kTraceFds 256
+// Messages and bytes per descriptor, both directions, for the periodic
+// summary (native_trace_io_summary): the first-64 log lines do not show
+// which connection carries the traffic later on.
+static atomic_uint g_fd_sent[kTraceFds];
+static atomic_uint g_fd_received[kTraceFds];
+static atomic_uint g_fd_fds_in[kTraceFds];
 static atomic_int g_send_logged;
 static atomic_int g_recv_logged;
 static atomic_int g_select_logged;
@@ -165,6 +172,9 @@ int __wrap_socketpair(int domain, int type, int protocol, int fds[2]) {
 ssize_t __wrap_sendmsg(int fd, const struct msghdr* msg, int flags) {
   const ssize_t rc = __real_sendmsg(fd, msg, flags);
   const int saved = errno;
+  if (rc >= 0 && fd >= 0 && fd < kTraceFds) {
+    atomic_fetch_add(&g_fd_sent[fd], 1);
+  }
   if (rc < 0 || atomic_fetch_add(&g_send_logged, 1) < kTraceFirst) {
     ps5_log_printf("trace: sendmsg(fd %d, %zu bytes, %d fds) -> %zd%s%s", fd, iov_bytes(msg),
                    attached_fds(msg), rc, rc < 0 ? ": " : "", rc < 0 ? strerror(saved) : "");
@@ -176,6 +186,10 @@ ssize_t __wrap_sendmsg(int fd, const struct msghdr* msg, int flags) {
 ssize_t __wrap_recvmsg(int fd, struct msghdr* msg, int flags) {
   const ssize_t rc = __real_recvmsg(fd, msg, flags);
   const int saved = errno;
+  if (rc > 0 && fd >= 0 && fd < kTraceFds) {
+    atomic_fetch_add(&g_fd_received[fd], 1);
+    atomic_fetch_add(&g_fd_fds_in[fd], (unsigned)attached_fds(msg));
+  }
   if ((rc < 0 && saved != EAGAIN && saved != EINTR) ||
       atomic_fetch_add(&g_recv_logged, 1) < kTraceFirst) {
     ps5_log_printf("trace: recvmsg(fd %d) -> %zd, %d fds%s%s%s", fd, rc,
@@ -196,6 +210,21 @@ int __wrap_select(int n, fd_set* r, fd_set* w, fd_set* e, struct timeval* t) {
   }
   errno = saved;
   return rc;
+}
+
+void native_trace_io_summary(char* out, size_t len) {
+  size_t used = 0;
+  out[0] = 0;
+  for (int fd = 0; fd < kTraceFds && used + 48 < len; fd++) {
+    const unsigned sent = atomic_load(&g_fd_sent[fd]);
+    const unsigned received = atomic_load(&g_fd_received[fd]);
+    if (!sent && !received) {
+      continue;
+    }
+    const int n = snprintf(out + used, len - used, "%sfd%d %u/%u+%ufds", used ? " " : "", fd,
+                           sent, received, atomic_load(&g_fd_fds_in[fd]));
+    used += n > 0 ? (size_t)n : 0;
+  }
 }
 
 // ---- file self-test ---------------------------------------------------------------

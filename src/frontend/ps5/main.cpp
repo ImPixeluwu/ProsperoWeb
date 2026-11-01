@@ -289,6 +289,9 @@ void start_main_loop_watchdog() {
             : where == 2 ? "the POSTING thread (inline: isMainThread is wrong there)"
                          : "ANOTHER thread");
       }
+      char io[512];
+      native_trace_io_summary(io, sizeof(io));
+      prosperoweb::frontend::log_printf("trace: io (sendmsg/recvmsg per fd): %s", io[0] ? io : "none");
       if (!posted || ran >= posted) {
         g_heartbeat_posted.store(now_ms());
         static thread_local int poster_marker = 0;
