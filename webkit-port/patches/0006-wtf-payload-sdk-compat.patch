@@ -5,7 +5,9 @@ Sony's libc provides extensions that the open payload SDK does not
 on FreeBSD), and upstream WTF assumes clang >= 19 accepts
 [[clang::suppress]] on functions. With PS5_HOMEBREW:
  - LanguagePlayStation reads SYSTEM_LANGUAGE with getenv(),
- - setNonBlock() uses fcntl(O_NONBLOCK),
+ - setNonBlock() uses fcntl(O_NONBLOCK), and falls back to the console's
+   SO_NBIO socket option (0x1200) where fcntl on a socket is refused (a
+   native title: EINVAL),
  - AvailableMemory/RAMSize/MemoryPressureHandlerUnix do not include
    <sys/sysinfo.h>/<malloc.h>; available memory is the generic 1.5 GB
    guess instead of the console's physical RAM,
@@ -84,7 +86,7 @@ index e869451aa..5a031de66 100644
      return languages;
  }
 diff --git a/Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp b/Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp
-index 2f8fdd858..e39728144 100644
+index 2f8fdd858..f0981dfe0 100644
 --- a/Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp
 +++ b/Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp
 @@ -26,6 +26,7 @@
@@ -95,14 +97,21 @@ index 2f8fdd858..e39728144 100644
  #include <sys/socket.h>
  
  namespace WTF {
-@@ -53,8 +54,14 @@ int dupCloseOnExec(int fileDescriptor)
+@@ -53,8 +54,21 @@ int dupCloseOnExec(int fileDescriptor)
  
  bool setNonBlock(int fileDescriptor)
  {
 +#if defined(PS5_HOMEBREW)
-+    // SO_NBIO is a Sony libc extension; homebrew uses the FreeBSD way.
++    // A payload uses the FreeBSD way. A native title's libc refuses fcntl on
++    // sockets with EINVAL (syobon-action-ps5 docs/UPDATE_CHECK.md; console
++    // run 23: IPC::Connection::open failed here, so the UI never started
++    // reading or writing its children's connections): fall back to the
++    // console's own SO_NBIO socket option (0x1200, not in the SDK headers).
 +    int flags = fcntl(fileDescriptor, F_GETFL, 0);
-+    return flags != -1 && fcntl(fileDescriptor, F_SETFL, flags | O_NONBLOCK) != -1;
++    if (flags != -1 && fcntl(fileDescriptor, F_SETFL, flags | O_NONBLOCK) != -1)
++        return true;
++    int nonBlocking = 1;
++    return setsockopt(fileDescriptor, SOL_SOCKET, 0x1200 /* SO_NBIO */, &nonBlocking, sizeof(int)) != -1;
 +#else
      int nonBlocking = 1;
      return setsockopt(fileDescriptor, SOL_SOCKET, SO_NBIO, &nonBlocking, sizeof(int)) != -1;

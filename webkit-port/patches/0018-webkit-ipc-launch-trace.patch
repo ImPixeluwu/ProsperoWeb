@@ -6,8 +6,14 @@ it is linked (weak ps5_log_printf), when the launcher's completion runs on
 the main run loop, when AuxiliaryProcessProxy::didFinishLaunching gets the
 connection identifier and opens the connection, and when the PlayStation
 SocketMonitor thread starts. PS5_HOMEBREW builds only; a no-op otherwise.
+
+Also: Connection::platformPrepareForOpen() opens the connection even when
+the socket cannot be made non-blocking (logged). The PlayStation
+SocketMonitor waits with select() before it reads, so a blocking socket
+still works, while refusing to open left the child waiting forever (console
+run 23, where fcntl on the socket was refused).
 diff --git a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
-index 0031d7fee..038523112 100644
+index 0031d7fee..879a19447 100644
 --- a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
 +++ b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
 @@ -28,6 +28,15 @@
@@ -26,7 +32,24 @@ index 0031d7fee..038523112 100644
  #include "IPCUtilities.h"
  #include "Logging.h"
  #include "UnixMessage.h"
-@@ -336,8 +345,10 @@ void Connection::platformOpen()
+@@ -326,8 +335,16 @@ bool Connection::platformPrepareForOpen()
+ {
+     if (setNonBlock(socketDescriptor()))
+         return true;
++#if defined(PS5_HOMEBREW)
++    // The PlayStation SocketMonitor waits with select() before reading, so a
++    // blocking socket still works; refusing to open would leave the child
++    // waiting forever (console run 23).
++    PS5_TRACE("webkit: IPC::Connection: cannot make fd %d non-blocking (errno %d); opening it blocking", socketDescriptor(), errno);
++    return true;
++#else
+     ASSERT_NOT_REACHED();
+     return false;
++#endif
+ }
+ 
+ void Connection::platformOpen()
+@@ -336,8 +353,10 @@ void Connection::platformOpen()
      m_isConnected = true;
  
  #if PLATFORM(PLAYSTATION)
