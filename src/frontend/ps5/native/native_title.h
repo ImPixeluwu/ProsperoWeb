@@ -40,6 +40,10 @@ void native_profile_probe(const char* base);
 // A loopback TCP round trip with this process's own sockets (as the audio
 // and video servers use them); switches poll() to select() if it misses data.
 void native_socket_selftest(void);
+// One log line: can the title reach etaHEN's util daemon command socket
+// (AF_UNIX /system_tmp/etaHEN_util_service, docs/no-elfldr.md)? Connects
+// and closes at once (nothing is sent), and tries opendir("/system_tmp").
+void native_etahen_probe(void);
 
 // The direct-memory heap (native_memory.c): its size, 0 when the system
 // heap is in use, and how much of it is in use.

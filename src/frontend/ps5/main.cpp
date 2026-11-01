@@ -206,6 +206,7 @@ void setup_native_title_env() {
   native_profile_probe(prosperoweb::frontend::kPs5DataDir);
   native_boot_say("[prosperoweb] main: file selftest done\n");
   native_socket_selftest();
+  native_etahen_probe();
   prosperoweb::frontend::setup_runtime_env(prosperoweb::frontend::kPs5DataDir,
                                            layout.ui_root + "/data");
   // JavaScriptCore's JIT needs executable memory, which a title does not

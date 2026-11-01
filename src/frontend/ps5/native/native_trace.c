@@ -31,6 +31,7 @@
 #include <sys/time.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include "native_title.h"
@@ -574,4 +575,41 @@ void native_file_selftest(const char* ui_root, const char* child_root) {
   snprintf(path, sizeof(path), "%s/data", ui_root);
   test_dir(path);
   test_dir("/data/prosperoweb");
+}
+
+void native_etahen_probe(void) {
+  static const char kUtilSocket[] = "/system_tmp/etaHEN_util_service";
+  char result[48] = "";
+  int connect_errno = 0;
+  const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) {
+    connect_errno = errno;
+    snprintf(result, sizeof(result), "socket() errno %d", connect_errno);
+  } else {
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    memcpy(addr.sun_path, kUtilSocket, sizeof(kUtilSocket));
+    if (connect(fd, (const struct sockaddr*)&addr, sizeof(addr)) == 0) {
+      snprintf(result, sizeof(result), "OK");
+    } else {
+      connect_errno = errno;
+      snprintf(result, sizeof(result), "errno %d", connect_errno);
+    }
+    close(fd);
+  }
+  errno = 0;
+  DIR* dir = opendir("/system_tmp");
+  const int dir_errno = dir ? 0 : errno;
+  if (dir) {
+    closedir(dir);
+  }
+  char dir_result[24] = "OK";
+  if (!dir) {
+    snprintf(dir_result, sizeof(dir_result), "errno %d", dir_errno);
+  }
+  ps5_log_printf("probe: etahen util socket %s connect=%s%s%s; opendir /system_tmp=%s%s%s",
+                 kUtilSocket, result, connect_errno ? " " : "",
+                 connect_errno ? strerror(connect_errno) : "", dir_result, dir ? "" : " ",
+                 dir ? "" : strerror(dir_errno));
 }
