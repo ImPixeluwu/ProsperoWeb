@@ -100,6 +100,25 @@ int __wrap_fcntl(int fd, int command, ...) {
     case F_SETFD:
       result = 0;
       break;
+    case F_DUPFD:
+#ifdef F_DUPFD_CLOEXEC
+    case F_DUPFD_CLOEXEC:
+#endif
+    {
+      // The lowest free descriptor at or above the argument, like F_DUPFD:
+      // dup() until one is high enough, closing the ones below.
+      int below[64];
+      int count = 0;
+      result = dup(fd);
+      while (result >= 0 && result < (int)argument && count < 64) {
+        below[count++] = result;
+        result = dup(fd);
+      }
+      for (int i = 0; i < count; i++) {
+        close(below[i]);
+      }
+      break;
+    }
     case F_SETFL: {
       const int on = (argument & O_NONBLOCK) != 0;
       result = setsockopt(fd, SOL_SOCKET, kSoNbio, &on, sizeof(on));
@@ -134,6 +153,7 @@ int __wrap_fcntl(int fd, int command, ...) {
 static atomic_uint g_fd_sent[kTraceFds];
 static atomic_uint g_fd_received[kTraceFds];
 static atomic_uint g_fd_fds_in[kTraceFds];
+static atomic_uint g_fd_fds_out[kTraceFds];
 static atomic_int g_send_logged;
 static atomic_int g_recv_logged;
 static atomic_int g_select_logged;
@@ -174,6 +194,7 @@ ssize_t __wrap_sendmsg(int fd, const struct msghdr* msg, int flags) {
   const int saved = errno;
   if (rc >= 0 && fd >= 0 && fd < kTraceFds) {
     atomic_fetch_add(&g_fd_sent[fd], 1);
+    atomic_fetch_add(&g_fd_fds_out[fd], (unsigned)attached_fds(msg));
   }
   if (rc < 0 || atomic_fetch_add(&g_send_logged, 1) < kTraceFirst) {
     ps5_log_printf("trace: sendmsg(fd %d, %zu bytes, %d fds) -> %zd%s%s", fd, iov_bytes(msg),
@@ -221,8 +242,9 @@ void native_trace_io_summary(char* out, size_t len) {
     if (!sent && !received) {
       continue;
     }
-    const int n = snprintf(out + used, len - used, "%sfd%d %u/%u+%ufds", used ? " " : "", fd,
-                           sent, received, atomic_load(&g_fd_fds_in[fd]));
+    const int n = snprintf(out + used, len - used, "%sfd%d sent %u (%u fds) recv %u (%u fds)",
+                           used ? "; " : "", fd, sent, atomic_load(&g_fd_fds_out[fd]), received,
+                           atomic_load(&g_fd_fds_in[fd]));
     used += n > 0 ? (size_t)n : 0;
   }
 }
