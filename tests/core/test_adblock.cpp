@@ -89,6 +89,25 @@ TEST_SUITE("adblock") {
     CHECK(r.stats.dropped_unsupported == 3);
   }
 
+  TEST_CASE("the cap drops cosmetic before network") {
+    // 3 network + 3 cosmetic, cap 4 -> all 3 network kept, 1 cosmetic kept.
+    std::string list =
+        "||a.example^\n||b.example^\n||c.example^\n"
+        "##.ad1\n##.ad2\n##.ad3\n";
+    ConvertOptions opts;
+    opts.max_rules = 4;
+    auto r = convert_one(list, opts);
+    auto doc = nlohmann::json::parse(r.json);
+    REQUIRE(doc.size() == 4);
+    // First 3 are the network blocks, 4th a cosmetic rule.
+    CHECK(doc[0]["action"]["type"] == "block");
+    CHECK(doc[1]["action"]["type"] == "block");
+    CHECK(doc[2]["action"]["type"] == "block");
+    CHECK(doc[3]["action"]["type"] == "css-display-none");
+    CHECK(r.stats.network_rules == 3);
+    CHECK(r.stats.dropped_cap == 2);  // two cosmetic dropped
+  }
+
   TEST_CASE("the rule cap drops the overflow and reports it") {
     std::string list;
     for (int i = 0; i < 10; ++i) {

@@ -216,10 +216,11 @@ bool apply_option(const std::string& opt, nlohmann::json& trigger, bool& ok) {
 
 ConvertResult convert(const std::vector<std::string>& lists, const ConvertOptions& opts) {
   ConvertResult result;
-  nlohmann::json rules = nlohmann::json::array();
-  bool capped = false;
-
-  auto at_cap = [&]() { return rules.size() >= opts.max_rules; };
+  // Collect network and cosmetic rules separately so the 150000-rule cap drops
+  // cosmetic overflow first and never sacrifices network blocking. Exceptions
+  // keep list order relative to the block rules they override.
+  nlohmann::json network = nlohmann::json::array();
+  nlohmann::json cosmetic = nlohmann::json::array();
 
   for (const auto& list : lists) {
     std::istringstream in(list);
@@ -230,10 +231,7 @@ ConvertResult convert(const std::vector<std::string>& lists, const ConvertOption
       if (line.empty() || line[0] == '!' || line[0] == '[') {
         continue;
       }
-
-      // --- Element hiding -------------------------------------------------
-      // Extended-CSS / scriptlet / exception element rules are not supported
-      // by WebKit's css-display-none action.
+      // Extended-CSS / scriptlet / exception element rules are unsupported.
       if (line.find("#@#") != std::string::npos || line.find("#?#") != std::string::npos ||
           line.find("#$#") != std::string::npos || line.find("#%#") != std::string::npos) {
         ++result.stats.dropped_unsupported;
@@ -248,11 +246,6 @@ ConvertResult convert(const std::vector<std::string>& lists, const ConvertOption
         std::string selector = line.substr(pos + 2);
         if (selector.empty()) {
           ++result.stats.dropped_unsupported;
-          continue;
-        }
-        if (capped || at_cap()) {
-          capped = true;
-          ++result.stats.dropped_cap;
           continue;
         }
         nlohmann::json trigger;
@@ -272,21 +265,18 @@ ConvertResult convert(const std::vector<std::string>& lists, const ConvertOption
         nlohmann::json rule;
         rule["trigger"] = std::move(trigger);
         rule["action"] = {{"type", "css-display-none"}, {"selector", selector}};
-        rules.push_back(std::move(rule));
+        cosmetic.push_back(std::move(rule));
         ++result.stats.element_hide_rules;
         continue;
       }
 
-      // --- Network rules --------------------------------------------------
       bool exception = false;
       if (line.rfind("@@", 0) == 0) {
         exception = true;
         line = line.substr(2);
       }
-
       std::string pattern = line;
       std::string options;
-      // Options follow the last `$`, unless the pattern is a literal /regex/.
       const bool is_regex = pattern.size() >= 2 && pattern.front() == '/' &&
                             pattern.find('/', 1) == pattern.size() - 1;
       if (!is_regex) {
@@ -295,7 +285,6 @@ ConvertResult convert(const std::vector<std::string>& lists, const ConvertOption
           pattern = pattern.substr(0, dollar);
         }
       }
-
       nlohmann::json trigger;
       bool ok = true;
       if (!options.empty()) {
@@ -310,7 +299,6 @@ ConvertResult convert(const std::vector<std::string>& lists, const ConvertOption
         ++result.stats.dropped_unsupported;
         continue;
       }
-
       std::string url_filter;
       if (is_regex) {
         url_filter = pattern.substr(1, pattern.size() - 2);
@@ -322,23 +310,31 @@ ConvertResult convert(const std::vector<std::string>& lists, const ConvertOption
       }
       trigger["url-filter"] = url_filter;
       if (!trigger.contains("url-filter-is-case-sensitive")) {
-        // ABP matching is case-insensitive; WebKit defaults to sensitive.
         trigger["url-filter-is-case-sensitive"] = false;
-      }
-
-      if (capped || at_cap()) {
-        capped = true;
-        ++result.stats.dropped_cap;
-        continue;
       }
       nlohmann::json rule;
       rule["trigger"] = std::move(trigger);
       rule["action"] = {{"type", exception ? "ignore-previous-rules" : "block"}};
-      rules.push_back(std::move(rule));
+      network.push_back(std::move(rule));
       ++result.stats.network_rules;
     }
   }
 
+  nlohmann::json rules = nlohmann::json::array();
+  for (auto& r : network) {
+    if (rules.size() < opts.max_rules) {
+      rules.push_back(std::move(r));
+    } else {
+      ++result.stats.dropped_cap;
+    }
+  }
+  for (auto& r : cosmetic) {
+    if (rules.size() < opts.max_rules) {
+      rules.push_back(std::move(r));
+    } else {
+      ++result.stats.dropped_cap;
+    }
+  }
   result.stats.emitted = rules.size();
   result.json = rules.dump();
   return result;
