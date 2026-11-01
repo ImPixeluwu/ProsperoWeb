@@ -34,9 +34,11 @@ int ps5_terminate_process(int pid);
 int ps5_spawn_broker_main(void);
 
 // Startup progress for the UI's loading screen: `event` is "broker" when
-// the broker answered, or the role name ("WebProcess", "NetworkProcess")
-// when a child was spawned. Called on the spawning thread (a WebKit work
-// queue); the observer must be thread-safe. NULL removes it.
+// the broker answered, the role name ("WebProcess", "NetworkProcess") when a
+// child was spawned, or "no-loader:<reason>" when no ELF loader could be
+// reached to start the broker (the UI then shows a message instead of a stuck
+// progress bar). Called on the spawning thread (a WebKit work queue); the
+// observer must be thread-safe. NULL removes it.
 typedef void (*ps5_spawn_progress_fn)(const char* event, void* data);
 void ps5_spawn_set_progress(ps5_spawn_progress_fn fn, void* data);
 

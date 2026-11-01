@@ -389,6 +389,11 @@ void Ps5App::draw_splash() {
 void Ps5App::splash_spawn_progress(const char* event, void* data) {
   auto* self = static_cast<Ps5App*>(data);
   const std::string name = event ? event : "";
+  static constexpr char kNoLoader[] = "no-loader:";
+  if (name.rfind(kNoLoader, 0) == 0) {
+    self->note_loader_missing(name.substr(sizeof(kNoLoader) - 1));
+    return;
+  }
   unsigned stage = 0;
   if (name == "broker") {
     stage = kSplashBroker;
@@ -400,6 +405,73 @@ void Ps5App::splash_spawn_progress(const char* event, void* data) {
   if (stage) {
     self->mark_splash_stage(stage);
   }
+}
+
+void Ps5App::note_loader_missing(const std::string& detail) {
+  {
+    std::lock_guard<std::mutex> lock(loader_detail_mu_);
+    loader_detail_ = detail;
+  }
+  if (loader_missing_.exchange(true)) {
+    return;  // already flagged; the first reason stays
+  }
+  ps5_log_printf("startup: no ELF loader reachable: %s", detail.c_str());
+  if (frame_loop_ready_.load(std::memory_order_acquire)) {
+    request_frame();
+  } else if (std::this_thread::get_id() == main_thread_) {
+    if (SDL_Surface* surface = SDL_GetWindowSurface(window_)) {
+      render_loader_missing(surface);
+    }
+  }
+}
+
+// Replaces the splash with a clear message: the title cannot reach an ELF
+// loader, so it cannot start its web engine. Drawn once (the content is
+// static) until WebKit paints, if a loader comes up on a later attempt.
+void Ps5App::render_loader_missing(SDL_Surface* surface) {
+  if (loader_message_drawn_ || !surface) {
+    return;
+  }
+  loader_message_drawn_ = true;
+  std::string detail;
+  {
+    std::lock_guard<std::mutex> lock(loader_detail_mu_);
+    detail = loader_detail_;
+  }
+  if (detail.size() > 110) {
+    detail = detail.substr(0, 107) + "...";
+  }
+  const std::string font = runtime_assets_dir() + "/fonts/NotoSans-Regular.ttf";
+  const int head_px = std::max(20, surface->h * 48 / 1080);
+  const int body_px = std::max(14, surface->h * 30 / 1080);
+  const int small_px = std::max(11, surface->h * 22 / 1080);
+  std::string error;
+  display::GrayImage l1, l2, l3, l4;
+  render_splash_text(font, "ProsperoWeb could not reach an ELF loader.", head_px, l1, error);
+  render_splash_text(font, "It needs a loader on 127.0.0.1:9021 to start its web engine.",
+                     body_px, l2, error);
+  render_splash_text(font, "Start etaHEN or elfldr, then launch ProsperoWeb again.", body_px, l3,
+                     error);
+  if (!detail.empty()) {
+    render_splash_text(font, detail, small_px, l4, error);
+  }
+  if (SDL_MUSTLOCK(surface)) {
+    SDL_LockSurface(surface);
+  }
+  const display::SplashTarget target{static_cast<std::uint32_t*>(surface->pixels), surface->w,
+                                     surface->h, surface->pitch / 4,
+                                     surface->format->format == SDL_PIXELFORMAT_ABGR8888};
+  display::paint_message(target, {&l1, &l2, &l3, &l4});
+  if (SDL_MUSTLOCK(surface)) {
+    SDL_UnlockSurface(surface);
+  }
+  const SDL_Rect rect{0, 0, surface->w, surface->h};
+  if (presenter_) {
+    presenter_->submit({rect});
+  } else {
+    SDL_UpdateWindowSurfaceRects(window_, &rect, 1);
+  }
+  log_printf("startup: showing the no-ELF-loader message (%s)", detail.c_str());
 }
 
 void Ps5App::audio_control_fd(int fd, void* data) {
@@ -947,7 +1019,13 @@ void Ps5App::composite_and_present() {
   if (!splash_replaced_) {
     if (!webkit_painted_) {
       if (!presenter_->busy()) {
-        update_splash_progress(surface);
+        // No ELF loader: a clear message instead of a progress bar that would
+        // otherwise sit half-full forever (the web engine never starts).
+        if (loader_missing_.load(std::memory_order_acquire)) {
+          render_loader_missing(surface);
+        } else {
+          update_splash_progress(surface);
+        }
       }
       return;
     }

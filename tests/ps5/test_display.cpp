@@ -331,6 +331,29 @@ TEST_SUITE("display_splash") {
     CHECK(at(l.title.x + 5, l.title.y + 5) == swap_rb(c.background));  // no text this time
   }
 
+  TEST_CASE("message fills the background and centres the lines, no bar") {
+    const int w = 640, h = 360;
+    std::vector<std::uint32_t> px(static_cast<std::size_t>(w) * h, 0xDEADBEEFu);
+    const GrayImage l1 = solid_image(300, 30, 255);
+    const GrayImage l2 = solid_image(400, 20, 255);
+    const SplashColors c;
+    paint_message(SplashTarget{px.data(), w, h, w, false}, {&l1, &l2}, 16);
+    auto at = [&](int x, int y) { return px[static_cast<std::size_t>(y) * w + x]; };
+    // Background everywhere it is not text.
+    CHECK(at(0, 0) == c.background);
+    CHECK(at(w - 1, h - 1) == c.background);
+    // The block is centred horizontally and a little above the middle.
+    const int block_h = 30 + 16 + 20;
+    int y = (h - block_h) / 2 - h / 20;
+    CHECK(at((w - 300) / 2 + 2, y + 2) == c.title);          // first line: title colour
+    CHECK(at((w - 400) / 2 + 2, y + 30 + 16 + 2) == c.subtitle);  // rest: dimmer
+    // Null and empty lines are skipped without drawing.
+    std::fill(px.begin(), px.end(), 0u);
+    const GrayImage empty;
+    paint_message(SplashTarget{px.data(), w, h, w, false}, {nullptr, &empty});
+    CHECK(px[0] == c.background);
+  }
+
   TEST_CASE("progress repaints only the bar, clamped") {
     const int w = 640, h = 360;
     std::vector<std::uint32_t> px(static_cast<std::size_t>(w) * h, 0u);

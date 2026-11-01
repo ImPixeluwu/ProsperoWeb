@@ -150,7 +150,7 @@ std::string broker_elf(const std::string& self_path) {
 }
 
 // Asks websrv to start the broker ELF as a daemon payload in the broker role.
-bool start_broker_via_websrv(const std::string& self_path) {
+bool start_broker_via_websrv(const std::string& self_path, std::string* reason) {
   const std::string websrv = env_or("PROSPEROWEB_WEBSRV", kDefaultWebsrv);
   // argv[0] (also the process name) is the role; --role= and
   // PROSPEROWEB_ROLE say the same in case a loader rewrites argv[0].
@@ -167,17 +167,23 @@ bool start_broker_via_websrv(const std::string& self_path) {
   if (code < 0) {
     ps5_log_printf("websrv: GET http://%s%s -> failed: %s", websrv.c_str(), target.c_str(),
                    error.c_str());
+    if (reason) {
+      *reason = "websrv " + websrv + ": " + error;
+    }
     return false;
   }
   ps5_log_printf("websrv: GET http://%s%s -> HTTP %d in %lldms", websrv.c_str(),
                  target.c_str(), code, ms_since(t0));
+  if (code != 200 && reason) {
+    *reason = "websrv " + websrv + ": HTTP " + std::to_string(code);
+  }
   return code == 200;
 }
 
 // Asks elfldr to load "<self_path>" from the console's file system as a
 // payload in the broker role. elfldr passes no environment, so the
 // settings travel as --env= arguments (main() exports them).
-bool start_broker_via_elfldr(const std::string& self_path) {
+bool start_broker_via_elfldr(const std::string& self_path, std::string* reason) {
   const std::string elfldr = env_or("PROSPEROWEB_ELFLDR", kDefaultElfldr);
   const std::string line =
       elfldr_payload_line(broker_elf(self_path), elfldr_broker_args(broker_env(self_path)));
@@ -188,11 +194,17 @@ bool start_broker_via_elfldr(const std::string& self_path) {
   if (rc < 0) {
     ps5_log_printf("elfldr: %s <- %s -> failed: %s", elfldr.c_str(), line.c_str(),
                    error.c_str());
+    if (reason) {
+      *reason = "elfldr " + elfldr + ": " + error;
+    }
     return false;
   }
   ps5_log_printf("elfldr: %s <- %s -> %s in %lldms", elfldr.c_str(), line.c_str(),
                  rc == 0 ? (reply.empty() ? "accepted" : reply.c_str()) : reply.c_str(),
                  ms_since(t0));
+  if (rc != 0 && reason) {
+    *reason = "elfldr " + elfldr + ": " + (reply.empty() ? "rejected" : reply);
+  }
   return rc == 0;
 }
 
@@ -200,7 +212,7 @@ bool start_broker_via_elfldr(const std::string& self_path) {
 // "auto" (the default) tries both: elfldr first in the native title (no
 // websrv needed), websrv first when websrv's tile started the UI (it is
 // running then). main() sets PROSPEROWEB_TITLE_UI_ROOT only in the title.
-bool start_broker(const std::string& self_path) {
+bool start_broker(const std::string& self_path, std::string* reason) {
   const std::string loader = env_or("PROSPEROWEB_BROKER_LOADER", "auto");
   std::vector<std::string> order;
   if (loader == "elfldr" || loader == "websrv") {
@@ -218,10 +230,15 @@ bool start_broker(const std::string& self_path) {
                    "attempt %zu/%zu)",
                    broker_elf(self_path).c_str(), self_path.c_str(), order[i].c_str(),
                    loader.c_str(), i + 1, order.size());
-    const bool ok = order[i] == "elfldr" ? start_broker_via_elfldr(self_path)
-                                         : start_broker_via_websrv(self_path);
+    std::string attempt_reason;
+    const bool ok = order[i] == "elfldr"
+                        ? start_broker_via_elfldr(self_path, &attempt_reason)
+                        : start_broker_via_websrv(self_path, &attempt_reason);
     if (ok) {
       return true;
+    }
+    if (reason && !attempt_reason.empty()) {
+      *reason += (reason->empty() ? "" : "; ") + attempt_reason;
     }
   }
   ps5_log_line("spawn: no loader started the broker (elfldr on 127.0.0.1:9021 or websrv on "
@@ -251,6 +268,13 @@ void report_progress(const char* event) {
   }
 }
 
+// Tells the UI no ELF loader could be reached, with a one-line reason, so it
+// can replace the stuck progress bar with a clear message (ps5_app.cpp). The
+// reason travels in the progress event after "no-loader:".
+void report_loader_missing(const std::string& reason) {
+  report_progress(("no-loader:" + reason).c_str());
+}
+
 // Caller holds g_mu. Connects to the broker, starting it if needed.
 bool ensure_broker(const std::string& self_path, bool may_start) {
   if (g_client && g_client->connected()) {
@@ -269,12 +293,16 @@ bool ensure_broker(const std::string& self_path, bool may_start) {
       return false;
     }
     ps5_log_printf("spawn: broker not running (%s)", failures.c_str());
-    if (!start_broker(self_path)) {
+    std::string reason;
+    if (!start_broker(self_path, &reason)) {
+      report_loader_missing(reason.empty() ? failures : reason);
       return false;
     }
     if (!g_client->connect_wait(kBrokerStartTimeoutMs, 100, &failures)) {
       ps5_log_printf("spawn: broker did not come up within %dms (%s)", kBrokerStartTimeoutMs,
                      failures.c_str());
+      report_loader_missing("broker did not come up within " +
+                            std::to_string(kBrokerStartTimeoutMs / 1000) + " s (" + failures + ")");
       return false;
     }
   }

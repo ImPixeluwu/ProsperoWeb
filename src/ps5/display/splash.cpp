@@ -106,6 +106,34 @@ void paint_splash(const SplashTarget& target, const SplashLayout& layout, const 
   paint_splash_progress(target, layout, progress, colors);
 }
 
+void paint_message(const SplashTarget& target, const std::vector<const GrayImage*>& lines,
+                   int line_gap, const SplashColors& colors) {
+  fill(target, Rect{0, 0, target.width, target.height}, colors.background);
+  int block_h = 0;
+  int drawn = 0;
+  for (const GrayImage* line : lines) {
+    if (line && !line->empty()) {
+      block_h += (drawn ? line_gap : 0) + line->height;
+      ++drawn;
+    }
+  }
+  if (!drawn) {
+    return;
+  }
+  int y = (target.height - block_h) / 2 - target.height / 20;
+  y = std::max(0, y);
+  bool first = true;
+  for (const GrayImage* line : lines) {
+    if (!line || line->empty()) {
+      continue;
+    }
+    const Rect at{(target.width - line->width) / 2, y, line->width, line->height};
+    draw_text(target, at, *line, colors.background, first ? colors.title : colors.subtitle);
+    y += line->height + line_gap;
+    first = false;
+  }
+}
+
 Rect paint_splash_progress(const SplashTarget& target, const SplashLayout& layout,
                            double progress, const SplashColors& colors) {
   const double p = std::clamp(std::isnan(progress) ? 0.0 : progress, 0.0, 1.0);

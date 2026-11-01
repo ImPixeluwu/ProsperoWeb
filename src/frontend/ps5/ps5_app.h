@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <thread>
 #include <vector>
@@ -80,6 +81,10 @@ class Ps5App {
   // the surface as it is (the splash).
   void dump_screen(SDL_Surface* surface, const std::vector<display::Rect>* chrome_rects = nullptr,
                    int top = 0, const video::PageKey& video_page = {});
+  // The full-screen "no ELF loader" message (main thread).
+  void render_loader_missing(SDL_Surface* surface);
+  // Stores the reason and flags the message (any thread).
+  void note_loader_missing(const std::string& detail);
   void run_form_probe();
 
   static void frame_trampoline(void* self);
@@ -168,6 +173,12 @@ class Ps5App {
   display::GrayImage splash_subtitle_;
   display::SplashLayout splash_layout_;
   bool splash_drawn_ = false;
+  // No ELF loader could be reached at startup: the progress bar is replaced
+  // by a message (render_loader_missing). Set from the spawning thread.
+  std::atomic<bool> loader_missing_{false};
+  std::mutex loader_detail_mu_;
+  std::string loader_detail_;  // loader_detail_mu_
+  bool loader_message_drawn_ = false;  // main thread
   std::atomic<unsigned> splash_stages_{0};  // set from the spawning thread too
   unsigned splash_shown_stages_ = 0;
   std::atomic<bool> frame_loop_ready_{false};

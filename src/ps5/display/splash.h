@@ -60,6 +60,13 @@ void paint_splash(const SplashTarget& target, const SplashLayout& layout, const 
                   const GrayImage* subtitle, double progress,
                   const SplashColors& colors = SplashColors{});
 
+// A full-screen message with no progress bar: the lines centred as a block
+// slightly above the middle, the first line in the title colour and the rest
+// dimmer. For the startup screen shown when no ELF loader can be reached
+// (the UI cannot start its web engine). Null or empty lines are skipped.
+void paint_message(const SplashTarget& target, const std::vector<const GrayImage*>& lines,
+                   int line_gap = 16, const SplashColors& colors = SplashColors{});
+
 // Only the bar; returns the rect it repainted (the track, clipped).
 Rect paint_splash_progress(const SplashTarget& target, const SplashLayout& layout,
                            double progress, const SplashColors& colors = SplashColors{});
