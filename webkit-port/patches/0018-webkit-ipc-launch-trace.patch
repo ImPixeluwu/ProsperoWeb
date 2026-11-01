@@ -55,6 +55,12 @@ when the shell's ps5_trace_enabled() says so (PROSPEROWEB_TRACE=1): console
 run 32 showed them stalling the children's run loops. Failures and one-time
 events (process launch, connection open) are always logged (PS5_LOG).
 
+Always on and cheap (console run 33, slow and partly rendered pages with
+tracing off): every 5 s each process logs how many IPC messages it
+dispatched and how long they waited after being received (median/p90 by
+bucket, max), and the NetworkProcess how many resource loads started,
+finished and failed, plus the first 20 failures.
+
 Also: Connection::platformPrepareForOpen() opens the connection even when
 the socket cannot be made non-blocking (logged). The PlayStation
 SocketMonitor waits with select() before it reads, so a blocking socket
@@ -265,6 +271,86 @@ index 3f62dc763..d4d4f2bf3 100644
  }
  
  // The only caller never passed frame, page or web page proxy identifiers, so relaxed third-party cookie blocking never applied here.
+diff --git a/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp b/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp
+index 3e0c8ba08..45c402dc6 100644
+--- a/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp
++++ b/Source/WebKit/NetworkProcess/NetworkResourceLoader.cpp
+@@ -27,6 +27,39 @@
+ #include "config.h"
+ #include "NetworkResourceLoader.h"
+ 
++#if defined(PS5_HOMEBREW)
++#include <atomic>
++#include <time.h>
++// ProsperoWeb (console run 33: pages partly rendered in the native title):
++// resource loads started, finished and failed, summarised every 5 s with no
++// per-request logging.
++extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
++namespace {
++std::atomic<unsigned> ps5LoadsStarted;
++std::atomic<unsigned> ps5LoadsFinished;
++std::atomic<unsigned> ps5LoadsFailed;
++std::atomic<long long> ps5LoadsWindow;
++void ps5LoadsSummary()
++{
++    timespec ts { };
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    const long long now = ts.tv_sec * 1000LL + ts.tv_nsec / 1000000;
++    long long start = ps5LoadsWindow.load();
++    if (!start) {
++        ps5LoadsWindow.compare_exchange_strong(start, now);
++        return;
++    }
++    if (now - start < 5000 || !ps5LoadsWindow.compare_exchange_strong(start, now))
++        return;
++    const unsigned started = ps5LoadsStarted.exchange(0);
++    const unsigned finished = ps5LoadsFinished.exchange(0);
++    const unsigned failed = ps5LoadsFailed.exchange(0);
++    if (ps5_log_printf && (started || finished || failed))
++        ps5_log_printf("webkit: loads 5s: %u started, %u finished, %u failed", started, finished, failed);
++}
++}
++#endif
++
+ #include "ArgumentCoders.h"
+ #include "FormDataReference.h"
+ #include "LoadedWebArchive.h"
+@@ -260,6 +293,10 @@ bool NetworkResourceLoader::isSynchronous() const
+ 
+ void NetworkResourceLoader::start()
+ {
++#if defined(PS5_HOMEBREW)
++    ++ps5LoadsStarted;
++    ps5LoadsSummary();
++#endif
+     startRequest(originalRequest());
+ }
+ 
+@@ -1734,6 +1771,10 @@ void NetworkResourceLoader::didReceiveBuffer(const WebCore::FragmentedSharedBuff
+ 
+ void NetworkResourceLoader::didFinishLoading(const NetworkLoadMetrics& originalNetworkLoadMetrics)
+ {
++#if defined(PS5_HOMEBREW)
++    ++ps5LoadsFinished;
++    ps5LoadsSummary();
++#endif
+ #if HAVE(BROKEN_MULTIPART_RESPONSE_FLOW_CONTROL)
+     if (m_isProcessingResponse) {
+         m_deferredMessages.append(originalNetworkLoadMetrics);
+@@ -1814,6 +1855,13 @@ void NetworkResourceLoader::didFinishLoading(const NetworkLoadMetrics& originalN
+ 
+ void NetworkResourceLoader::didFailLoading(const ResourceError& error)
+ {
++#if defined(PS5_HOMEBREW)
++    ++ps5LoadsFailed;
++    ps5LoadsSummary();
++    static std::atomic<unsigned> ps5FailuresLogged;
++    if (ps5_log_printf && ++ps5FailuresLogged <= 20)
++        ps5_log_printf("webkit: load failed: %s (error %d, %s)", error.failingURL().string().left(160).utf8().data(), error.errorCode(), error.localizedDescription().utf8().data());
++#endif
+ #if HAVE(BROKEN_MULTIPART_RESPONSE_FLOW_CONTROL)
+     if (m_isProcessingResponse) {
+         m_deferredMessages.append(error);
 diff --git a/Source/WebKit/NetworkProcess/curl/NetworkSessionCurl.cpp b/Source/WebKit/NetworkProcess/curl/NetworkSessionCurl.cpp
 index b3b800c4a..a9bef7e93 100644
 --- a/Source/WebKit/NetworkProcess/curl/NetworkSessionCurl.cpp
@@ -299,10 +385,10 @@ index b3b800c4a..a9bef7e93 100644
              storageSession->setCookieDatabase(makeUniqueRef<CookieJarDB>(parameters.cookiePersistentStorageFile));
          storageSession->setProxySettings(parameters.proxySettings);
 diff --git a/Source/WebKit/Platform/IPC/Connection.cpp b/Source/WebKit/Platform/IPC/Connection.cpp
-index 88ca5b968..ec39d7aa4 100644
+index 88ca5b968..bd5b1f745 100644
 --- a/Source/WebKit/Platform/IPC/Connection.cpp
 +++ b/Source/WebKit/Platform/IPC/Connection.cpp
-@@ -26,6 +26,40 @@
+@@ -26,6 +26,103 @@
  #include "config.h"
  #include "Connection.h"
  
@@ -334,6 +420,69 @@ index 88ca5b968..ec39d7aa4 100644
 +    clock_gettime(CLOCK_MONOTONIC, &ts);
 +    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
 +}
++
++// Always-on, cheap: how long received messages wait for their dispatch in
++// this process, summarised every 5 s (console run 33: with tracing off there
++// were no numbers on the children's stalls). The receiving thread notes the
++// decoder's address with the time; dispatch looks it up.
++namespace {
++Lock ps5LatencyLock;
++HashMap<const void*, double>& ps5Pending() WTF_REQUIRES_LOCK(ps5LatencyLock)
++{
++    static NeverDestroyed<HashMap<const void*, double>> pending;
++    return pending.get();
++}
++constexpr double ps5Buckets[] = { 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 5000 };
++constexpr size_t ps5BucketCount = std::size(ps5Buckets) + 1;
++unsigned ps5Histogram[ps5BucketCount] WTF_GUARDED_BY_LOCK(ps5LatencyLock);
++unsigned ps5Dispatched WTF_GUARDED_BY_LOCK(ps5LatencyLock);
++double ps5MaxWait WTF_GUARDED_BY_LOCK(ps5LatencyLock);
++double ps5WindowStart WTF_GUARDED_BY_LOCK(ps5LatencyLock);
++
++double ps5Percentile(unsigned* histogram, unsigned total, double fraction)
++{
++    unsigned seen = 0;
++    for (size_t i = 0; i < ps5BucketCount; ++i) {
++        seen += histogram[i];
++        if (seen >= fraction * total)
++            return i < std::size(ps5Buckets) ? ps5Buckets[i] : 1e9;
++    }
++    return 1e9;
++}
++}
++
++extern "C" void ps5NoteReceived(const void* decoder)
++{
++    Locker locker { ps5LatencyLock };
++    if (ps5Pending().size() < 4096)
++        ps5Pending().set(decoder, ps5MonotonicMs());
++}
++
++static void ps5NoteDispatched(const void* decoder)
++{
++    const double now = ps5MonotonicMs();
++    Locker locker { ps5LatencyLock };
++    auto it = ps5Pending().find(decoder);
++    if (it == ps5Pending().end())
++        return;
++    const double wait = now - it->value;
++    ps5Pending().remove(it);
++    size_t bucket = 0;
++    while (bucket < std::size(ps5Buckets) && wait >= ps5Buckets[bucket])
++        ++bucket;
++    ++ps5Histogram[bucket];
++    ++ps5Dispatched;
++    ps5MaxWait = std::max(ps5MaxWait, wait);
++    if (!ps5WindowStart)
++        ps5WindowStart = now;
++    if (now - ps5WindowStart >= 5000) {
++        PS5_LOG("webkit: ipc dispatch 5s: %u messages, wait median <%.0f ms, p90 <%.0f ms, max %.0f ms", ps5Dispatched, ps5Percentile(ps5Histogram, ps5Dispatched, 0.5), ps5Percentile(ps5Histogram, ps5Dispatched, 0.9), ps5MaxWait);
++        std::fill(std::begin(ps5Histogram), std::end(ps5Histogram), 0);
++        ps5Dispatched = 0;
++        ps5MaxWait = 0;
++        ps5WindowStart = now;
++    }
++}
 +#define PS5_IPC_FD() (socketDescriptor())
 +#else
 +#define PS5_TRACE(...) do { } while (0)
@@ -343,7 +492,7 @@ index 88ca5b968..ec39d7aa4 100644
  #include "Encoder.h"
  #include "GeneratedSerializers.h"
  #include "Logging.h"
-@@ -601,6 +635,10 @@ Error Connection::sendMessage(UniqueRef<Encoder>&& encoder, OptionSet<SendOption
+@@ -601,6 +698,10 @@ Error Connection::sendMessage(UniqueRef<Encoder>&& encoder, OptionSet<SendOption
  
  Error Connection::sendMessageImpl(UniqueRef<Encoder>&& encoder, OptionSet<SendOption> sendOptions, std::optional<Thread::QOS> qos)
  {
@@ -354,7 +503,7 @@ index 88ca5b968..ec39d7aa4 100644
      if (!isValid())
          return Error::InvalidConnection;
  
-@@ -778,6 +816,9 @@ static bool isWaitedForMessage(MessageName messageName, uint64_t destinationID,
+@@ -778,6 +879,9 @@ static bool isWaitedForMessage(MessageName messageName, uint64_t destinationID,
  
  auto Connection::waitForMessage(MessageName messageName, uint64_t destinationID, Timeout timeout, OptionSet<WaitForOption> waitForOptions) -> DecoderOrError
  {
@@ -364,7 +513,7 @@ index 88ca5b968..ec39d7aa4 100644
      if (!isValid())
          return makeUnexpected(Error::InvalidConnection);
  
-@@ -1025,6 +1066,7 @@ auto Connection::waitForSyncReply(SyncRequestID syncRequestID, MessageName messa
+@@ -1025,6 +1129,7 @@ auto Connection::waitForSyncReply(SyncRequestID syncRequestID, MessageName messa
  #else
      RELEASE_LOG_ERROR(IPC, "Connection::waitForSyncReply: Timed-out while waiting for reply for %s, id=%" PRIu64, description(messageName).characters(), syncRequestID.toUInt64());
  #endif
@@ -372,11 +521,12 @@ index 88ca5b968..ec39d7aa4 100644
  
      return makeUnexpected(Error::Timeout);
  }
-@@ -1449,6 +1491,10 @@ void Connection::enqueueIncomingMessage(UniqueRef<Decoder> incomingMessage)
+@@ -1449,6 +1554,11 @@ void Connection::enqueueIncomingMessage(UniqueRef<Decoder> incomingMessage)
  
  void Connection::dispatchMessage(Decoder& decoder)
  {
 +#if defined(PS5_HOMEBREW)
++    ps5NoteDispatched(&decoder);
 +    if (ps5TraceMessage(ps5DispatchedPerFd, PS5_IPC_FD()))
 +        PS5_TRACE("webkit: ipc fd %d dispatch %s t=%.3f", PS5_IPC_FD(), description(decoder.messageName()).characters(), ps5MonotonicMs());
 +#endif
@@ -384,10 +534,10 @@ index 88ca5b968..ec39d7aa4 100644
      RefPtr client = m_client.get();
      RELEASE_ASSERT(client);
 diff --git a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
-index 0031d7fee..d4a812b69 100644
+index 0031d7fee..63b19044e 100644
 --- a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
 +++ b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
-@@ -28,9 +28,27 @@
+@@ -28,9 +28,28 @@
  #include "config.h"
  #include "Connection.h"
  
@@ -411,11 +561,12 @@ index 0031d7fee..d4a812b69 100644
 +#if defined(PS5_HOMEBREW)
 +#include <atomic>
 +extern "C" double ps5MonotonicMs();
++extern "C" void ps5NoteReceived(const void* decoder);
 +#endif
  #include <WebCore/SharedMemory.h>
  #include <sys/socket.h>
  #include <unistd.h>
-@@ -63,6 +81,12 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN // Unix port
+@@ -63,6 +82,12 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN // Unix port
  namespace IPC {
  
  static const size_t messageMaxSize = 4096;
@@ -428,7 +579,7 @@ index 0031d7fee..d4a812b69 100644
  static const size_t attachmentMaxAmount = 254;
  
  class AttachmentInfo {
-@@ -102,7 +126,11 @@ int Connection::socketDescriptor() const
+@@ -102,7 +127,11 @@ int Connection::socketDescriptor() const
  void Connection::platformInitialize(Identifier&& identifier)
  {
      m_socketDescriptor = WTF::move(identifier.handle);
@@ -440,7 +591,7 @@ index 0031d7fee..d4a812b69 100644
      m_fileDescriptors.reserveInitialCapacity(attachmentMaxAmount);
  }
  
-@@ -134,7 +162,13 @@ bool Connection::processMessage()
+@@ -134,7 +163,13 @@ bool Connection::processMessage()
      MessageInfo messageInfo;
      memcpySpan(asMutableByteSpan(messageInfo), consumeSpan(messageData, sizeof(messageInfo)));
  
@@ -455,7 +606,7 @@ index 0031d7fee..d4a812b69 100644
          ASSERT_NOT_REACHED();
          return false;
      }
-@@ -171,12 +205,16 @@ bool Connection::processMessage()
+@@ -171,12 +206,16 @@ bool Connection::processMessage()
          ASSERT(messageInfo.bodySize());
  
          if (attachmentInfo[attachmentCount].isNull()) {
@@ -472,7 +623,7 @@ index 0031d7fee..d4a812b69 100644
              ASSERT_NOT_REACHED();
              return false;
          }
-@@ -184,9 +222,11 @@ bool Connection::processMessage()
+@@ -184,9 +223,11 @@ bool Connection::processMessage()
          auto handle = WebCore::SharedMemory::Handle { WTF::move(fd), messageInfo.bodySize() };
          oolMessageBody = WebCore::SharedMemory::map(WTF::move(handle), WebCore::SharedMemory::Protection::ReadOnly);
          if (!oolMessageBody) {
@@ -484,7 +635,7 @@ index 0031d7fee..d4a812b69 100644
      }
  
      ASSERT(attachments.size() == (messageInfo.isBodyOutOfLine() ? messageInfo.attachmentCount() - 1 : messageInfo.attachmentCount()));
-@@ -197,9 +237,19 @@ bool Connection::processMessage()
+@@ -197,9 +238,20 @@ bool Connection::processMessage()
  
      auto decoder = Decoder::create(messageBody.first(messageInfo.bodySize()), WTF::move(attachments));
      ASSERT(decoder);
@@ -495,6 +646,7 @@ index 0031d7fee..d4a812b69 100644
 +    }
  
 +#if defined(PS5_HOMEBREW)
++    ps5NoteReceived(decoder.get());
 +    {
 +        static std::atomic<unsigned> received[256];
 +        const int fd = socketDescriptor();
@@ -505,7 +657,7 @@ index 0031d7fee..d4a812b69 100644
      processIncomingMessage(makeUniqueRefFromNonNullUniquePtr(WTF::move(decoder)));
  
      if (m_readBuffer.size() > messageLength) {
-@@ -326,8 +376,16 @@ bool Connection::platformPrepareForOpen()
+@@ -326,8 +378,16 @@ bool Connection::platformPrepareForOpen()
  {
      if (setNonBlock(socketDescriptor()))
          return true;
@@ -522,7 +674,7 @@ index 0031d7fee..d4a812b69 100644
  }
  
  void Connection::platformOpen()
-@@ -336,8 +394,10 @@ void Connection::platformOpen()
+@@ -336,8 +396,10 @@ void Connection::platformOpen()
      m_isConnected = true;
  
  #if PLATFORM(PLAYSTATION)
@@ -533,7 +685,7 @@ index 0031d7fee..d4a812b69 100644
              int fd;
              while ((fd = protectedThis->socketDescriptor()) != -1) {
                  int maxFd = fd;
-@@ -373,14 +433,28 @@ bool Connection::sendOutgoingMessage(UniqueRef<Encoder>&& encoder)
+@@ -373,14 +435,28 @@ bool Connection::sendOutgoingMessage(UniqueRef<Encoder>&& encoder)
  
      UnixMessage outputMessage(encoder.get());
      if (outputMessage.attachments().size() > (attachmentMaxAmount - 1)) {
@@ -563,7 +715,7 @@ index 0031d7fee..d4a812b69 100644
      }
  
      return sendOutputMessage(WTF::move(outputMessage));
-@@ -450,6 +524,9 @@ bool Connection::sendOutputMessage(UnixMessage&& outputMessage)
+@@ -450,6 +526,9 @@ bool Connection::sendOutputMessage(UnixMessage&& outputMessage)
  
      message.msg_iovlen = iovLength;
  
@@ -573,7 +725,7 @@ index 0031d7fee..d4a812b69 100644
      while (sendmsg(socketDescriptor(), &message, MSG_NOSIGNAL) == -1) {
          if (errno == EINTR)
              continue;
-@@ -479,6 +556,15 @@ bool Connection::sendOutputMessage(UnixMessage&& outputMessage)
+@@ -479,6 +558,15 @@ bool Connection::sendOutputMessage(UnixMessage&& outputMessage)
          return false;
      }
  
