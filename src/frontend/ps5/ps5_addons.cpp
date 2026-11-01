@@ -233,7 +233,7 @@ void Ps5Addons::start() {
   if (cfg_.adblock.enabled) {
     // Serial walk: ads chunks one at a time, then cookie (chained in
     // on_set_done) if that sub-toggle is on. Bounds peak memory.
-    start_set(/*is_cookie=*/false, /*from_update=*/false);
+    start_set(/*is_cookie=*/false);
   }
   apply_user_scripts();
 
@@ -266,26 +266,25 @@ void Ps5Addons::log_mem(const char* step) const {
   }
 }
 
-void Ps5Addons::start_set(bool is_cookie, bool from_update) {
+void Ps5Addons::start_set(bool is_cookie) {
   RuleSet& set = set_for(is_cookie);
   if (set.processing) {
     return;  // a serial walk is already in flight for this set
   }
   set.cursor = 0;
-  set.from_update = from_update;
   set.processing = true;
   process_next(is_cookie);
 }
 
 void Ps5Addons::process_next(bool is_cookie) {
   RuleSet& set = set_for(is_cookie);
-  if (set.cursor >= set.chunks) {
+  if (set.cursor >= set.chunks || !store_) {
     set.processing = false;
     on_set_done(is_cookie);
     return;
   }
   // Descriptor backstop: each attached list hands a SharedMemory fd to the
-  // WebProcess and the sandbox cannot dup, so stop well under the budget.
+  // WebProcess (handed over once, cannot dup), so stop well under the budget.
   if (attached_total() >= max_lists_) {
     log_printf("addons: descriptor budget: %zu list(s) attached (max %zu); skipping rest of %s",
                attached_total(), max_lists_, is_cookie ? "cookie" : "ads");
@@ -293,7 +292,7 @@ void Ps5Addons::process_next(bool is_cookie) {
     on_set_done(is_cookie);
     return;
   }
-  // Memory backstop: never OOM the UIProcess - stop attaching more chunks.
+  // Memory backstop: never OOM the UIProcess.
   const long rss = rss_mb();
   if (rss > 0 && rss >= rss_limit_mb_) {
     log_printf("addons: RSS %ld MB >= limit %ld MB; stopping %s at %d chunk(s)", rss, rss_limit_mb_,
@@ -302,25 +301,17 @@ void Ps5Addons::process_next(bool is_cookie) {
     on_set_done(is_cookie);
     return;
   }
+  // Compile this chunk from the freshest on-disk JSON (cache if an online
+  // update wrote one, else the bundled baseline). This is the ONLY compile +
+  // attach per launch; updates never hot re-attach (see pump()).
   const int i = set.cursor;
-  if (set.from_update) {
-    std::string json =
-        (i < static_cast<int>(set.pending.size())) ? std::move(set.pending[i]) : std::string();
-    if (i < static_cast<int>(set.pending.size())) {
-      set.pending[i].clear();
-      set.pending[i].shrink_to_fit();
-    }
-    write_file(cache_dir_ + "/" + set.prefix + "-" + std::to_string(i) + ".json", json);
-    compile_json(is_cookie, i, json, /*from_update=*/true);  // -> on_compile -> advance
+  const std::string json = read_file(chunk_path(set, i));
+  if (json.empty()) {
+    log_printf("addons: %s chunk %d missing; skipping", is_cookie ? "cookie" : "ads", i);
+    advance(is_cookie);
     return;
   }
-  if (!store_) {
-    set.processing = false;
-    return;
-  }
-  auto* ctx = new CompileCtx{this, is_cookie, i, /*from_update=*/false};
-  auto id = make_wk_string(identifier(is_cookie, i));
-  WKUserContentExtensionStoreLookup(store_, id.get(), ctx, &Ps5Addons::on_lookup);
+  compile_json(is_cookie, i, json);  // async -> on_compile -> advance
 }
 
 void Ps5Addons::advance(bool is_cookie) {
@@ -331,66 +322,28 @@ void Ps5Addons::advance(bool is_cookie) {
 
 void Ps5Addons::on_set_done(bool is_cookie) {
   RuleSet& set = set_for(is_cookie);
-  log_printf("addons: %s set done (%d chunk(s) processed, %zu attached)",
-             is_cookie ? "cookie" : "ads", set.cursor,
-             [&] {
-               std::size_t n = 0;
-               for (auto* f : set.filters) {
-                 if (f) {
-                   ++n;
-                 }
-               }
-               return n;
-             }());
-  const bool was_update = set.from_update;
-  set.from_update = false;
-  if (!was_update) {
-    // Startup: after ads, process the cookie set if that sub-toggle is on.
-    if (!is_cookie && cfg_.adblock.enabled && cfg_.adblock.cookie_banners && !cookie_.processing) {
-      start_set(/*is_cookie=*/true, /*from_update=*/false);
+  std::size_t attached = 0;
+  for (auto* f : set.filters) {
+    if (f) {
+      ++attached;
     }
-    return;
   }
-  // Refresh: ads first, then cookie, then report completion.
-  if (!is_cookie && cfg_.adblock.cookie_banners && !cookie_.pending.empty()) {
-    start_set(/*is_cookie=*/true, /*from_update=*/true);
-    return;
+  log_printf("addons: %s set done (%d chunk(s) processed, %zu attached)",
+             is_cookie ? "cookie" : "ads", set.cursor, attached);
+  // Startup: after ads, process the cookie set if that sub-toggle is on.
+  if (!is_cookie && cfg_.adblock.enabled && cfg_.adblock.cookie_banners && !cookie_.processing) {
+    start_set(/*is_cookie=*/true);
   }
-  finish_update(update_ads_ok_);
 }
 
-void Ps5Addons::on_lookup(WKUserContentFilterRef filter, std::uint32_t result, void* ctx_raw) {
-  auto* ctx = static_cast<CompileCtx*>(ctx_raw);
-  Ps5Addons* self = ctx->self;
-  const bool is_cookie = ctx->is_cookie;
-  const int index = ctx->index;
-  delete ctx;
-  if (result == kWKUserContentExtensionStoreSuccess && filter) {
-    log_printf("addons: loaded cached %s chunk %d", is_cookie ? "cookie" : "ads", index);
-    self->adopt_filter(is_cookie, index, filter);
-    self->log_mem("attach");
-    self->advance(is_cookie);
-    return;
-  }
-  // Lookup miss: compile the chunk from the cache/bundled file (async).
-  const RuleSet& set = is_cookie ? self->cookie_ : self->ads_;
-  const std::string json = read_file(self->chunk_path(set, index));
-  if (json.empty()) {
-    log_printf("addons: %s chunk %d missing; skipping", is_cookie ? "cookie" : "ads", index);
-    self->advance(is_cookie);
-    return;
-  }
-  self->compile_json(is_cookie, index, json, /*from_update=*/false);  // -> on_compile -> advance
-}
-
-void Ps5Addons::compile_json(bool is_cookie, int index, const std::string& json, bool from_update) {
+void Ps5Addons::compile_json(bool is_cookie, int index, const std::string& json) {
   if (!store_ || json.empty()) {
     advance(is_cookie);
     return;
   }
-  log_printf("addons: compiling %s chunk %d (%zu rules, %zu bytes)%s", is_cookie ? "cookie" : "ads",
-             index, count_rules(json), json.size(), from_update ? " from update" : "");
-  auto* ctx = new CompileCtx{this, is_cookie, index, from_update};
+  log_printf("addons: compiling %s chunk %d (%zu rules, %zu bytes)", is_cookie ? "cookie" : "ads",
+             index, count_rules(json), json.size());
+  auto* ctx = new CompileCtx{this, is_cookie, index};
   auto id = make_wk_string(identifier(is_cookie, index));
   auto src = make_wk_string(json);  // WebKit copies the source; our std::string frees on return
   WKUserContentExtensionStoreCompile(store_, id.get(), src.get(), ctx, &Ps5Addons::on_compile);
@@ -401,16 +354,11 @@ void Ps5Addons::on_compile(WKUserContentFilterRef filter, std::uint32_t result, 
   Ps5Addons* self = ctx->self;
   const bool is_cookie = ctx->is_cookie;
   const int index = ctx->index;
-  const bool from_update = ctx->from_update;
   delete ctx;
-  const bool ok = (result == kWKUserContentExtensionStoreSuccess && filter);
-  if (ok) {
+  if (result == kWKUserContentExtensionStoreSuccess && filter) {
     log_printf("addons: %s chunk %d compiled ok", is_cookie ? "cookie" : "ads", index);
-    self->adopt_filter(is_cookie, index, filter);  // attaches incrementally
+    self->adopt_filter(is_cookie, index, filter);  // the single attach for this chunk
     self->log_mem("attach");
-    if (from_update && !is_cookie) {
-      self->update_ads_ok_ = true;
-    }
   } else {
     // A chunk that will not compile is skipped, never fatal.
     log_printf("addons: %s chunk %d compile FAILED (result %u); skipping",
@@ -515,9 +463,9 @@ void Ps5Addons::set_adblock(bool enabled, bool cookie_banners) {
     return false;
   };
   if (enabled && !ads_.processing && needs_compile(ads_)) {
-    start_set(/*is_cookie=*/false, /*from_update=*/false);  // cookie chains after ads
+    start_set(/*is_cookie=*/false);  // cookie chains after ads
   } else if (enabled && cookie_banners && !cookie_.processing && needs_compile(cookie_)) {
-    start_set(/*is_cookie=*/true, /*from_update=*/false);
+    start_set(/*is_cookie=*/true);
   }
   apply_filters();
   apply_user_scripts();
@@ -551,16 +499,17 @@ void Ps5Addons::start_update() {
     std::lock_guard<std::mutex> lock(mutex_);
     result_ready_ = false;
     result_ok_ = false;
-    fetched_ads_chunks_.clear();
-    fetched_cookie_chunks_.clear();
   }
   update_started_at_ = now_epoch();
-  log_line("addons: downloading filter lists in the background");
+  log_line("addons: downloading filter lists in the background (applies on restart)");
   worker_ = std::thread([this] { worker_run(); });
 }
 
 void Ps5Addons::worker_run() {
-  // Download + chunk off the main thread (no WebKit calls here).
+  // Download, chunk and WRITE THE CACHE off the main thread (no WebKit calls).
+  // The freshly cached chunks are compiled and attached on the NEXT launch;
+  // we never hot re-attach during a running session (the SharedMemory handle
+  // budget is spent by the startup attach and handles are move-once).
   auto fetch_all = [](const std::vector<std::string>& urls, bool& ok) {
     std::vector<std::string> texts;
     for (const auto& u : urls) {
@@ -573,34 +522,33 @@ void Ps5Addons::worker_run() {
     }
     return texts;
   };
+  auto write_chunks = [this](const std::string& prefix, const std::vector<std::string>& chunks) {
+    for (std::size_t i = 0; i < chunks.size(); ++i) {
+      write_file(cache_dir_ + "/" + prefix + "-" + std::to_string(i) + ".json", chunks[i]);
+    }
+    log_printf("addons: cached %zu %s chunk(s) for next launch", chunks.size(), prefix.c_str());
+  };
 
   bool ok = true;
-  std::vector<std::string> ads_chunks;
-  std::vector<std::string> cookie_chunks;
   std::vector<std::string> ads_texts = fetch_all(ads_.sources, ok);
   if (ok && !ads_texts.empty()) {
-    ads_chunks = core::adblock::convert_chunked(ads_texts, per_chunk_, max_total_).chunks;
+    write_chunks(ads_.prefix, core::adblock::convert_chunked(ads_texts, per_chunk_, max_total_).chunks);
   }
   if (ok && cfg_.adblock.cookie_banners && !cookie_.sources.empty()) {
     std::vector<std::string> cookie_texts = fetch_all(cookie_.sources, ok);
     if (ok && !cookie_texts.empty()) {
-      cookie_chunks = core::adblock::convert_chunked(cookie_texts, per_chunk_, max_total_).chunks;
+      write_chunks(cookie_.prefix,
+                   core::adblock::convert_chunked(cookie_texts, per_chunk_, max_total_).chunks);
     }
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
   result_ready_ = true;
   result_ok_ = ok;
-  if (ok) {
-    fetched_ads_chunks_ = std::move(ads_chunks);
-    fetched_cookie_chunks_ = std::move(cookie_chunks);
-  }
 }
 
 void Ps5Addons::pump() {
   if (updating_.load()) {
-    std::vector<std::string> ads_chunks;
-    std::vector<std::string> cookie_chunks;
     bool ready = false;
     bool ok = false;
     {
@@ -608,8 +556,6 @@ void Ps5Addons::pump() {
       if (result_ready_) {
         ready = true;
         ok = result_ok_;
-        ads_chunks = std::move(fetched_ads_chunks_);
-        cookie_chunks = std::move(fetched_cookie_chunks_);
         result_ready_ = false;
       }
     }
@@ -617,23 +563,15 @@ void Ps5Addons::pump() {
       if (worker_.joinable()) {
         worker_.join();
       }
-      if (ok && !ads_chunks.empty() && store_) {
-        log_printf("addons: fetched filter lists, recompiling (%zu ads + %zu cookie chunks)",
-                   ads_chunks.size(), cookie_chunks.size());
-        update_ads_ok_ = false;
-        // Hand the new chunks to the serial walker (ads first, cookie chained);
-        // it recompiles one at a time and finish_update() fires when done.
-        ads_.chunks = static_cast<int>(ads_chunks.size());
-        ads_.filters.resize(ads_chunks.size(), nullptr);
-        ads_.pending = std::move(ads_chunks);
-        cookie_.chunks = static_cast<int>(cookie_chunks.size());
-        cookie_.filters.resize(cookie_chunks.size(), nullptr);
-        cookie_.pending = std::move(cookie_chunks);
-        start_set(/*is_cookie=*/false, /*from_update=*/true);
+      // The worker already wrote the fresh chunks to the cache; nothing is
+      // recompiled or re-attached now (that happens on the next launch), so
+      // the update finishes deterministically and never gets stuck.
+      if (ok) {
+        log_line("addons: filter lists refreshed and cached; applies on restart");
       } else {
         log_line("addons: filter-list refresh failed; keeping cached/bundled lists");
-        finish_update(/*ok=*/false);
       }
+      finish_update(ok);
     } else if (update_started_at_ > 0 && now_epoch() - update_started_at_ > 240) {
       log_line("addons: filter-list update timed out; keeping cached/bundled lists");
       finish_update(/*ok=*/false);

@@ -67,26 +67,22 @@ class Ps5Addons final : public shell::AddonsBackend {
     std::vector<std::string> sources;             // refetch URLs
     int cursor = 0;                               // next chunk to process
     bool processing = false;                      // a serial walk is in flight
-    bool from_update = false;                     // this walk is a refresh
-    std::vector<std::string> pending;             // in-memory chunk JSON (refresh only)
   };
   struct CompileCtx {
     Ps5Addons* self;
     bool is_cookie;
     int index;
-    bool from_update;
   };
 
   RuleSet& set_for(bool is_cookie) { return is_cookie ? cookie_ : ads_; }
-  // Begin a serial walk of a set's chunks (startup compile/lookup).
-  void start_set(bool is_cookie, bool from_update);
-  // Process set.cursor, or finish the walk; one compile/lookup in flight.
+  // Begin a serial walk of a set's chunks (startup compile + the single attach
+  // per launch). One compile in flight at a time to bound memory.
+  void start_set(bool is_cookie);
   void process_next(bool is_cookie);
   void advance(bool is_cookie);
   void on_set_done(bool is_cookie);
-  void compile_json(bool is_cookie, int index, const std::string& json, bool from_update);
+  void compile_json(bool is_cookie, int index, const std::string& json);
   void adopt_filter(bool is_cookie, int index, WKUserContentFilterRef filter);
-  static void on_lookup(WKUserContentFilterRef filter, std::uint32_t result, void* ctx);
   static void on_compile(WKUserContentFilterRef filter, std::uint32_t result, void* ctx);
   std::string identifier(bool is_cookie, int index) const;
   std::string chunk_path(const RuleSet& set, int index) const;  // cache if present else bundled
@@ -129,14 +125,11 @@ class Ps5Addons final : public shell::AddonsBackend {
   std::thread worker_;
   std::mutex mutex_;
   std::atomic<bool> updating_{false};
-  bool result_ready_ = false;               // guarded by mutex_
-  bool result_ok_ = false;                  // guarded by mutex_
-  std::vector<std::string> fetched_ads_chunks_;     // guarded by mutex_
-  std::vector<std::string> fetched_cookie_chunks_;  // guarded by mutex_
+  bool result_ready_ = false;  // guarded by mutex_ (worker wrote the cache)
+  bool result_ok_ = false;     // guarded by mutex_
   std::int64_t last_updated_ = 0;
   std::int64_t last_check_ = 0;
   std::int64_t update_started_at_ = 0;
-  bool update_ads_ok_ = false;
 };
 
 }  // namespace prosperoweb::frontend
