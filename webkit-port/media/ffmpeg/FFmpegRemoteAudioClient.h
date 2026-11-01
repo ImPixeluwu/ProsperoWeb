@@ -13,6 +13,7 @@
 #pragma once
 
 #include "FFmpegAudioWire.h"
+#include "FFmpegMediaControl.h"
 
 #include <atomic>
 #include <cerrno>
@@ -92,34 +93,29 @@ public:
                 return fail(error, "connect");
             }
         }
-        uint8_t hello[helloSize];
-        encodeHello(Hello { }, hello);
-        if (!sendAll(hello, sizeof(hello), deadline))
-            return fail(error, "sending the hello");
-        while (true) {
-            auto result = m_parser.next();
-            if (result == FrameParser::Result::Message) {
-                auto& message = m_parser.message();
-                if (message.type == Type::Accepted) {
-                    auto accepted = decodeAccepted(message.payload, message.bytes);
-                    if (!accepted)
-                        return fail(error, "malformed accepted message", false);
-                    m_accepted = *accepted;
-                    std::lock_guard<std::mutex> lock(m_lock);
-                    m_clock.setOutputLatencyFrames(accepted->outputLatencyFrames);
-                    return true;
-                }
-                if (message.type == Type::Rejected)
-                    return fail(error, "the server rejected the stream format", false);
-                continue;
-            }
-            if (result == FrameParser::Result::Error)
-                return fail(error, "protocol error", false);
-            if (!waitFor(POLLIN, deadline))
-                return fail(error, "no answer from the server", false);
-            if (!receive())
-                return fail(error, "connection closed during the handshake", false);
-        }
+        return handshake(deadline, error);
+    }
+
+    // Opens a stream over an inherited control socket instead of TCP: makes a
+    // socketpair, passes one end to the UI's audio server over `controlFd`
+    // (FFmpegMediaControl.h) and runs the same hello handshake on the kept
+    // end. Used under the Media application-category sandbox, where the UI
+    // cannot listen() on a port.
+    bool connectControl(int controlFd, int timeoutMs, std::string& error)
+    {
+        double deadline = monotonicSeconds() + timeoutMs / 1000.0;
+        m_fd = FFmpegMedia::MediaControl::openControlConnection(controlFd, error);
+        if (m_fd < 0)
+            return false;
+        int flags = fcntl(m_fd, F_GETFL, 0);
+        fcntl(m_fd, F_SETFL, flags | O_NONBLOCK);
+        int one = 1;
+#ifdef SO_NOSIGPIPE
+        setsockopt(m_fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#else
+        (void)one;
+#endif
+        return handshake(deadline, error);
     }
 
     const Accepted& accepted() const { return m_accepted; }
@@ -224,6 +220,39 @@ public:
     }
 
 private:
+    // Sends the hello on m_fd and waits for Accepted/Rejected within deadline.
+    bool handshake(double deadline, std::string& error)
+    {
+        uint8_t hello[helloSize];
+        encodeHello(Hello { }, hello);
+        if (!sendAll(hello, sizeof(hello), deadline))
+            return fail(error, "sending the hello");
+        while (true) {
+            auto result = m_parser.next();
+            if (result == FrameParser::Result::Message) {
+                auto& message = m_parser.message();
+                if (message.type == Type::Accepted) {
+                    auto accepted = decodeAccepted(message.payload, message.bytes);
+                    if (!accepted)
+                        return fail(error, "malformed accepted message", false);
+                    m_accepted = *accepted;
+                    std::lock_guard<std::mutex> lock(m_lock);
+                    m_clock.setOutputLatencyFrames(accepted->outputLatencyFrames);
+                    return true;
+                }
+                if (message.type == Type::Rejected)
+                    return fail(error, "the server rejected the stream format", false);
+                continue;
+            }
+            if (result == FrameParser::Result::Error)
+                return fail(error, "protocol error", false);
+            if (!waitFor(POLLIN, deadline))
+                return fail(error, "no answer from the server", false);
+            if (!receive())
+                return fail(error, "connection closed during the handshake", false);
+        }
+    }
+
     bool fail(std::string& error, const char* what, bool withErrno = true)
     {
         error = what;

@@ -73,7 +73,7 @@ public:
     void logStats(double seconds);
 
 private:
-    FFmpegVideoOverlay(unsigned player, int port);
+    FFmpegVideoOverlay(unsigned player, int port, int controlFd);
 
     std::unique_ptr<FFmpegMedia::VideoWire::VideoOverlayClient> m_client;
     unsigned m_player;

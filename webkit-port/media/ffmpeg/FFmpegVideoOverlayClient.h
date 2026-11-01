@@ -25,6 +25,7 @@
 #pragma once
 
 #include "FFmpegVideoOverlayWire.h"
+#include "FFmpegMediaControl.h"
 
 #include <algorithm>
 #include <atomic>
@@ -296,6 +297,10 @@ public:
 
     struct Config {
         int port { defaultPort };
+        // >= 0: open the connection over this inherited control socket
+        // (FFmpegMediaControl.h) instead of connecting to `port`. Set under
+        // the Media application-category sandbox, where the UI cannot listen().
+        int controlFd { -1 };
         uint32_t pid { 0 };
         uint32_t player { 0 };
         Transport force { Transport::None };
@@ -655,35 +660,54 @@ private:
     bool connect()
     {
         double deadline = overlayMonotonicSeconds() + m_config.connectTimeoutMs / 1000.0;
-        m_fd = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (m_fd < 0)
-            return failed("socket");
-        int flags = fcntl(m_fd, F_GETFL, 0);
-        fcntl(m_fd, F_SETFL, flags | O_NONBLOCK);
-        int one = 1;
-        setsockopt(m_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-#ifdef SO_NOSIGPIPE
-        setsockopt(m_fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
-#endif
-        int sendBuffer = 4 << 20;
-        setsockopt(m_fd, SOL_SOCKET, SO_SNDBUF, &sendBuffer, sizeof(sendBuffer));
-        sockaddr_in address { };
-        address.sin_family = AF_INET;
-        address.sin_port = htons(static_cast<uint16_t>(m_config.port));
-        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        if (::connect(m_fd, reinterpret_cast<sockaddr*>(&address), sizeof(address))) {
-            if (errno != EINPROGRESS)
-                return failed("connect");
-            if (!waitFor(POLLOUT, deadline)) {
-                errno = ETIMEDOUT;
-                return failed("connect");
+        const bool useControl = m_config.controlFd >= 0;
+        if (useControl) {
+            std::string error;
+            m_fd = FFmpegMedia::MediaControl::openControlConnection(m_config.controlFd, error);
+            if (m_fd < 0) {
+                logf("video overlay: player %u: control fd %d failed: %s", m_config.player, m_config.controlFd, error.c_str());
+                return false;
             }
-            int soError = 0;
-            socklen_t length = sizeof(soError);
-            getsockopt(m_fd, SOL_SOCKET, SO_ERROR, &soError, &length);
-            if (soError) {
-                errno = soError;
-                return failed("connect");
+            int flags = fcntl(m_fd, F_GETFL, 0);
+            fcntl(m_fd, F_SETFL, flags | O_NONBLOCK);
+            int one = 1;
+            (void)one;
+#ifdef SO_NOSIGPIPE
+            setsockopt(m_fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#endif
+            int sendBuffer = 4 << 20;
+            setsockopt(m_fd, SOL_SOCKET, SO_SNDBUF, &sendBuffer, sizeof(sendBuffer));
+        } else {
+            m_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+            if (m_fd < 0)
+                return failed("socket");
+            int flags = fcntl(m_fd, F_GETFL, 0);
+            fcntl(m_fd, F_SETFL, flags | O_NONBLOCK);
+            int one = 1;
+            setsockopt(m_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+#ifdef SO_NOSIGPIPE
+            setsockopt(m_fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#endif
+            int sendBuffer = 4 << 20;
+            setsockopt(m_fd, SOL_SOCKET, SO_SNDBUF, &sendBuffer, sizeof(sendBuffer));
+            sockaddr_in address { };
+            address.sin_family = AF_INET;
+            address.sin_port = htons(static_cast<uint16_t>(m_config.port));
+            address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            if (::connect(m_fd, reinterpret_cast<sockaddr*>(&address), sizeof(address))) {
+                if (errno != EINPROGRESS)
+                    return failed("connect");
+                if (!waitFor(POLLOUT, deadline)) {
+                    errno = ETIMEDOUT;
+                    return failed("connect");
+                }
+                int soError = 0;
+                socklen_t length = sizeof(soError);
+                getsockopt(m_fd, SOL_SOCKET, SO_ERROR, &soError, &length);
+                if (soError) {
+                    errno = soError;
+                    return failed("connect");
+                }
             }
         }
         uint8_t hello[helloSize];
@@ -697,7 +721,10 @@ private:
         if (!key)
             return failed("malformed accepted message");
         m_key = *key;
-        logf("video overlay: player %u: connected to 127.0.0.1:%d (server key %u)", m_config.player, m_config.port, *key);
+        if (useControl)
+            logf("video overlay: player %u: connected over control fd %d (server key %u)", m_config.player, m_config.controlFd, *key);
+        else
+            logf("video overlay: player %u: connected to 127.0.0.1:%d (server key %u)", m_config.player, m_config.port, *key);
         return true;
     }
 

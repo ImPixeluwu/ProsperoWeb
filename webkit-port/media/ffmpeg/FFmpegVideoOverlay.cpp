@@ -129,20 +129,24 @@ std::unique_ptr<FFmpegVideoOverlay> FFmpegVideoOverlay::createIfEnabled()
         return nullptr;
     }
     int port = overlayPort();
-    if (port < 0) {
+    // The UI exports this when it cannot listen() (media category): players
+    // open their connection over the inherited control socket, not a port.
+    int controlFd = FFmpegMedia::MediaControl::controlFdFromEnv("PROSPEROWEB_VIDEO_CONTROL_FD");
+    if (port < 0 && controlFd < 0) {
         if (!std::exchange(loggedDisabled, true))
             ffmpegMediaLog("video overlay: off (PROSPEROWEB_VIDEO_PORT=%s)", getenv("PROSPEROWEB_VIDEO_PORT"));
         return nullptr;
     }
-    return std::unique_ptr<FFmpegVideoOverlay>(new FFmpegVideoOverlay(nextPlayer++, port));
+    return std::unique_ptr<FFmpegVideoOverlay>(new FFmpegVideoOverlay(nextPlayer++, port, controlFd));
 }
 
-FFmpegVideoOverlay::FFmpegVideoOverlay(unsigned player, int port)
+FFmpegVideoOverlay::FFmpegVideoOverlay(unsigned player, int port, int controlFd)
     : m_client(new Wire::VideoOverlayClient())
     , m_player(player)
 {
     Wire::VideoOverlayClient::Config config;
     config.port = port;
+    config.controlFd = controlFd;
     config.pid = static_cast<uint32_t>(getpid());
     config.player = player;
     const char* forced = getenv("PROSPEROWEB_VIDEO_TRANSPORT");
@@ -151,8 +155,12 @@ FFmpegVideoOverlay::FFmpegVideoOverlay(unsigned player, int port)
     config.log = [](const std::string& line) {
         ffmpegMediaLog("%s", line.c_str());
     };
-    ffmpegMediaLog("video overlay: player %u: on (pid %d, port %d, transport %s)", player, static_cast<int>(getpid()), port,
-        config.force == Wire::Transport::None ? "auto: shm, file, tcp" : Wire::transportName(config.force));
+    if (controlFd >= 0)
+        ffmpegMediaLog("video overlay: player %u: on (pid %d, control fd %d, transport %s)", player, static_cast<int>(getpid()), controlFd,
+            config.force == Wire::Transport::None ? "auto: shm, file, tcp" : Wire::transportName(config.force));
+    else
+        ffmpegMediaLog("video overlay: player %u: on (pid %d, port %d, transport %s)", player, static_cast<int>(getpid()), port,
+            config.force == Wire::Transport::None ? "auto: shm, file, tcp" : Wire::transportName(config.force));
     m_client->start(WTF::move(config));
 }
 

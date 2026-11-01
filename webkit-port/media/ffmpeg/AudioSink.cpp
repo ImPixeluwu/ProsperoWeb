@@ -113,20 +113,27 @@ private:
 class RemoteAudioSink final : public AudioSink {
     WTF_DEPRECATED_MAKE_FAST_ALLOCATED(RemoteAudioSink);
 public:
-    static std::unique_ptr<AudioSink> create(RenderCallback& render, int port)
+    // `controlFd` >= 0 uses the inherited socketpair rendezvous (the UI
+    // cannot listen() under the Media application-category sandbox); otherwise
+    // the client connects to 127.0.0.1:port.
+    static std::unique_ptr<AudioSink> create(RenderCallback& render, int port, int controlFd)
     {
         auto sink = std::unique_ptr<RemoteAudioSink>(new RemoteAudioSink(WTF::move(render)));
         if (const char* ahead = getenv("PROSPEROWEB_AUDIO_AHEAD_MS"); ahead && atoi(ahead) > 0)
             sink->m_client.setTargetAhead(atoi(ahead) / 1000.0);
+        const bool useControl = controlFd >= 0;
+        const char* via = useControl ? "control fd" : "127.0.0.1";
         std::string error;
-        if (!sink->m_client.connect(port, 300, error)) {
-            ffmpegMediaLog("audio sink: remote 127.0.0.1:%d failed: %s", port, error.c_str());
+        bool connected = useControl ? sink->m_client.connectControl(controlFd, 300, error)
+                                    : sink->m_client.connect(port, 300, error);
+        if (!connected) {
+            ffmpegMediaLog("audio sink: remote (%s %d) failed: %s", via, useControl ? controlFd : port, error.c_str());
             render = WTF::move(sink->m_render);
             return nullptr;
         }
         const auto& accepted = sink->m_client.accepted();
-        ffmpegMediaLog("audio sink: remote 127.0.0.1:%d connected (stream %u, output latency %u frames, %.0f ms ahead)",
-            port, accepted.streamId, accepted.outputLatencyFrames, sink->m_client.targetAhead() * 1000);
+        ffmpegMediaLog("audio sink: remote connected via %s %d (stream %u, output latency %u frames, %.0f ms ahead)",
+            via, useControl ? controlFd : port, accepted.streamId, accepted.outputLatencyFrames, sink->m_client.targetAhead() * 1000);
         sink->m_port = port;
         sink->m_thread = Thread::create("FFmpegRemoteAudio"_s, [self = sink.get()] {
             self->run();
@@ -325,10 +332,13 @@ std::unique_ptr<AudioSink> AudioSink::create(RenderCallback&& render)
         ffmpegMediaLog("audio sink: unknown PROSPEROWEB_MEDIA_AUDIO=%s, using the default order", mode.c_str());
 
     int port = remotePort();
-    if (mode == "remote" && !port)
+    // The UI exports this when it cannot listen() (media category): the sink
+    // then opens its stream over the inherited control socket, not a port.
+    int controlFd = FFmpegMedia::MediaControl::controlFdFromEnv("PROSPEROWEB_AUDIO_CONTROL_FD");
+    if (mode == "remote" && !port && controlFd < 0)
         port = FFmpegMedia::AudioWire::defaultPort;
-    if (mode != "sdl" && port) {
-        if (auto sink = RemoteAudioSink::create(render, port))
+    if (mode != "sdl" && (port || controlFd >= 0)) {
+        if (auto sink = RemoteAudioSink::create(render, port, controlFd))
             return sink;
         ffmpegMediaLog("audio sink: remote unavailable, trying the local SDL output (inaudible from the WebProcess on the PS5)");
     }
