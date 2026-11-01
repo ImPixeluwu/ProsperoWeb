@@ -33,6 +33,10 @@ shared memory can be had at all, a message up to 64 KiB is sent inline
 instead of being dropped (receivers accept and buffer inline bodies that
 large; the launcher's socket buffers are 256 KiB, patch 0005).
 
+The out-of-line body is made with its own anonymous shm object whose only
+descriptor goes into the message (console run 28: the title may not dup()
+a descriptor, which SharedMemory::createHandle does).
+
 Also: Connection::platformPrepareForOpen() opens the connection even when
 the socket cannot be made non-blocking (logged). The PlayStation
 SocketMonitor waits with select() before it reads, so a blocking socket
@@ -382,10 +386,48 @@ index 0031d7fee..2350667c0 100644
  
      return sendOutputMessage(WTF::move(outputMessage));
 diff --git a/Source/WebKit/Platform/IPC/unix/UnixMessage.h b/Source/WebKit/Platform/IPC/unix/UnixMessage.h
-index 10932fbbf..a68307c1c 100644
+index 10932fbbf..dca413f92 100644
 --- a/Source/WebKit/Platform/IPC/unix/UnixMessage.h
 +++ b/Source/WebKit/Platform/IPC/unix/UnixMessage.h
-@@ -152,8 +152,12 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
+@@ -27,6 +27,11 @@
+ 
+ #pragma once
+ 
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
+ #include "Attachment.h"
+ #include "Encoder.h"
+ #include <WebCore/SharedMemory.h>
+@@ -147,13 +152,38 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
+ 
+     bool setBodyOutOfLine()
+     {
++#if defined(PS5_HOMEBREW)
++        // The native title may not duplicate a descriptor (dup() is EPERM,
++        // console run 28), and SharedMemory::createHandle duplicates. Make
++        // the anonymous object here and hand its only descriptor over.
++        {
++            const size_t length = (bodySize() + 0x3fff) & ~static_cast<size_t>(0x3fff);
++            int fd = shm_open(SHM_ANON, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
++            if (fd >= 0 && !ftruncate(fd, length)) {
++                void* data = mmap(nullptr, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++                if (data != MAP_FAILED) {
++                    memcpySpan(std::span<uint8_t> { static_cast<uint8_t*>(data), bodySize() }, m_body);
++                    munmap(data, length);
++                    m_messageInfo.setBodyOutOfLine();
++                    m_attachments.append(UnixFileDescriptor { fd, UnixFileDescriptor::Adopt });
++                    return true;
++                }
++            }
++            if (fd >= 0)
++                close(fd);
++        }
++#endif
+         RefPtr oolMessageBody = WebCore::SharedMemory::allocate(bodySize());
+         if (!oolMessageBody)
              return false;
  
          auto handle = oolMessageBody->createHandle(WebCore::SharedMemory::Protection::ReadOnly);
