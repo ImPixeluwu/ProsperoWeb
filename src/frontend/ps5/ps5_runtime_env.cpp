@@ -117,6 +117,35 @@ std::string config_env_value(const std::string& base_dir, const std::string& nam
   return value->is_number() ? value->dump() : "";
 }
 
+int config_probe_level(const std::string& base_dir, const std::string& key) {
+  std::ifstream in(base_dir + "/config.json");
+  if (!in) {
+    return 0;
+  }
+  std::stringstream text;
+  text << in.rdbuf();
+  const nlohmann::json doc =
+      nlohmann::json::parse(text.str(), nullptr, /*allow_exceptions=*/false);
+  if (!doc.is_object()) {
+    return 0;
+  }
+  const auto value = doc.find(key);
+  if (value == doc.end()) {
+    return 0;
+  }
+  if (value->is_boolean()) {
+    return value->get<bool>() ? 1 : 0;
+  }
+  if (value->is_number_integer()) {
+    return std::max(0, value->get<int>());
+  }
+  if (value->is_string()) {
+    const std::string s = value->get<std::string>();
+    return s == "true" ? 1 : std::max(0, std::atoi(s.c_str()));
+  }
+  return 0;
+}
+
 std::string system_language_tag(const std::string& language) {
   if (language.empty() || language == "en") {
     return "en-US";

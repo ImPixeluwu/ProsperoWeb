@@ -184,6 +184,7 @@ if(PROSPEROWEB_NATIVE_TITLE_TARGET)
     native/native_runtime.c
     native/native_libc.c
     native/native_trace.c
+    native/native_fork_probe.c
     native/native_memory.c
     native/native_title.c)
   target_link_libraries(prosperoweb_native_runtime PRIVATE prosperoweb_warnings)

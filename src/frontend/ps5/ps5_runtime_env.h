@@ -41,6 +41,11 @@ const std::string& runtime_assets_dir();
 // absent. For settings needed before setup_runtime_env runs.
 std::string config_env_value(const std::string& base_dir, const std::string& name);
 
+// A top-level config.json switch under base_dir as a level: true or 1 -> 1,
+// a number or numeric string -> that number, absent/false/invalid -> 0
+// ("probe_fork": the native title's start-up fork probe).
+int config_probe_level(const std::string& base_dir, const std::string& key);
+
 // UI role: SYSTEM_LANGUAGE from config.json (overrides the default above).
 void apply_language_env(const std::string& language);
 

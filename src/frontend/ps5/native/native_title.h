@@ -44,6 +44,11 @@ void native_socket_selftest(void);
 // (AF_UNIX /system_tmp/etaHEN_util_service, docs/no-elfldr.md)? Connects
 // and closes at once (nothing is sent), and tries opendir("/system_tmp").
 void native_etahen_probe(void);
+// config.json "probe_fork" (level 0: nothing): whether the title can create
+// a child process itself (fork, rfork_thread, vfork, pdfork through
+// libkernel) and the child inherits descriptors; level 2 adds a WebProcess-
+// like IPC step in the child (native_fork_probe.c). Waits for it 15 s at most.
+void native_fork_probe(int level);
 
 // The direct-memory heap (native_memory.c): its size, 0 when the system
 // heap is in use, and how much of it is in use.
