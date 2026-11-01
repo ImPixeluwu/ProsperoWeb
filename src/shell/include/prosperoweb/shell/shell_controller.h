@@ -90,7 +90,7 @@ class ShellController {
 
   enum class Focus : std::uint8_t { Page, Chrome, Osk, Menu, Notice };
   enum class OskTarget : std::uint8_t { Address, Page };
-  enum class MenuSection : std::uint8_t { Main, Bookmarks, History, Addons };
+  enum class MenuSection : std::uint8_t { Main, Bookmarks, History, Adblock, SponsorBlock };
 
   ShellController(EngineFactory& factory, ChromeUi& chrome, core::Storage& storage,
                   Config config);
@@ -309,7 +309,8 @@ class ShellController {
   void close_menu();
   void activate_menu_item(std::size_t index);
   // Add-ons menu helpers.
-  void build_addons_menu();
+  void build_adblock_menu();
+  void build_sponsorblock_menu();
   void apply_addons();
   void persist_addons();
   // Rebuilds the current menu section but keeps the selection on `keep`.

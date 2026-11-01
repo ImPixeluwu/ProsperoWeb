@@ -1058,9 +1058,9 @@ TEST_SUITE("shell.chrome_events") {
     f.make();
     f.press(Button::Options);
     f.frame();
-    REQUIRE(f.chrome.last["menu"]["items"].size() == 10);
+    REQUIRE(f.chrome.last["menu"]["items"].size() == 9);
     CHECK(f.chrome.last["menu"]["items"][7]["label"] == "Diagnostics");
-    CHECK(f.chrome.last["menu"]["items"][9]["label"] == "Quit");
+    CHECK(f.chrome.last["menu"]["items"][8]["label"] == "Quit");
     f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 7}});
     CHECK(f.shell->tabs().size() == 2);
     CHECK(f.active().called("load file:///data/prosperoweb/chrome/diag.html"));
@@ -1081,7 +1081,8 @@ TEST_SUITE("shell.chrome_events") {
     Fixture f;
     f.make();
     f.press(Button::Options);
-    f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 8}});
+    // Main menu without a diagnostics URL or add-ons backend: Quit is last (7).
+    f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 7}});
     CHECK(f.shell->quit_requested());
   }
 }

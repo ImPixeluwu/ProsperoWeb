@@ -1127,24 +1127,11 @@ void ShellController::show_menu_section(MenuSection section) {
                                if (auto* view = active_view()) view->reload();
                              }});
       if (config_.addons_backend) {
-        // Quick toggles for each add-on, plus the detailed Add-ons section.
+        // One coherent entry per add-on; each opens its own section.
         menu_items_.push_back(
-            {std::string("Ad blocker: ") + (addons_.adblock.enabled ? "On" : "Off"), "", [this] {
-               addons_.adblock.enabled = !addons_.adblock.enabled;
-               apply_addons();
-               persist_addons();
-               rebuild_menu_keeping(menu_selected_);
-             }});
+            {"Ad blocker", "", [this] { show_menu_section(MenuSection::Adblock); }});
         menu_items_.push_back(
-            {std::string("SponsorBlock: ") + (addons_.sponsorblock.enabled ? "On" : "Off"), "",
-             [this] {
-               addons_.sponsorblock.enabled = !addons_.sponsorblock.enabled;
-               apply_addons();
-               persist_addons();
-               rebuild_menu_keeping(menu_selected_);
-             }});
-        menu_items_.push_back(
-            {"Add-ons", "", [this] { show_menu_section(MenuSection::Addons); }});
+            {"SponsorBlock", "", [this] { show_menu_section(MenuSection::SponsorBlock); }});
       }
       if (!config_.diagnostics_url.empty()) {
         menu_items_.push_back({"Diagnostics", "", [this] {
@@ -1152,10 +1139,6 @@ void ShellController::show_menu_section(MenuSection section) {
                                  open_tab(config_.diagnostics_url, true);
                                }});
       }
-      menu_items_.push_back({"Settings", "", [this] {
-                               close_menu();
-                               show_notice({"info", "Settings", "Settings are not available yet."});
-                             }});
       menu_items_.push_back({"Quit", "", [this] {
                                close_menu();
                                quit_requested_ = true;
@@ -1178,8 +1161,11 @@ void ShellController::show_menu_section(MenuSection section) {
         menu_items_.push_back({"History is empty", "", [] {}});
       }
       break;
-    case MenuSection::Addons:
-      build_addons_menu();
+    case MenuSection::Adblock:
+      build_adblock_menu();
+      break;
+    case MenuSection::SponsorBlock:
+      build_sponsorblock_menu();
       break;
   }
   mark_dirty();
@@ -1209,11 +1195,10 @@ std::string format_last_updated(std::int64_t last, std::int64_t now) {
 
 }  // namespace
 
-void ShellController::build_addons_menu() {
+void ShellController::build_adblock_menu() {
   menu_items_.clear();
   auto onoff = [](bool b) { return b ? "On" : "Off"; };
   auto& ab = addons_.adblock;
-  auto& sb = addons_.sponsorblock;
 
   menu_items_.push_back(
       {std::string("Ad blocker (EasyList/EasyPrivacy): ") + onoff(ab.enabled), "", [this] {
@@ -1252,6 +1237,13 @@ void ShellController::build_addons_menu() {
     const std::string when = updating ? std::string("updating...") : format_last_updated(last, now());
     menu_items_.push_back({std::string("Filter lists updated: ") + when, "", [] {}});
   }
+  menu_items_.push_back({"Back", "", [this] { show_menu_section(MenuSection::Main); }});
+}
+
+void ShellController::build_sponsorblock_menu() {
+  menu_items_.clear();
+  auto onoff = [](bool b) { return b ? "On" : "Off"; };
+  auto& sb = addons_.sponsorblock;
 
   menu_items_.push_back({std::string("SponsorBlock: ") + onoff(sb.enabled), "", [this] {
                            addons_.sponsorblock.enabled = !addons_.sponsorblock.enabled;
@@ -1307,7 +1299,8 @@ void ShellController::rebuild_menu_keeping(std::size_t keep) {
 void ShellController::on_filters_updated(std::int64_t when) {
   addons_.adblock.last_updated = when;
   persist_addons();
-  if (menu_open_ && menu_section_ == MenuSection::Addons) {
+  if (menu_open_ &&
+      (menu_section_ == MenuSection::Adblock || menu_section_ == MenuSection::SponsorBlock)) {
     rebuild_menu_keeping(menu_selected_);
   } else {
     mark_dirty();
@@ -1569,7 +1562,8 @@ json ShellController::chrome_state() const {
   }
   const char* section = menu_section_ == MenuSection::Main        ? "main"
                         : menu_section_ == MenuSection::Bookmarks ? "bookmarks"
-                        : menu_section_ == MenuSection::Addons    ? "addons"
+                        : menu_section_ == MenuSection::Adblock   ? "adblock"
+                        : menu_section_ == MenuSection::SponsorBlock ? "sponsorblock"
                                                                   : "history";
   state["menu"] = {{"open", menu_open_},
                    {"section", section},

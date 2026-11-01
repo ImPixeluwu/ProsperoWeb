@@ -99,52 +99,48 @@ struct Fixture {
 }  // namespace
 
 TEST_SUITE("shell.addons") {
-  TEST_CASE("the main menu shows quick toggles reflecting the initial state") {
+  TEST_CASE("the main menu has one entry per add-on and no Settings item") {
     Fixture f;
     f.make();
     f.event({{"type", "menu_open"}});
-    CHECK(f.label_of("Ad blocker: ") == "Ad blocker: On");       // default on
-    CHECK(f.label_of("SponsorBlock: ") == "SponsorBlock: Off");  // default off
+    CHECK(f.menu_index("Ad blocker") >= 0);
+    CHECK(f.menu_index("SponsorBlock") >= 0);
+    CHECK(f.menu_index("Settings") < 0);  // removed
   }
 
-  TEST_CASE("toggling the ad blocker applies and persists") {
+  TEST_CASE("the Ad blocker section toggles and persists; SponsorBlock is not here") {
     Fixture f;
     f.make();
     f.event({{"type", "menu_open"}});
-    f.select("Ad blocker: ");
+    f.select("Ad blocker");
+    CHECK(f.chrome.last["menu"]["section"] == "adblock");
+    CHECK(f.menu_index("SponsorBlock") < 0);  // lives in its own entry
+    CHECK(f.label_of("Ad blocker (EasyList") == "Ad blocker (EasyList/EasyPrivacy): On");
+    f.select("Ad blocker (EasyList");
     CHECK(f.backend.adblock_enabled == false);
     REQUIRE(f.persisted_set);
     CHECK(f.persisted.adblock.enabled == false);
-    // The label updated in place and the menu stayed open.
-    CHECK(f.label_of("Ad blocker: ") == "Ad blocker: Off");
+    CHECK(f.label_of("Ad blocker (EasyList") == "Ad blocker (EasyList/EasyPrivacy): Off");
     CHECK(f.chrome.last["menu"]["open"] == true);
-  }
-
-  TEST_CASE("the Add-ons section exposes sub-options and categories") {
-    Fixture f;
-    f.make();
-    f.event({{"type", "menu_open"}});
-    f.select("Add-ons");
-    CHECK(f.chrome.last["menu"]["section"] == "addons");
-    // Cookie banners off by default.
+    // Cookie banners sub-toggle.
     CHECK(f.label_of("Block cookie banners") == "Block cookie banners (EasyList-Cookie): Off");
     f.select("Block cookie banners");
     CHECK(f.backend.cookie == true);
     CHECK(f.persisted.adblock.cookie_banners == true);
   }
 
-  TEST_CASE("sponsorblock category toggles feed the backend") {
+  TEST_CASE("the SponsorBlock section toggles categories; no ad-block items here") {
     Fixture f;
     f.make();
     f.event({{"type", "menu_open"}});
-    f.select("Add-ons");
-    // Enable SponsorBlock, then add the "intro" category.
-    f.select("SponsorBlock: ");
+    f.select("SponsorBlock");
+    CHECK(f.chrome.last["menu"]["section"] == "sponsorblock");
+    CHECK(f.menu_index("Block cookie banners") < 0);
+    f.select("SponsorBlock");  // the On/Off line in the section
     CHECK(f.backend.sb_enabled == true);
     CHECK(f.backend.sb_categories == std::vector<std::string>{"sponsor"});  // default
     f.select("  intro");
     CHECK(f.backend.sb_categories == std::vector<std::string>{"sponsor", "intro"});
-    // Removing sponsor leaves only intro.
     f.select("  sponsor");
     CHECK(f.backend.sb_categories == std::vector<std::string>{"intro"});
   }
@@ -153,7 +149,7 @@ TEST_SUITE("shell.addons") {
     Fixture f;
     f.make();
     f.event({{"type", "menu_open"}});
-    f.select("Add-ons");
+    f.select("Ad blocker");
     f.select("Update filter lists now");
     CHECK(f.backend.updates == 1);
     CHECK(f.label_of("Filter lists updated: ") == "Filter lists updated: never");
@@ -164,7 +160,7 @@ TEST_SUITE("shell.addons") {
     CHECK(f.persisted.adblock.last_updated == 1000);
   }
 
-  TEST_CASE("no backend -> no Add-ons menu entries") {
+  TEST_CASE("no backend -> no add-on menu entries") {
     core::InMemoryStorage storage;
     FakeEngineFactory factory;
     FakeChromeUi chrome;
@@ -177,7 +173,9 @@ TEST_SUITE("shell.addons") {
     shell.render_now();
     const auto& items = chrome.last["menu"]["items"];
     for (const auto& it : items) {
-      CHECK(it["label"].get<std::string>().rfind("Ad blocker", 0) != 0);
+      const std::string label = it["label"].get<std::string>();
+      CHECK(label.rfind("Ad blocker", 0) != 0);
+      CHECK(label.rfind("SponsorBlock", 0) != 0);
     }
   }
 }
