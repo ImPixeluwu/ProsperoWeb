@@ -69,7 +69,13 @@ class Ps5App {
   void request_frame();
   // Remote diagnostics (ps5_diagnostics.h).
   void poll_diagnostic_requests(std::uint64_t now);
-  void dump_screen(SDL_Surface* surface);
+  // Writes the screen as a PNG. With `chrome_rects`, the whole frame is
+  // composed anew from the caches with the video overlay frames of
+  // `video_page` (the window surface may hold only the damaged parts, and
+  // under the PS5 driver no video where nothing changed lately); without,
+  // the surface as it is (the splash).
+  void dump_screen(SDL_Surface* surface, const std::vector<display::Rect>* chrome_rects = nullptr,
+                   int top = 0, const video::PageKey& video_page = {});
   void run_form_probe();
 
   static void frame_trampoline(void* self);

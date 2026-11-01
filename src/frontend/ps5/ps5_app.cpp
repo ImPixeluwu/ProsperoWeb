@@ -591,9 +591,45 @@ void Ps5App::poll_diagnostic_requests(std::uint64_t now) {
   }
 }
 
-void Ps5App::dump_screen(SDL_Surface* surface) {
+void Ps5App::dump_screen(SDL_Surface* surface, const std::vector<display::Rect>* chrome_rects,
+                         int top, const video::PageKey& video_page) {
   screenshot_pending_ = false;
   const std::uint64_t t0 = SDL_GetTicks64();
+  if (chrome_rects && width_ > 0 && height_ > 0 && !page_buffer_.empty() &&
+      !chrome_buffer_.empty()) {
+    // The composition of frame(), over the whole screen, into ABGR8888.
+    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width_) *
+                                      static_cast<std::size_t>(height_));
+    const display::Layers layers{page_buffer_.data(), chrome_buffer_.data(), width_, height_};
+    std::size_t video_layers = 0;
+    {
+      std::optional<video::VideoServer::Frames> frames;
+      std::vector<display::VideoLayer> videos;
+      if (video_overlay_ && video_page.pid) {
+        frames.emplace(video_overlay_->acquire(video_page));
+        videos = Ps5VideoOverlay::layers(*frames, top, width_, height_);
+      }
+      video_layers = videos.size();
+      display::compose_rect(layers, *chrome_rects, display::Rect{0, 0, width_, height_},
+                            pixels.data(), width_, videos);
+    }
+    const std::string png = encode_png_rgbx(reinterpret_cast<const std::uint8_t*>(pixels.data()),
+                                            width_, height_, width_ * 4);
+    if (png.empty()) {
+      log_line("screenshot: PNG encoding failed");
+      return;
+    }
+    const std::string path = tmp_path("screen-" + std::to_string(t0) + ".png");
+    const bool ok = write_file_atomically(path, png);
+    const bool latest_ok = write_file_atomically(tmp_path(kScreenLatestFile), png);
+    if (ok) {
+      log_printf("screenshot: written %s (%llu ms, %dx%d composed, %zu video layer%s, %zu bytes%s)",
+                 path.c_str(), static_cast<unsigned long long>(SDL_GetTicks64() - t0), width_,
+                 height_, video_layers, video_layers == 1 ? "" : "s", png.size(),
+                 latest_ok ? ", also screen-latest.png" : "");
+    }
+    return;
+  }
   // The window surface is ABGR8888 (R, G, B, A bytes); convert anything else.
   SDL_Surface* converted = nullptr;
   SDL_Surface* src = surface;
@@ -913,7 +949,7 @@ void Ps5App::composite_and_present() {
   const display::Region damage = take_frame_damage(chrome_rects);
   if (damage.empty()) {
     if (screenshot_pending_) {
-      dump_screen(surface);  // the surface holds the last composed frame
+      dump_screen(surface, &chrome_rects, top, video_page);
     }
     return;
   }
@@ -960,7 +996,7 @@ void Ps5App::composite_and_present() {
   stats_.compose.add(ms_since(compose_t0), damage.area());
   // The composed frame, before the flip hands the buffer to the display.
   if (screenshot_pending_) {
-    dump_screen(surface);
+    dump_screen(surface, &chrome_rects, top, video_page);
   }
   if (SDL_MUSTLOCK(surface)) {
     SDL_UnlockSurface(surface);
