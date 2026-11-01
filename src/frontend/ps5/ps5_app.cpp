@@ -236,8 +236,19 @@ int Ps5App::run() {
   // back to its own copy (PROSPEROWEB_CHROME_DIR, set by main()).
   std::string chrome_dir = config_.chrome_dir;
   const char* title_chrome = std::getenv("PROSPEROWEB_CHROME_DIR");
-  if (access(ui_view(chrome_dir + "/chrome.html").c_str(), R_OK) != 0 && title_chrome &&
-      title_chrome[0] && chrome_dir != title_chrome) {
+  const bool native_title = std::getenv("PROSPEROWEB_TITLE_UI_ROOT") != nullptr;
+  if (native_title && title_chrome && title_chrome[0] &&
+      access(ui_view(std::string(title_chrome) + "/chrome.html").c_str(), R_OK) == 0) {
+    // The native title always uses the chrome it ships: a /data/prosperoweb/
+    // chrome left by the websrv install may be older than this shell and not
+    // understand its updates (console run 33: tab titles and the address bar
+    // stayed empty).
+    if (chrome_dir != title_chrome) {
+      log_printf("chrome: using the title's %s, not %s", title_chrome, chrome_dir.c_str());
+    }
+    chrome_dir = title_chrome;
+  } else if (access(ui_view(chrome_dir + "/chrome.html").c_str(), R_OK) != 0 && title_chrome &&
+             title_chrome[0] && chrome_dir != title_chrome) {
     log_printf("chrome: %s/chrome.html not found, using the title's %s", chrome_dir.c_str(),
                title_chrome);
     chrome_dir = title_chrome;
