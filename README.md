@@ -23,6 +23,7 @@ It is early software (version 0.1.0): expect rough edges, and launch it only the
 - Text entry through the console's own keyboard dialog, pre-filled with the URL or the field's value; a built-in on-screen keyboard (Latin, Cyrillic, symbols) as the fallback.
 - HTML5 Fullscreen API and a chrome-hiding fullscreen mode.
 - HTML5 `<video>`/`<audio>` through an ffmpeg engine: Media Source Extensions (YouTube-style players; H.264 up to 1080p by default), progressive MP4/WebM and native HLS; software decoding (H.264, HEVC, VP8, VP9; AAC, MP3, Opus and others). Video is composed by the UI process under the page, audio is mixed and played by the UI process. Hardware decoding of 8-bit H.264 and HEVC with the console's `sceVideodec2` in the UI process, verified on the developer's console, with automatic fallback to software (`PROSPEROWEB_VIDEO_DECODE=webprocess` turns it off).
+- Add-ons (Settings → Add-ons, with quick toggles in the menu): a built-in **ad blocker** (WebKit content rule lists compiled from EasyList + EasyPrivacy, on by default; an optional EasyList-Cookie banner filter) that refreshes its lists over the network on the console, and a bundled **SponsorBlock** user script (off by default) that skips YouTube segments by category using the public SponsorBlock API. Not uBlock Origin and not the SponsorBlock extension — independent implementations using the public lists/API.
 - Bundled fonts with Latin, Cyrillic, CJK and colour emoji coverage (Noto, Noto CJK, Noto Color Emoji, Liberation, DejaVu).
 - JavaScript JIT (baseline + DFG; FTL off) and WebAssembly, ~1.7x faster than the interpreter on a micro-benchmark; `config.json` `"env"` can turn them off ([docs/ps5-runtime.md](docs/ps5-runtime.md#javascript-jit-and-webassembly)).
 - English and Russian UI.
@@ -35,6 +36,7 @@ It is early software (version 0.1.0): expect rough edges, and launch it only the
 - **No DRM sites** (Netflix, Disney+, Kinopoisk, Okko, ...): there is no CDM, by design.
 - **No GPU acceleration**: software rendering only; no WebGL, no CSS 3D, no GPU compositing.
 - **No WebAudio.**
+- **The ad blocker uses WebKit content rule lists, not uBlock Origin.** It blocks network requests and hides elements from EasyList/EasyPrivacy, but has no scriptlet injection, no procedural/extended-CSS cosmetic filters and no per-site dynamic rules; coverage is close to Safari content blockers. Lists are capped at WebKit's 150000-rule limit. On-device list refresh needs network and spends CPU/memory recompiling; it runs in the background and falls back to the bundled baseline offline.
 - **Only firmware 13.42 is tested**; other versions are untested.
 
 See also [docs/architecture.md](docs/architecture.md#non-goals).

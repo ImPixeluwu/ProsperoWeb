@@ -4,6 +4,15 @@ All notable changes to ProsperoWeb are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- Add-ons section in Settings (with quick toggles in the menu), state persisted in `config.json` under `"addons"` and applied live without a restart:
+  - Ad blocker (on by default): WebKit content rule lists compiled from EasyList + EasyPrivacy, with an optional EasyList-Cookie "Block cookie banners" sub-toggle (off by default). The filter lists update over the network on the console (auto-update on by default, 24 h staleness threshold, daily cadence, "Update filter lists now" action and a last-updated readout); the bundled snapshot is the offline/first-run baseline. One converter (`core::adblock`) is shared by the build-time stager and the on-device updater.
+  - SponsorBlock (off by default): a bundled user script that queries the public SponsorBlock API and skips YouTube segments, with per-category toggles (only `sponsor` on by default).
+- These are independent implementations using the public filter lists / API, not uBlock Origin or the SponsorBlock extension.
+
 ## v0.1.0 - 2026-11-01
 
 First release. A WebKit web browser for the jailbroken PlayStation 5, driven by
