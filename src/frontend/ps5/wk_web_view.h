@@ -74,14 +74,12 @@ class WkWebView {
   WKPageRef page() const { return page_; }
   const std::string& name() const { return name_; }
 
-  // Add-ons: dynamically replace the content rule lists / extra user scripts
-  // on this view's user content controller (the ad blocker and SponsorBlock).
-  // Both take effect on the next navigation; the manager also run_javascript()s
-  // a live update into the current page where it can.
+  // Add-ons: dynamically replace the extra user scripts on this view's user
+  // content controller (the ad blocker and SponsorBlock). Takes effect on the
+  // next navigation; the manager also run_javascript()s a live update into the
+  // current page where it can. (The native content rule list is unavailable:
+  // ENABLE(CONTENT_EXTENSIONS) is off in our WebKit build.)
   //
-  // set_content_filters removes all previously applied filters and adds the
-  // given ones (compiled WKUserContentFilterRef, owned by the caller).
-  void set_content_filters(const std::vector<WKUserContentFilterRef>& filters);
   // set_addon_user_scripts re-installs the base user scripts (the bridge and
   // the ones passed at construction) followed by these extra sources, so a
   // toggle never drops the EME detector / focus reporter / gamepad bridge.
