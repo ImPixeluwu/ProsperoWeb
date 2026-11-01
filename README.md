@@ -12,7 +12,7 @@ ProsperoWeb is an independent homebrew project and is not affiliated with or end
 
 ## Status
 
-ProsperoWeb runs on real hardware. It has been tested on the developer's console, whose spawn log reports `fw 0x13420000`; other firmware versions are untested. On that console it loads and renders sites such as Google and rezka, plays YouTube through Media Source Extensions with H.264 video, and plays sound through the UI process. The console runs, what was checked and how to report problems are in [docs/console-verification.md](docs/console-verification.md).
+ProsperoWeb runs on real hardware as a native home-screen title. It has been tested on the developer's console, whose spawn log reports `fw 0x13420000`; other firmware versions are untested. On that console it loads and renders sites such as Google and rezka, keeps a signed-in session, plays YouTube (Media Source Extensions, H.264) and rezka (HLS) with picture and sound, seeks within a video, and decodes 8-bit H.264 and HEVC in hardware through the console's `sceVideodec2`. What was checked and how to report problems are in [docs/console-verification.md](docs/console-verification.md).
 
 It is early software (version 0.1.0): expect rough edges, and launch it only the way described below.
 
@@ -22,7 +22,7 @@ It is early software (version 0.1.0): expect rough edges, and launch it only the
 - DualSense: a virtual pointer on the left stick or the touchpad (trackpad-style: slide, tap, two-finger scroll, press and slide to drag), trusted clicks and scrolling, tab switching, menu; USB keyboard.
 - Text entry through the console's own keyboard dialog, pre-filled with the URL or the field's value; a built-in on-screen keyboard (Latin, Cyrillic, symbols) as the fallback.
 - HTML5 Fullscreen API and a chrome-hiding fullscreen mode.
-- HTML5 `<video>`/`<audio>` through an ffmpeg engine: Media Source Extensions (YouTube-style players; H.264 up to 1080p by default), progressive MP4/WebM and native HLS; software decoding (H.264, HEVC, VP8, VP9; AAC, MP3, Opus and others). Video is composed by the UI process under the page, audio is mixed and played by the UI process. Hardware decoding of 8-bit H.264 and HEVC with the console's `sceVideodec2` in the UI process, with automatic fallback to software (implemented, **not yet tested on hardware**; `PROSPEROWEB_VIDEO_DECODE=webprocess` turns it off).
+- HTML5 `<video>`/`<audio>` through an ffmpeg engine: Media Source Extensions (YouTube-style players; H.264 up to 1080p by default), progressive MP4/WebM and native HLS; software decoding (H.264, HEVC, VP8, VP9; AAC, MP3, Opus and others). Video is composed by the UI process under the page, audio is mixed and played by the UI process. Hardware decoding of 8-bit H.264 and HEVC with the console's `sceVideodec2` in the UI process, verified on the developer's console, with automatic fallback to software (`PROSPEROWEB_VIDEO_DECODE=webprocess` turns it off).
 - Bundled fonts with Latin, Cyrillic, CJK and colour emoji coverage (Noto, Noto CJK, Noto Color Emoji, Liberation, DejaVu).
 - JavaScript JIT (baseline + DFG; FTL off) and WebAssembly, ~1.7x faster than the interpreter on a micro-benchmark; `config.json` `"env"` can turn them off ([docs/ps5-runtime.md](docs/ps5-runtime.md#javascript-jit-and-webassembly)).
 - English and Russian UI.
@@ -30,17 +30,18 @@ It is early software (version 0.1.0): expect rough edges, and launch it only the
 
 ## Known limitations
 
-- **Video decoding is software only on verified builds** and limited by the CPU cores the web process gets: high resolutions and frame rates drop frames. Players are steered to H.264 at up to 1080p by default. Hardware decoding in the UI process is implemented but has not run on a console yet; VP8, VP9 and AV1 always decode in software.
+- **A privileged ELF loader is required.** The sandboxed title cannot create its own processes (verified on the console: `rfork_thread` is refused with `EPERM`), so a loader must start the web and network processes. elfldr on `127.0.0.1:9021` does this and etaHEN starts it automatically; the websrv tile is the fallback.
+- **Hardware video decoding covers 8-bit H.264 and HEVC** (`sceVideodec2`). VP8, VP9 and AV1 always decode in software, and high resolutions or frame rates in software can drop frames, so players are steered to H.264 at up to 1080p by default.
 - **No DRM sites** (Netflix, Disney+, Kinopoisk, Okko, ...): there is no CDM, by design.
 - **No GPU acceleration**: software rendering only; no WebGL, no CSS 3D, no GPU compositing.
 - **No WebAudio.**
-- **The native home-screen title is not finished** (see below); today the browser starts from the websrv tile.
+- **Only firmware 13.42 is tested**; other versions are untested.
 
 See also [docs/architecture.md](docs/architecture.md#non-goals).
 
 ## Install
 
-### Native title (experimental, not yet verified on a console)
+### Native title
 
 `PRWB00001` is the browser UI itself as a native title: one folder, launched from the home screen like any other app, with the profile created automatically in `/data/prosperoweb/`. Its `eboot.bin` is the UI linked as a native application; its `prosperoweb.elf` is the payload that the spawn helper runs for the WebProcess and NetworkProcess. Prerequisites: a jailbroken PS5 with etaHEN or kstuff, [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus) (lists the title on the home screen) and elfldr listening on `127.0.0.1:9021` (starts the spawn helper; websrv on port 8080 is used as a fallback).
 
