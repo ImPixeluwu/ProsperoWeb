@@ -95,14 +95,14 @@ done < "${LOCK}"
 
 [[ ${#ADS_INPUTS[@]} -gt 0 ]] || die "no ads lists in addons.lock"
 
-# ENABLE(CONTENT_EXTENSIONS) is off in our WebKit build, so the console cannot
-# use native content rule lists. Produce the userscript filter set (host
-# blocklist + cosmetic CSS + domain rules) that adblock.js enforces instead.
-log "building ads filter set (EasyList/EasyPrivacy/uBlock) -> adblock-ads.filters.json"
-"${CONVERT}" --filter-set "${ADDONS}/adblock-ads.filters.json" "${ADS_INPUTS[@]}"
+# Compile the lists to WebKit content-rule-list JSON (network block +
+# css-display-none cosmetic) for the native content blocker. Network rules are
+# prioritised under the 150000-rule cap; cosmetic overflow is dropped.
+log "building ads ruleset (EasyList/EasyPrivacy/uBlock/Peter-Lowe) -> adblock-ads.json"
+"${CONVERT}" --max-rules "${MAX_RULES}" "${ADDONS}/adblock-ads.json" "${ADS_INPUTS[@]}"
 if [[ ${#COOKIE_INPUTS[@]} -gt 0 ]]; then
-  log "building cookie filter set -> adblock-cookie.filters.json"
-  "${CONVERT}" --filter-set "${ADDONS}/adblock-cookie.filters.json" "${COOKIE_INPUTS[@]}"
+  log "building cookie ruleset -> adblock-cookie.json"
+  "${CONVERT}" --max-rules "${MAX_RULES}" "${ADDONS}/adblock-cookie.json" "${COOKIE_INPUTS[@]}"
 fi
 
 # --- User scripts. ----------------------------------------------------------
@@ -122,8 +122,9 @@ join_json() {
 {
   printf '{\n'
   printf '  "install_dir": "%s",\n' "${INSTALL_DIR}"
-  printf '  "ads": { "output": "adblock-ads.filters.json", "sources": [%s] },\n' "$(join_json "${ADS_SOURCES[@]}")"
-  printf '  "cookie": { "output": "adblock-cookie.filters.json", "sources": [%s] }\n' "$(join_json "${COOKIE_SOURCES[@]}")"
+  printf '  "max_rules": %s,\n' "${MAX_RULES}"
+  printf '  "ads": { "output": "adblock-ads.json", "sources": [%s] },\n' "$(join_json "${ADS_SOURCES[@]}")"
+  printf '  "cookie": { "output": "adblock-cookie.json", "sources": [%s] }\n' "$(join_json "${COOKIE_SOURCES[@]}")"
   printf '}\n'
 } > "${ADDONS}/sources.json"
 
@@ -132,11 +133,12 @@ cat > "${LICENSES}/filter-lists.txt" <<'EOF'
 Ad-block filter lists bundled with ProsperoWeb
 ==============================================
 
-ProsperoWeb's ad blocker is NOT uBlock Origin. Because our WebKit build has
-content extensions disabled, it enforces a SUBSET of these public lists with
-an injected userscript: whole-host network blocking and static element-hiding
-CSS (generic and domain-scoped). uBlock's scriptlets and procedural cosmetic
-filters are skipped. Coverage is best-effort and weaker than uBlock Origin.
+ProsperoWeb's ad blocker is NOT uBlock Origin. It compiles these public lists
+into WebKit's native content rule list (network blocking + static element-
+hiding CSS, like Safari content blockers); a small userscript additionally
+prunes YouTube video-ad placements. uBlock's scriptlets and procedural
+cosmetic filters cannot be expressed and are skipped. Coverage is best-effort
+and weaker than uBlock Origin.
 
   EasyList            https://easylist.to/   (GPLv3 and CC BY-SA 3.0)
   EasyPrivacy         https://easylist.to/   (GPLv3 and CC BY-SA 3.0)

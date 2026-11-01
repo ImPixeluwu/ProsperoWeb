@@ -534,6 +534,19 @@ std::vector<WkWebView*> WkWebView::content_views() {
   return out;
 }
 
+void WkWebView::set_content_filters(const std::vector<WKUserContentFilterRef>& filters) {
+  if (!content_controller_) {
+    return;
+  }
+  WKUserContentControllerRemoveAllUserContentFilters(content_controller_);
+  for (WKUserContentFilterRef f : filters) {
+    if (f) {
+      WKUserContentControllerAddUserContentFilter(content_controller_, f);
+    }
+  }
+  log_printf("view %s: applied %zu content filter(s)", name_.c_str(), filters.size());
+}
+
 void WkWebView::set_addon_user_scripts(const std::vector<std::string>& sources) {
   if (!content_controller_) {
     return;
