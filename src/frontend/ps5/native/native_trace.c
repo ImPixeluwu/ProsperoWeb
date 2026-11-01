@@ -323,6 +323,20 @@ void native_socket_selftest(void) {
     STEP("; select(data) %d", __real_select(accepted + 1, &set, NULL, NULL, &tv));
     char buf[8] = {0};
     STEP("; recv %zd", recv(accepted, buf, sizeof(buf), 0));
+    // The servers rely on MSG_DONTWAIT where the socket stays blocking: an
+    // empty socket must answer at once (a 500 ms receive timeout bounds the
+    // test if the flag is ignored).
+    struct timeval limit = {0, 500000};
+    setsockopt(accepted, SOL_SOCKET, SO_RCVTIMEO, &limit, sizeof(limit));
+    struct timeval t0, t1;
+    gettimeofday(&t0, NULL);
+    const ssize_t empty = recv(accepted, buf, sizeof(buf), MSG_DONTWAIT);
+    const int empty_errno = errno;
+    gettimeofday(&t1, NULL);
+    const long waited_ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000;
+    STEP("; recv(MSG_DONTWAIT, empty) %zd %s after %ld ms%s", empty,
+         empty < 0 ? strerror(empty_errno) : "", waited_ms,
+         waited_ms >= 400 ? " (FLAG IGNORED)" : "");
     close(accepted);
   }
   close(client);
