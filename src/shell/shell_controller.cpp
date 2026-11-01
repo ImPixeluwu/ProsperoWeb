@@ -135,6 +135,7 @@ ShellController::ShellController(EngineFactory& factory, ChromeUi& chrome, core:
       config_(std::move(config)),
       pointer_(static_cast<float>(config_.width), static_cast<float>(config_.height)) {
   pointer_.set_position({config_.width / 2.0f, config_.height / 2.0f});
+  addons_ = config_.addons;
 }
 
 ShellController::~ShellController() {
@@ -1125,6 +1126,26 @@ void ShellController::show_menu_section(MenuSection section) {
                                close_menu();
                                if (auto* view = active_view()) view->reload();
                              }});
+      if (config_.addons_backend) {
+        // Quick toggles for each add-on, plus the detailed Add-ons section.
+        menu_items_.push_back(
+            {std::string("Ad blocker: ") + (addons_.adblock.enabled ? "On" : "Off"), "", [this] {
+               addons_.adblock.enabled = !addons_.adblock.enabled;
+               apply_addons();
+               persist_addons();
+               rebuild_menu_keeping(menu_selected_);
+             }});
+        menu_items_.push_back(
+            {std::string("SponsorBlock: ") + (addons_.sponsorblock.enabled ? "On" : "Off"), "",
+             [this] {
+               addons_.sponsorblock.enabled = !addons_.sponsorblock.enabled;
+               apply_addons();
+               persist_addons();
+               rebuild_menu_keeping(menu_selected_);
+             }});
+        menu_items_.push_back(
+            {"Add-ons", "", [this] { show_menu_section(MenuSection::Addons); }});
+      }
       if (!config_.diagnostics_url.empty()) {
         menu_items_.push_back({"Diagnostics", "", [this] {
                                  close_menu();
@@ -1157,8 +1178,140 @@ void ShellController::show_menu_section(MenuSection section) {
         menu_items_.push_back({"History is empty", "", [] {}});
       }
       break;
+    case MenuSection::Addons:
+      build_addons_menu();
+      break;
   }
   mark_dirty();
+}
+
+namespace {
+
+std::string format_last_updated(std::int64_t last, std::int64_t now) {
+  if (last <= 0) {
+    return "never";
+  }
+  std::int64_t age = now - last;
+  if (age < 0) {
+    age = 0;
+  }
+  if (age < 120) {
+    return "just now";
+  }
+  if (age < 3600) {
+    return std::to_string(age / 60) + " min ago";
+  }
+  if (age < 86400) {
+    return std::to_string(age / 3600) + " h ago";
+  }
+  return std::to_string(age / 86400) + " d ago";
+}
+
+}  // namespace
+
+void ShellController::build_addons_menu() {
+  menu_items_.clear();
+  auto onoff = [](bool b) { return b ? "On" : "Off"; };
+  auto& ab = addons_.adblock;
+  auto& sb = addons_.sponsorblock;
+
+  menu_items_.push_back(
+      {std::string("Ad blocker (EasyList/EasyPrivacy): ") + onoff(ab.enabled), "", [this] {
+         addons_.adblock.enabled = !addons_.adblock.enabled;
+         apply_addons();
+         persist_addons();
+         rebuild_menu_keeping(menu_selected_);
+       }});
+  menu_items_.push_back(
+      {std::string("Block cookie banners (EasyList-Cookie): ") + onoff(ab.cookie_banners), "",
+       [this] {
+         addons_.adblock.cookie_banners = !addons_.adblock.cookie_banners;
+         apply_addons();
+         persist_addons();
+         rebuild_menu_keeping(menu_selected_);
+       }});
+  menu_items_.push_back(
+      {std::string("Auto-update filter lists: ") + onoff(ab.auto_update), "", [this] {
+         addons_.adblock.auto_update = !addons_.adblock.auto_update;
+         apply_addons();
+         persist_addons();
+         rebuild_menu_keeping(menu_selected_);
+       }});
+  menu_items_.push_back({"Update filter lists now", "", [this] {
+                           if (config_.addons_backend) {
+                             config_.addons_backend->update_filters_now();
+                           }
+                           rebuild_menu_keeping(menu_selected_);
+                         }});
+  {
+    std::int64_t last = ab.last_updated;
+    if (config_.addons_backend && config_.addons_backend->filters_last_updated() > last) {
+      last = config_.addons_backend->filters_last_updated();
+    }
+    const bool updating = config_.addons_backend && config_.addons_backend->filters_updating();
+    const std::string when = updating ? std::string("updating...") : format_last_updated(last, now());
+    menu_items_.push_back({std::string("Filter lists updated: ") + when, "", [] {}});
+  }
+
+  menu_items_.push_back({std::string("SponsorBlock: ") + onoff(sb.enabled), "", [this] {
+                           addons_.sponsorblock.enabled = !addons_.sponsorblock.enabled;
+                           apply_addons();
+                           persist_addons();
+                           rebuild_menu_keeping(menu_selected_);
+                         }});
+  for (const auto& cat : core::AddonsConfig::all_sponsorblock_categories()) {
+    const bool on = std::find(sb.categories.begin(), sb.categories.end(), cat) != sb.categories.end();
+    menu_items_.push_back(
+        {std::string("  ") + cat + ": " + onoff(on), "", [this, cat] {
+           auto& cats = addons_.sponsorblock.categories;
+           auto it = std::find(cats.begin(), cats.end(), cat);
+           if (it != cats.end()) {
+             cats.erase(it);
+           } else {
+             cats.push_back(cat);
+           }
+           apply_addons();
+           persist_addons();
+           rebuild_menu_keeping(menu_selected_);
+         }});
+  }
+  menu_items_.push_back({"Back", "", [this] { show_menu_section(MenuSection::Main); }});
+}
+
+void ShellController::apply_addons() {
+  if (!config_.addons_backend) {
+    return;
+  }
+  config_.addons_backend->set_adblock(addons_.adblock.enabled, addons_.adblock.cookie_banners);
+  config_.addons_backend->set_sponsorblock(addons_.sponsorblock.enabled,
+                                           addons_.sponsorblock.categories);
+}
+
+void ShellController::persist_addons() {
+  if (config_.on_addons_changed) {
+    config_.on_addons_changed(addons_);
+  }
+}
+
+void ShellController::rebuild_menu_keeping(std::size_t keep) {
+  if (!menu_open_) {
+    return;
+  }
+  show_menu_section(menu_section_);
+  if (keep < menu_items_.size()) {
+    menu_selected_ = keep;
+  }
+  mark_dirty();
+}
+
+void ShellController::on_filters_updated(std::int64_t when) {
+  addons_.adblock.last_updated = when;
+  persist_addons();
+  if (menu_open_ && menu_section_ == MenuSection::Addons) {
+    rebuild_menu_keeping(menu_selected_);
+  } else {
+    mark_dirty();
+  }
 }
 
 void ShellController::activate_menu_item(std::size_t index) {
@@ -1416,6 +1569,7 @@ json ShellController::chrome_state() const {
   }
   const char* section = menu_section_ == MenuSection::Main        ? "main"
                         : menu_section_ == MenuSection::Bookmarks ? "bookmarks"
+                        : menu_section_ == MenuSection::Addons    ? "addons"
                                                                   : "history";
   state["menu"] = {{"open", menu_open_},
                    {"section", section},

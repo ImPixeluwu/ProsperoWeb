@@ -12,6 +12,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "prosperoweb/core/addons_config.h"
 #include "prosperoweb/core/bookmarks.h"
 #include "prosperoweb/core/drm_policy.h"
 #include "prosperoweb/core/fullscreen_controller.h"
@@ -25,6 +26,7 @@
 #include "prosperoweb/core/storage.h"
 #include "prosperoweb/core/tab_manager.h"
 #include "prosperoweb/core/touchpad_model.h"
+#include "prosperoweb/shell/addons.h"
 #include "prosperoweb/shell/chrome_ui.h"
 #include "prosperoweb/shell/engine_view.h"
 #include "prosperoweb/shell/text_input.h"
@@ -75,11 +77,20 @@ class ShellController {
     // chrome_rects() leaves it out and the state marks it "native", so the
     // HTML chrome never repaints for pointer motion.
     bool native_pointer = false;
+    // Initial add-ons state (from config.json). Applied through addons_backend
+    // as content views are created by the frontend.
+    core::AddonsConfig addons;
+    // Engine-side application of the add-on toggles; nullptr disables the
+    // Add-ons menu. Must outlive the controller.
+    AddonsBackend* addons_backend = nullptr;
+    // Persists the add-ons state after a toggle (the frontend writes
+    // config.json). Called with the new state.
+    std::function<void(const core::AddonsConfig&)> on_addons_changed;
   };
 
   enum class Focus : std::uint8_t { Page, Chrome, Osk, Menu, Notice };
   enum class OskTarget : std::uint8_t { Address, Page };
-  enum class MenuSection : std::uint8_t { Main, Bookmarks, History };
+  enum class MenuSection : std::uint8_t { Main, Bookmarks, History, Addons };
 
   ShellController(EngineFactory& factory, ChromeUi& chrome, core::Storage& storage,
                   Config config);
@@ -129,6 +140,11 @@ class ShellController {
   // event is a JSON object; a JSON string holding such an object is decoded
   // first. Anything else is ignored.
   void on_chrome_event(const nlohmann::json& event);
+
+  // Called by the frontend (on the shell thread) when a background filter-list
+  // update finishes successfully: records the timestamp, persists it and
+  // refreshes the Add-ons menu if it is open.
+  void on_filters_updated(std::int64_t when);
 
   // Opens url in a new tab (shows the tab-limit notice when full).
   bool open_url_in_new_tab(const std::string& url);
@@ -292,6 +308,12 @@ class ShellController {
   void show_menu_section(MenuSection section);
   void close_menu();
   void activate_menu_item(std::size_t index);
+  // Add-ons menu helpers.
+  void build_addons_menu();
+  void apply_addons();
+  void persist_addons();
+  // Rebuilds the current menu section but keeps the selection on `keep`.
+  void rebuild_menu_keeping(std::size_t keep);
   void show_notice(Notice notice);
   void dismiss_notice(bool proceed);
   void toggle_bookmark();
@@ -325,6 +347,7 @@ class ShellController {
   core::OnScreenKeyboard osk_;
   core::FullscreenController fullscreen_;
   core::DrmPolicy drm_;
+  core::AddonsConfig addons_;
 
   std::map<std::uint64_t, TabEntry> entries_;
   std::optional<std::uint64_t> visible_tab_;

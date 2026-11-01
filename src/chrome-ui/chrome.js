@@ -150,7 +150,7 @@
       menuKey = null;
       return;
     }
-    var titles = { main: 'Menu', bookmarks: 'Bookmarks', history: 'History' };
+    var titles = { main: 'Menu', bookmarks: 'Bookmarks', history: 'History', addons: 'Add-ons' };
     setText($('menu-title'), titles[menu.section] || 'Menu');
     var items = menu.items || [];
     var list = $('menu-items');
