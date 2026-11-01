@@ -93,6 +93,9 @@ while read -r kind name sum url; do
     # hangs). Included in the shipped snapshot, built here where it downloads.
     adsx) ADS_INPUTS+=("${DL}/${name}") ;;
     cookie) COOKIE_INPUTS+=("${DL}/${name}"); COOKIE_SOURCES+=("${url}") ;;
+    # Bundled cookie list, NOT re-fetched on device (secure.fanboy.co.nz hangs
+    # on the console like GitHub). Shipped in the snapshot, built here.
+    cookiex) COOKIE_INPUTS+=("${DL}/${name}") ;;
     *) die "unknown kind ${kind} for ${name}" ;;
   esac
 done < "${LOCK}"

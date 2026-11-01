@@ -12,6 +12,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -28,6 +29,16 @@ class WkWebView;
 
 class Ps5Addons final : public shell::AddonsBackend {
  public:
+  // Result of a detached background fetch. Held by shared_ptr so the worker
+  // can outlive this object (abandoned on the watchdog) without a use-after-
+  // free: the worker touches ONLY this state plus values captured by copy,
+  // never `this`. Public so the file-local worker function can use it.
+  struct WorkerState {
+    std::mutex mutex;
+    bool done = false;
+    bool ok = false;
+  };
+
   Ps5Addons(std::string addons_dir, std::string cache_dir, core::AddonsConfig initial);
   ~Ps5Addons() override;
 
@@ -97,7 +108,6 @@ class Ps5Addons final : public shell::AddonsBackend {
   std::vector<std::string> build_user_scripts() const;
   void finish_update(bool ok);
   void start_update();
-  void worker_run();
 
   std::string addons_dir_;
   std::string cache_dir_;
@@ -123,11 +133,8 @@ class Ps5Addons final : public shell::AddonsBackend {
 
   std::function<void(std::int64_t)> on_filters_updated_;
 
-  std::thread worker_;
-  std::mutex mutex_;
   std::atomic<bool> updating_{false};
-  bool result_ready_ = false;  // guarded by mutex_ (worker wrote the cache)
-  bool result_ok_ = false;     // guarded by mutex_
+  std::shared_ptr<WorkerState> worker_state_;  // the current detached fetch
   std::int64_t last_updated_ = 0;
   std::int64_t last_check_ = 0;
   std::int64_t update_started_at_ = 0;

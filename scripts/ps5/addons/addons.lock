@@ -9,8 +9,9 @@
 #                device (the console cannot reach raw.githubusercontent.com -
 #                it hangs - so the uBlock uAssets lists are shipped in the
 #                snapshot, built here, but left out of the update fetch set).
-#       cookie   the cookie-banner set (active only when the "Block cookie
-#                banners" sub-toggle is on).
+#       cookie   the cookie-banner set, bundled AND refetched on device.
+#       cookiex  cookie-banner set bundled ONLY, not refetched (its host
+#                secure.fanboy.co.nz hangs on the console like GitHub).
 #
 # EasyList + EasyPrivacy (GPLv3 / CC BY-SA 3.0) and uBlock Origin's own default
 # lists from uAssets (GPLv3) are merged for the best page-ad / YouTube coverage.
@@ -40,4 +41,4 @@ adsx ublock-unbreak.txt 67678f10ff1ca874d13f9878e78f9035bc98dca289b271fea651c181
 adsx ublock-quick-fixes.txt d639d95b7a653943fe5437cac97fa08e7742c10a7225a9ccde3e3416fbd8a556 https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/quick-fixes.txt
 adsx peter-lowe.txt 369b873ee7a0e1d77879bbc0ed572d0eb68c283e518acb4e1c13d0035dc2d076 https://pgl.yoyo.org/adservers/serverlist.php?hostformat=adblockplus&showintro=0&mimetype=plaintext
 
-cookie fanboy-cookiemonster.txt 38e92c99161d6a4822386fd23c5ef11823be4a0b2a0899ccbf223d548f5ae8ea https://secure.fanboy.co.nz/fanboy-cookiemonster.txt
+cookiex fanboy-cookiemonster.txt 38e92c99161d6a4822386fd23c5ef11823be4a0b2a0899ccbf223d548f5ae8ea https://secure.fanboy.co.nz/fanboy-cookiemonster.txt

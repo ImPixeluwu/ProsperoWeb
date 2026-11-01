@@ -34,7 +34,12 @@ namespace {
 std::int64_t now_epoch() { return static_cast<std::int64_t>(std::time(nullptr)); }
 
 // Overall wall-clock budget for one background refresh (fetch all lists).
-constexpr std::int64_t kUpdateDeadlineSeconds = 45;
+// Secondary in-loop budget for the whole fetch (sum of successful fetches).
+constexpr std::int64_t kUpdateDeadlineSeconds = 40;
+// Main-thread watchdog: how long before a running refresh is ABANDONED so the
+// UI never stays on "updating...". Independent of libcurl, whose timeouts
+// cannot interrupt a blocked DNS/connect under NOSIGNAL.
+constexpr std::int64_t kUpdateWatchdogSeconds = 25;
 
 void make_dirs(const std::string& path) {
   std::string acc;
@@ -144,6 +149,42 @@ bool https_get(const std::string& url, std::string& out) {
 
 }  // namespace
 
+// Detached background refresh: fetch the (reachable) lists, convert and write
+// the cache for the next launch. Self-contained - captures everything by copy
+// and writes only into `st`, NEVER touching the Ps5Addons instance - so the
+// main thread can abandon it (the shared_ptr keeps `st` alive) with no
+// use-after-free.
+static void run_fetch(std::string cache_dir, std::vector<std::string> urls, std::string prefix,
+                      std::size_t per_chunk, std::size_t max_total,
+                      std::shared_ptr<Ps5Addons::WorkerState> st) {
+  const std::int64_t deadline = now_epoch() + kUpdateDeadlineSeconds;
+  bool ok = true;
+  std::vector<std::string> texts;
+  for (const auto& u : urls) {
+    if (now_epoch() >= deadline) {
+      log_line("addons: fetch deadline reached; aborting refresh");
+      ok = false;
+      break;
+    }
+    std::string body;
+    if (!https_get(u, body)) {
+      ok = false;
+      break;
+    }
+    texts.push_back(std::move(body));
+  }
+  if (ok && !texts.empty()) {
+    auto chunks = core::adblock::convert_chunked(texts, per_chunk, max_total).chunks;
+    for (std::size_t i = 0; i < chunks.size(); ++i) {
+      write_file(cache_dir + "/" + prefix + "-" + std::to_string(i) + ".json", chunks[i]);
+    }
+    log_printf("addons: cached %zu %s chunk(s) for next launch", chunks.size(), prefix.c_str());
+  }
+  std::lock_guard<std::mutex> lk(st->mutex);
+  st->done = true;
+  st->ok = ok;
+}
+
 Ps5Addons::Ps5Addons(std::string addons_dir, std::string cache_dir, core::AddonsConfig initial)
     : addons_dir_(std::move(addons_dir)), cache_dir_(std::move(cache_dir)), cfg_(std::move(initial)) {
   last_updated_ = cfg_.adblock.last_updated;
@@ -160,9 +201,9 @@ Ps5Addons::Ps5Addons(std::string addons_dir, std::string cache_dir, core::Addons
 }
 
 Ps5Addons::~Ps5Addons() {
-  if (worker_.joinable()) {
-    worker_.join();
-  }
+  // A background fetch (if any) is detached and only touches its own shared
+  // state, so it is left to finish/die with the process; we do not join it
+  // (it may be blocked in connect) and do not curl_global_cleanup() under it.
   for (auto* f : ads_.filters) {
     if (f) {
       WKRelease(f);
@@ -176,7 +217,8 @@ Ps5Addons::~Ps5Addons() {
   if (store_) {
     WKRelease(store_);
   }
-  curl_global_cleanup();
+  // Deliberately NOT curl_global_cleanup(): a detached fetch may still hold a
+  // curl handle. The process is exiting; leaking the global init is harmless.
 }
 
 std::string Ps5Addons::identifier(bool is_cookie, int index) const {
@@ -509,95 +551,47 @@ void Ps5Addons::start_update() {
     log_line("addons: a filter-list update is already in progress");
     return;
   }
-  if (worker_.joinable()) {
-    worker_.join();
-  }
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    result_ready_ = false;
-    result_ok_ = false;
-  }
   update_started_at_ = now_epoch();
+  // Fresh shared state; the previous one (if a stuck fetch was abandoned) is
+  // still owned by that detached thread and simply dropped here.
+  auto st = std::make_shared<WorkerState>();
+  worker_state_ = st;
   log_line("addons: downloading filter lists in the background (applies on restart)");
-  worker_ = std::thread([this] { worker_run(); });
-}
-
-void Ps5Addons::worker_run() {
-  // Download, chunk and WRITE THE CACHE off the main thread (no WebKit calls).
-  // The freshly cached chunks are compiled and attached on the NEXT launch;
-  // we never hot re-attach during a running session (the SharedMemory handle
-  // budget is spent by the startup attach and handles are move-once).
-  // Overall deadline so even many slow lists cannot wedge the update forever.
-  const std::int64_t deadline = now_epoch() + kUpdateDeadlineSeconds;
-  auto fetch_all = [&](const std::vector<std::string>& urls, bool& ok) {
-    std::vector<std::string> texts;
-    for (const auto& u : urls) {
-      if (now_epoch() >= deadline) {
-        log_line("addons: fetch deadline reached; aborting refresh");
-        ok = false;
-        return texts;
-      }
-      std::string body;
-      if (!https_get(u, body)) {
-        ok = false;
-        return texts;
-      }
-      texts.push_back(std::move(body));
-    }
-    return texts;
-  };
-  auto write_chunks = [this](const std::string& prefix, const std::vector<std::string>& chunks) {
-    for (std::size_t i = 0; i < chunks.size(); ++i) {
-      write_file(cache_dir_ + "/" + prefix + "-" + std::to_string(i) + ".json", chunks[i]);
-    }
-    log_printf("addons: cached %zu %s chunk(s) for next launch", chunks.size(), prefix.c_str());
-  };
-
-  bool ok = true;
-  std::vector<std::string> ads_texts = fetch_all(ads_.sources, ok);
-  if (ok && !ads_texts.empty()) {
-    write_chunks(ads_.prefix, core::adblock::convert_chunked(ads_texts, per_chunk_, max_total_).chunks);
-  }
-  if (ok && cfg_.adblock.cookie_banners && !cookie_.sources.empty()) {
-    std::vector<std::string> cookie_texts = fetch_all(cookie_.sources, ok);
-    if (ok && !cookie_texts.empty()) {
-      write_chunks(cookie_.prefix,
-                   core::adblock::convert_chunked(cookie_texts, per_chunk_, max_total_).chunks);
-    }
-  }
-
-  std::lock_guard<std::mutex> lock(mutex_);
-  result_ready_ = true;
-  result_ok_ = ok;
+  // Detached, self-contained: only the ads update set (reachable hosts) is
+  // fetched; the cookie list is bundle-only (its host hangs on the console).
+  std::thread(&run_fetch, cache_dir_, ads_.sources, ads_.prefix, per_chunk_, max_total_, st)
+      .detach();
 }
 
 void Ps5Addons::pump() {
-  if (updating_.load()) {
+  if (updating_.load() && worker_state_) {
     bool ready = false;
     bool ok = false;
     {
-      std::lock_guard<std::mutex> lock(mutex_);
-      if (result_ready_) {
+      std::lock_guard<std::mutex> lock(worker_state_->mutex);
+      if (worker_state_->done) {
         ready = true;
-        ok = result_ok_;
-        result_ready_ = false;
+        ok = worker_state_->ok;
       }
     }
+    const std::int64_t waited = update_started_at_ > 0 ? now_epoch() - update_started_at_ : 0;
     if (ready) {
-      if (worker_.joinable()) {
-        worker_.join();
-      }
-      // The worker already wrote the fresh chunks to the cache; nothing is
-      // recompiled or re-attached now (that happens on the next launch), so
-      // the update finishes deterministically and never gets stuck.
+      // The detached worker already wrote the fresh chunks to the cache;
+      // nothing is recompiled or re-attached now (that happens next launch).
       if (ok) {
         log_line("addons: filter lists refreshed and cached; applies on restart");
       } else {
         log_line("addons: filter-list refresh failed; keeping cached/bundled lists");
       }
+      worker_state_.reset();
       finish_update(ok);
-    } else if (update_started_at_ > 0 && now_epoch() - update_started_at_ > 60) {
-      log_line("addons: filter-list update timed out; keeping cached/bundled lists");
+    } else if (waited > kUpdateWatchdogSeconds) {
+      // Watchdog: a fetch is still stuck (e.g. a blocked DNS/connect libcurl
+      // cannot time out). Abandon the detached worker - it keeps its own
+      // shared state alive and dies with the process - so the UI never wedges.
+      log_printf("addons: update watchdog: still running after %llds; abandoning (UI responsive)",
+                 static_cast<long long>(waited));
+      worker_state_.reset();
       finish_update(/*ok=*/false);
     }
   }
