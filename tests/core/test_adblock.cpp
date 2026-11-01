@@ -175,6 +175,33 @@ TEST_SUITE("adblock") {
     CHECK(fs.stats.skipped == 90);
   }
 
+  TEST_CASE("convert_chunked splits into small lists, network first") {
+    std::string list;
+    for (int i = 0; i < 25; ++i) {
+      list += "||host" + std::to_string(i) + ".example^\n";  // 25 network
+    }
+    for (int i = 0; i < 25; ++i) {
+      list += "##.ad" + std::to_string(i) + "\n";  // 25 cosmetic
+    }
+    // 10 per chunk, cap 40 total -> 4 chunks (10+10+10+10), 10 dropped.
+    auto r = convert_chunked({list}, /*per_chunk=*/10, /*total=*/40);
+    REQUIRE(r.chunks.size() == 4);
+    std::size_t emitted = 0;
+    for (const auto& c : r.chunks) {
+      auto doc = nlohmann::json::parse(c);
+      CHECK(doc.size() <= 10);
+      emitted += doc.size();
+    }
+    CHECK(emitted == 40);
+    CHECK(r.stats.emitted == 40);
+    CHECK(r.stats.dropped_cap == 10);
+    // The first chunk is all network blocks (network emitted first).
+    auto first = nlohmann::json::parse(r.chunks[0]);
+    for (const auto& rule : first) {
+      CHECK(rule["action"]["type"] == "block");
+    }
+  }
+
   TEST_CASE("multiple lists keep input order (golden smoke)") {
     std::vector<std::string> lists = {"||ads.example^", "##.promo"};
     auto r = convert(lists);

@@ -214,38 +214,37 @@ bool apply_option(const std::string& opt, nlohmann::json& trigger, bool& ok) {
 
 }  // namespace
 
-ConvertResult convert(const std::vector<std::string>& lists, const ConvertOptions& opts) {
-  ConvertResult result;
-  // Collect network and cosmetic rules separately so the 150000-rule cap drops
-  // cosmetic overflow first and never sacrifices network blocking. Exceptions
-  // keep list order relative to the block rules they override.
-  nlohmann::json network = nlohmann::json::array();
-  nlohmann::json cosmetic = nlohmann::json::array();
+namespace {
 
+// Parse the lists into separate network and cosmetic rule arrays (no cap), so
+// callers can assemble one list or several chunks. Network rules keep input
+// order (exceptions follow the blocks they override).
+void parse_rules(const std::vector<std::string>& lists, const ConvertOptions& opts,
+                 nlohmann::json& network, nlohmann::json& cosmetic, ConvertStats& stats) {
   for (const auto& list : lists) {
     std::istringstream in(list);
     std::string raw;
     while (std::getline(in, raw)) {
       std::string line = trim(raw);
-      ++result.stats.input_lines;
+      ++stats.input_lines;
       if (line.empty() || line[0] == '!' || line[0] == '[') {
         continue;
       }
       // Extended-CSS / scriptlet / exception element rules are unsupported.
       if (line.find("#@#") != std::string::npos || line.find("#?#") != std::string::npos ||
           line.find("#$#") != std::string::npos || line.find("#%#") != std::string::npos) {
-        ++result.stats.dropped_unsupported;
+        ++stats.dropped_unsupported;
         continue;
       }
       if (auto pos = line.find("##"); pos != std::string::npos) {
         if (!opts.include_element_hiding) {
-          ++result.stats.dropped_unsupported;
+          ++stats.dropped_unsupported;
           continue;
         }
         std::string domains = line.substr(0, pos);
         std::string selector = line.substr(pos + 2);
         if (selector.empty()) {
-          ++result.stats.dropped_unsupported;
+          ++stats.dropped_unsupported;
           continue;
         }
         nlohmann::json trigger;
@@ -266,7 +265,7 @@ ConvertResult convert(const std::vector<std::string>& lists, const ConvertOption
         rule["trigger"] = std::move(trigger);
         rule["action"] = {{"type", "css-display-none"}, {"selector", selector}};
         cosmetic.push_back(std::move(rule));
-        ++result.stats.element_hide_rules;
+        ++stats.element_hide_rules;
         continue;
       }
 
@@ -296,7 +295,7 @@ ConvertResult convert(const std::vector<std::string>& lists, const ConvertOption
         }
       }
       if (!ok) {
-        ++result.stats.dropped_unsupported;
+        ++stats.dropped_unsupported;
         continue;
       }
       std::string url_filter;
@@ -316,10 +315,20 @@ ConvertResult convert(const std::vector<std::string>& lists, const ConvertOption
       rule["trigger"] = std::move(trigger);
       rule["action"] = {{"type", exception ? "ignore-previous-rules" : "block"}};
       network.push_back(std::move(rule));
-      ++result.stats.network_rules;
+      ++stats.network_rules;
     }
   }
+}
 
+}  // namespace
+
+ConvertResult convert(const std::vector<std::string>& lists, const ConvertOptions& opts) {
+  ConvertResult result;
+  nlohmann::json network = nlohmann::json::array();
+  nlohmann::json cosmetic = nlohmann::json::array();
+  parse_rules(lists, opts, network, cosmetic, result.stats);
+
+  // Assemble one list, network first so the cap trims cosmetics first.
   nlohmann::json rules = nlohmann::json::array();
   for (auto& r : network) {
     if (rules.size() < opts.max_rules) {
@@ -337,6 +346,48 @@ ConvertResult convert(const std::vector<std::string>& lists, const ConvertOption
   }
   result.stats.emitted = rules.size();
   result.json = rules.dump();
+  return result;
+}
+
+ChunkedResult convert_chunked(const std::vector<std::string>& lists,
+                              std::size_t max_rules_per_chunk, std::size_t max_total_rules,
+                              const ConvertOptions& opts) {
+  ChunkedResult result;
+  if (max_rules_per_chunk == 0) {
+    max_rules_per_chunk = 1;
+  }
+  nlohmann::json network = nlohmann::json::array();
+  nlohmann::json cosmetic = nlohmann::json::array();
+  parse_rules(lists, opts, network, cosmetic, result.stats);
+
+  // Network first, then cosmetic; split into chunks of <= max_rules_per_chunk,
+  // dropping everything past max_total_rules (cosmetic goes first since it
+  // trails the network rules).
+  nlohmann::json current = nlohmann::json::array();
+  std::size_t total = 0;
+  auto flush = [&]() {
+    if (!current.empty()) {
+      result.chunks.push_back(current.dump());
+      current = nlohmann::json::array();
+    }
+  };
+  auto emit = [&](nlohmann::json& arr) {
+    for (auto& r : arr) {
+      if (total >= max_total_rules) {
+        ++result.stats.dropped_cap;
+        continue;
+      }
+      current.push_back(std::move(r));
+      ++total;
+      if (current.size() >= max_rules_per_chunk) {
+        flush();
+      }
+    }
+  };
+  emit(network);
+  emit(cosmetic);
+  flush();
+  result.stats.emitted = total;
   return result;
 }
 

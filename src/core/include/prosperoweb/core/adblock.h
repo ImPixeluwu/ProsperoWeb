@@ -53,6 +53,20 @@ ConvertResult convert_one(const std::string& list, const ConvertOptions& opts = 
 ConvertResult convert(const std::vector<std::string>& lists,
                       const ConvertOptions& opts = {});
 
+// Split the converted rules into SEVERAL content rule lists, each no larger
+// than max_rules_per_chunk, capped at max_total_rules overall. WebKit's
+// on-device content-extension compiler asserts / OOMs on a very large single
+// list, so the ad blocker ships multiple small compiled lists (like wBlock's
+// several content blockers). Network rules are emitted first (so the cap trims
+// cosmetics first); each chunk is a standalone JSON array ready to compile.
+struct ChunkedResult {
+  std::vector<std::string> chunks;  // each a JSON array
+  ConvertStats stats;
+};
+ChunkedResult convert_chunked(const std::vector<std::string>& lists,
+                              std::size_t max_rules_per_chunk, std::size_t max_total_rules,
+                              const ConvertOptions& opts = {});
+
 // Translate one Adblock Plus network pattern (the part before any `$`
 // options, with `||`, `|`, `^`, `*` anchors) into a WebKit `url-filter`
 // regular expression. Exposed for testing.
