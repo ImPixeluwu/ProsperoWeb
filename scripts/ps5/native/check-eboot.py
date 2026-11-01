@@ -45,6 +45,11 @@ KNOWN_WEAK_ZERO = {
     "__cxa_thread_atexit_impl",
     # The TLS init hook of a thread_local without a dynamic initialiser.
     "_ZTHN3IPC10Connection20MessageDispatchScope9s_currentE",
+    # zstd's optional decompression-trace hooks, pulled in by libcurl's
+    # zstd decoder (the add-ons filter-list updater). zstd guards every call
+    # with a null check, so left at 0 they are simply disabled.
+    "ZSTD_trace_decompress_begin",
+    "ZSTD_trace_decompress_end",
 }
 
 # Loaded for a native app at start-up (Stremio PS5 native/check_imports.py).

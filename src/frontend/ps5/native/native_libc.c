@@ -332,6 +332,41 @@ int __inet_aton(const char* text, void* addr) {
 
 int inet_aton(const char* text, void* addr) { return __inet_aton(text, addr); }
 
+// ---- string helpers libc.prx does not export -----------------------------------
+//
+// Pulled in by libcurl (the add-ons filter-list updater, ps5_addons.cpp); the
+// clean-room libc.prx has no basename/memrchr, so define them here.
+
+void* memrchr(const void* s, int c, size_t n) {
+  const unsigned char* p = (const unsigned char*)s + n;
+  while (n--) {
+    if (*--p == (unsigned char)c) {
+      return (void*)p;
+    }
+  }
+  return NULL;
+}
+
+// POSIX basename (the libgen.h form): may modify path, returns a pointer into
+// it (or a static string for the empty/root cases).
+char* basename(char* path) {
+  if (path == NULL || path[0] == '\0') {
+    return (char*)".";
+  }
+  size_t len = strlen(path);
+  while (len > 1 && path[len - 1] == '/') {
+    path[--len] = '\0';
+  }
+  char* slash = strrchr(path, '/');
+  if (slash == NULL) {
+    return path;
+  }
+  if (slash[1] == '\0') {
+    return slash;  // path was "/"
+  }
+  return slash + 1;
+}
+
 // ---- makecontext ---------------------------------------------------------------
 //
 // No caller reaches it (WebKit's "makeContextCurrent" is unrelated GL); it
