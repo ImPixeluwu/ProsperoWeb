@@ -99,7 +99,12 @@ void log_line(const std::string& message) {
   if (g_log_file) {
     std::fprintf(g_log_file, "%s %s\n", prefix, message.c_str());
     std::fflush(g_log_file);
-    fsync(fileno(g_log_file));
+    // Diagnostic traces (WebKit IPC timings, one line per message) are not
+    // made durable one by one: an fsync per line would slow down what they
+    // measure.
+    if (message.compare(0, 7, "webkit:") != 0 && message.compare(0, 6, "trace:") != 0) {
+      fsync(fileno(g_log_file));
+    }
   }
 }
 
