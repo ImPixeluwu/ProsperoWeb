@@ -5,6 +5,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -345,6 +346,187 @@ ConvertResult convert(const std::vector<std::string>& lists, const ConvertOption
 
 ConvertResult convert_one(const std::string& list, const ConvertOptions& opts) {
   return convert(std::vector<std::string>{list}, opts);
+}
+
+// --- Userscript filter set --------------------------------------------------
+namespace {
+
+// Procedural / extended-CSS / scriptlet markers a plain CSS selector cannot
+// express; such cosmetic rules are skipped.
+bool selector_unsupported(const std::string& sel) {
+  if (sel.empty()) {
+    return true;
+  }
+  if (sel.rfind("+js(", 0) == 0) {
+    return true;  // scriptlet injection
+  }
+  static const char* kProc[] = {":has(",     ":has-text(", ":matches-",  ":xpath(",
+                                ":nth-ancestor(", ":upward(", ":remove(", ":style(",
+                                ":-abp-",    ":watch-attr(", ":min-text-length(",
+                                ":others(",  ":if(",     ":if-not(",   ":contains("};
+  for (const char* p : kProc) {
+    if (sel.find(p) != std::string::npos) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// A network option set we can approximate by blocking the whole host. Scoping
+// or rewriting options (domain=, redirect, csp, removeparam, ...) make a
+// whole-host block wrong, so those rules are skipped instead.
+bool options_host_safe(const std::string& options) {
+  if (options.empty()) {
+    return true;
+  }
+  for (auto& opt : split(options, ',')) {
+    std::string o = trim(opt);
+    if (!o.empty() && o[0] == '~') {
+      o = o.substr(1);
+    }
+    static const std::unordered_set<std::string> kSafe = {
+        "third-party", "first-party", "1p", "3p",   "script",   "image",
+        "stylesheet",  "css",         "object", "font",  "media",    "xmlhttprequest",
+        "xhr",         "subdocument", "frame",  "document", "doc",   "other",
+        "websocket",   "ping",        "beacon", "popup",    "all",   "important",
+        "match-case"};
+    if (kSafe.find(o) == kSafe.end()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool is_host_char(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' ||
+         c == '-';
+}
+
+std::string lower(std::string s) {
+  for (char& c : s) {
+    if (c >= 'A' && c <= 'Z') {
+      c = static_cast<char>(c - 'A' + 'a');
+    }
+  }
+  return s;
+}
+
+}  // namespace
+
+std::string FilterSet::to_json() const {
+  nlohmann::json out;
+  out["hosts"] = hosts;
+  std::string css;
+  for (const auto& s : selectors) {
+    if (!css.empty()) {
+      css += ",";
+    }
+    css += s;
+  }
+  out["css"] = css.empty() ? std::string() : css + "{display:none!important}";
+  nlohmann::json rules = nlohmann::json::array();
+  for (const auto& r : domain_rules) {
+    rules.push_back(nlohmann::json::array({r.domain, r.selector}));
+  }
+  out["domainRules"] = std::move(rules);
+  return out.dump();
+}
+
+FilterSet build_filter_set(const std::vector<std::string>& lists, const FilterSetOptions& opts) {
+  FilterSet fs;
+  std::unordered_set<std::string> host_seen;
+  std::unordered_set<std::string> generic_seen;
+  std::size_t generic_css_bytes = 0;
+
+  for (const auto& list : lists) {
+    std::istringstream in(list);
+    std::string raw;
+    while (std::getline(in, raw)) {
+      std::string line = trim(raw);
+      ++fs.stats.input_lines;
+      if (line.empty() || line[0] == '!' || line[0] == '[') {
+        continue;
+      }
+
+      // Cosmetic rules.
+      if (line.find("#@#") != std::string::npos || line.find("#?#") != std::string::npos ||
+          line.find("#$#") != std::string::npos || line.find("#%#") != std::string::npos) {
+        ++fs.stats.skipped;
+        continue;
+      }
+      if (auto pos = line.find("##"); pos != std::string::npos) {
+        std::string domains = line.substr(0, pos);
+        std::string selector = line.substr(pos + 2);
+        if (selector_unsupported(selector)) {
+          ++fs.stats.skipped;
+          continue;
+        }
+        if (domains.empty()) {
+          if (generic_css_bytes + selector.size() > opts.max_generic_css_bytes) {
+            ++fs.stats.skipped;
+            continue;
+          }
+          if (generic_seen.insert(selector).second) {
+            fs.selectors.push_back(selector);
+            generic_css_bytes += selector.size() + 1;
+            ++fs.stats.selectors;
+          }
+        } else {
+          for (auto& d : split(domains, ',')) {
+            std::string dom = trim(d);
+            if (dom.empty() || dom[0] == '~') {
+              ++fs.stats.skipped;  // negated-domain cosmetic not expressed
+              continue;
+            }
+            if (fs.domain_rules.size() >= opts.max_domain_rules) {
+              ++fs.stats.skipped;
+              continue;
+            }
+            fs.domain_rules.push_back({lower(dom), selector});
+          }
+        }
+        continue;
+      }
+
+      // Network rules we can turn into a whole-host block.
+      if (line.rfind("@@", 0) == 0 || line.rfind("||", 0) != 0) {
+        ++fs.stats.skipped;
+        continue;
+      }
+      std::size_t i = 2;
+      std::string host;
+      while (i < line.size() && is_host_char(line[i])) {
+        host.push_back(line[i]);
+        ++i;
+      }
+      const bool whole_host = (i == line.size() || line[i] == '^' || line[i] == '$');
+      std::string options;
+      if (i < line.size() && line[i] == '^') {
+        ++i;
+      }
+      if (i < line.size() && line[i] == '$') {
+        options = line.substr(i + 1);
+      } else if (i != line.size()) {
+        // Trailing path / wildcard / port: not a whole-host rule.
+        ++fs.stats.skipped;
+        continue;
+      }
+      if (!whole_host || host.find('.') == std::string::npos || !options_host_safe(options)) {
+        ++fs.stats.skipped;
+        continue;
+      }
+      if (fs.hosts.size() >= opts.max_hosts) {
+        ++fs.stats.skipped;
+        continue;
+      }
+      std::string h = lower(host);
+      if (host_seen.insert(h).second) {
+        fs.hosts.push_back(h);
+        ++fs.stats.hosts;
+      }
+    }
+  }
+  return fs;
 }
 
 }  // namespace prosperoweb::core::adblock

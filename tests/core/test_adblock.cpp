@@ -103,6 +103,47 @@ TEST_SUITE("adblock") {
     CHECK(r.stats.dropped_cap == 6);
   }
 
+  TEST_CASE("filter set: hosts, generic and domain cosmetic, skips") {
+    std::string list =
+        "! comment\n"
+        "||ads.example.com^\n"              // whole-host block
+        "||track.example^$third-party\n"     // safe option -> host
+        "||scoped.example^$domain=foo.com\n" // scoping option -> skipped
+        "||example.com/ads.js\n"             // path -> skipped (not whole-host)
+        "##.generic-ad\n"                     // generic cosmetic
+        "youtube.com,m.youtube.com##ytd-promoted-video-renderer\n"  // domain cosmetic
+        "example.com##div:has(> .ad)\n"      // procedural -> skipped
+        "example.com##+js(nano-sib)\n"        // scriptlet -> skipped
+        "@@||allow.example^\n";               // exception -> skipped
+    auto fs = prosperoweb::core::adblock::build_filter_set({list});
+    CHECK(fs.hosts == std::vector<std::string>{"ads.example.com", "track.example"});
+    CHECK(fs.selectors == std::vector<std::string>{".generic-ad"});
+    REQUIRE(fs.domain_rules.size() == 2);
+    CHECK(fs.domain_rules[0].domain == "youtube.com");
+    CHECK(fs.domain_rules[0].selector == "ytd-promoted-video-renderer");
+    CHECK(fs.domain_rules[1].domain == "m.youtube.com");
+    CHECK(fs.stats.hosts == 2);
+    CHECK(fs.stats.selectors == 1);
+    CHECK(fs.stats.skipped >= 5);
+
+    auto doc = nlohmann::json::parse(fs.to_json());
+    CHECK(doc["css"] == ".generic-ad{display:none!important}");
+    CHECK(doc["hosts"].size() == 2);
+    CHECK(doc["domainRules"][0][0] == "youtube.com");
+  }
+
+  TEST_CASE("filter set: caps bound the payload") {
+    std::string list;
+    for (int i = 0; i < 100; ++i) {
+      list += "||host" + std::to_string(i) + ".example^\n";
+    }
+    prosperoweb::core::adblock::FilterSetOptions o;
+    o.max_hosts = 10;
+    auto fs = prosperoweb::core::adblock::build_filter_set({list}, o);
+    CHECK(fs.hosts.size() == 10);
+    CHECK(fs.stats.skipped == 90);
+  }
+
   TEST_CASE("multiple lists keep input order (golden smoke)") {
     std::vector<std::string> lists = {"||ads.example^", "##.promo"};
     auto r = convert(lists);

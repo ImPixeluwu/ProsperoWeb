@@ -58,4 +58,47 @@ ConvertResult convert(const std::vector<std::string>& lists,
 // regular expression. Exposed for testing.
 std::string pattern_to_url_filter(const std::string& pattern);
 
+// --- Userscript filter set --------------------------------------------------
+//
+// Our WebKit build has ENABLE(CONTENT_EXTENSIONS) off, so the rule-list API is
+// unusable on the console. Instead we extract, from the same filter lists, a
+// compact set an injected userscript can enforce: generic element-hiding CSS
+// selectors (cosmetic) and whole-host block entries (||host^ rules, the clean
+// ad/tracker servers). Path/regex/option-heavy network rules and
+// domain-scoped or procedural cosmetic rules are left out and counted.
+
+struct FilterSetOptions {
+  // Separate budgets so one kind cannot starve another (e.g. EasyList's large
+  // generic cosmetic list must not crowd out uBlock's YouTube domain rules).
+  std::size_t max_hosts = 50000;                 // whole-host network blocks
+  std::size_t max_generic_css_bytes = 192 * 1024;  // generic element-hiding CSS
+  std::size_t max_domain_rules = 20000;          // domain-scoped cosmetic rules
+};
+
+struct FilterSetStats {
+  std::size_t input_lines = 0;
+  std::size_t hosts = 0;
+  std::size_t selectors = 0;
+  std::size_t skipped = 0;  // rules not expressible this way
+};
+
+struct DomainRule {
+  std::string domain;    // e.g. "youtube.com" (matches it and its subdomains)
+  std::string selector;  // CSS selector to hide on that domain
+};
+
+struct FilterSet {
+  std::vector<std::string> hosts;        // whole-host blocks, e.g. "doubleclick.net"
+  std::vector<std::string> selectors;    // generic (all-site) element-hiding selectors
+  std::vector<DomainRule> domain_rules;  // domain-scoped cosmetic (e.g. YouTube page ads)
+  FilterSetStats stats;
+
+  // Serialise as {"hosts":[...],"css":"<generic>{display:none!important}",
+  // "domainRules":[["domain","selector"],...]} for the adblock userscript.
+  std::string to_json() const;
+};
+
+FilterSet build_filter_set(const std::vector<std::string>& lists,
+                           const FilterSetOptions& opts = {});
+
 }  // namespace prosperoweb::core::adblock
