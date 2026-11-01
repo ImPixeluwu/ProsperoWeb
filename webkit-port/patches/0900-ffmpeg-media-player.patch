@@ -178,10 +178,10 @@ index 581158cda..6e43e6548 100644
  enum class MediaPlayerWirelessPlaybackTargetType : uint8_t {
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/AudioSink.cpp b/Source/WebCore/platform/graphics/ffmpeg/AudioSink.cpp
 new file mode 100644
-index 000000000..6777de3ab
+index 000000000..9ea435224
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/AudioSink.cpp
-@@ -0,0 +1,348 @@
+@@ -0,0 +1,358 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -297,20 +297,27 @@ index 000000000..6777de3ab
 +class RemoteAudioSink final : public AudioSink {
 +    WTF_DEPRECATED_MAKE_FAST_ALLOCATED(RemoteAudioSink);
 +public:
-+    static std::unique_ptr<AudioSink> create(RenderCallback& render, int port)
++    // `controlFd` >= 0 uses the inherited socketpair rendezvous (the UI
++    // cannot listen() under the Media application-category sandbox); otherwise
++    // the client connects to 127.0.0.1:port.
++    static std::unique_ptr<AudioSink> create(RenderCallback& render, int port, int controlFd)
 +    {
 +        auto sink = std::unique_ptr<RemoteAudioSink>(new RemoteAudioSink(WTF::move(render)));
 +        if (const char* ahead = getenv("PROSPEROWEB_AUDIO_AHEAD_MS"); ahead && atoi(ahead) > 0)
 +            sink->m_client.setTargetAhead(atoi(ahead) / 1000.0);
++        const bool useControl = controlFd >= 0;
++        const char* via = useControl ? "control fd" : "127.0.0.1";
 +        std::string error;
-+        if (!sink->m_client.connect(port, 300, error)) {
-+            ffmpegMediaLog("audio sink: remote 127.0.0.1:%d failed: %s", port, error.c_str());
++        bool connected = useControl ? sink->m_client.connectControl(controlFd, 300, error)
++                                    : sink->m_client.connect(port, 300, error);
++        if (!connected) {
++            ffmpegMediaLog("audio sink: remote (%s %d) failed: %s", via, useControl ? controlFd : port, error.c_str());
 +            render = WTF::move(sink->m_render);
 +            return nullptr;
 +        }
 +        const auto& accepted = sink->m_client.accepted();
-+        ffmpegMediaLog("audio sink: remote 127.0.0.1:%d connected (stream %u, output latency %u frames, %.0f ms ahead)",
-+            port, accepted.streamId, accepted.outputLatencyFrames, sink->m_client.targetAhead() * 1000);
++        ffmpegMediaLog("audio sink: remote connected via %s %d (stream %u, output latency %u frames, %.0f ms ahead)",
++            via, useControl ? controlFd : port, accepted.streamId, accepted.outputLatencyFrames, sink->m_client.targetAhead() * 1000);
 +        sink->m_port = port;
 +        sink->m_thread = Thread::create("FFmpegRemoteAudio"_s, [self = sink.get()] {
 +            self->run();
@@ -509,10 +516,13 @@ index 000000000..6777de3ab
 +        ffmpegMediaLog("audio sink: unknown PROSPEROWEB_MEDIA_AUDIO=%s, using the default order", mode.c_str());
 +
 +    int port = remotePort();
-+    if (mode == "remote" && !port)
++    // The UI exports this when it cannot listen() (media category): the sink
++    // then opens its stream over the inherited control socket, not a port.
++    int controlFd = FFmpegMedia::MediaControl::controlFdFromEnv("PROSPEROWEB_AUDIO_CONTROL_FD");
++    if (mode == "remote" && !port && controlFd < 0)
 +        port = FFmpegMedia::AudioWire::defaultPort;
-+    if (mode != "sdl" && port) {
-+        if (auto sink = RemoteAudioSink::create(render, port))
++    if (mode != "sdl" && (port || controlFd >= 0)) {
++        if (auto sink = RemoteAudioSink::create(render, port, controlFd))
 +            return sink;
 +        ffmpegMediaLog("audio sink: remote unavailable, trying the local SDL output (inaudible from the WebProcess on the PS5)");
 +    }
@@ -2449,6 +2459,188 @@ index 000000000..bef2fb676
 +} // namespace WebCore
 +
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
+diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegMediaControl.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegMediaControl.h
+new file mode 100644
+index 000000000..5dc9095f2
+--- /dev/null
++++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegMediaControl.h
+@@ -0,0 +1,176 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++//
++// Media-channel rendezvous for the PS5 native title. On the console the UI
++// title may run under the Media application category (param.json
++// applicationCategoryType 65536), whose sandbox refuses listen() on a
++// loopback TCP socket. The audio server (FFmpegAudioWire.h) and the video
++// overlay server (FFmpegVideoOverlayWire.h) therefore cannot wait for the
++// WebProcess to connect() to a fixed port.
++//
++// Instead the spawn glue (src/ps5/spawn/spawn_glue.cpp) hands the WebProcess
++// an inherited AF_UNIX SOCK_SEQPACKET socket per media service (its number in
++// PROSPEROWEB_AUDIO_CONTROL_FD / PROSPEROWEB_VIDEO_CONTROL_FD), the other end
++// of which lives in the UI and is polled by that service's server. To open a
++// stream the WebProcess makes a socketpair of its own, keeps one end and
++// passes the other to the UI over the control socket (one SCM_RIGHTS message
++// carrying a single descriptor). The kept end then speaks the ordinary wire
++// protocol: only the rendezvous changed, not the framing, so a connection is
++// still one socket per stream. No listen(), no connect() to a fixed port.
++//
++// Engine-independent (POSIX sockets and the C++ standard library only), so the
++// host tests drive exactly this code.
++
++#pragma once
++
++#include <cerrno>
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++#include <mutex>
++#include <string>
++
++#include <sys/socket.h>
++#include <unistd.h>
++
++namespace WebCore {
++namespace FFmpegMedia {
++namespace MediaControl {
++
++// One handoff message is this single data byte plus one descriptor in its
++// SCM_RIGHTS ancillary data. The byte carries no meaning beyond making the
++// message non-empty (ancillary data needs at least one data byte to travel
++// reliably); the dedicated audio/video control sockets already say which
++// service the descriptor is for.
++constexpr std::uint8_t kHandoffByte = 0x01;
++
++// The control descriptor named by `envName` (PROSPEROWEB_AUDIO_CONTROL_FD or
++// PROSPEROWEB_VIDEO_CONTROL_FD), or -1 when it is unset or not a descriptor
++// number. A set, valid value means the UI wants the socketpair rendezvous;
++// -1 means fall back to the TCP path.
++inline int controlFdFromEnv(const char* envName)
++{
++    const char* value = getenv(envName);
++    if (!value || !*value)
++        return -1;
++    char* end = nullptr;
++    long fd = strtol(value, &end, 10);
++    if (*end || fd < 0 || fd > 0x7fffffff)
++        return -1;
++    return static_cast<int>(fd);
++}
++
++// Sends `fd` to the UI over the control socket `controlFd`. Thread-safe: the
++// control socket is shared by every media player and the audio writer, which
++// each open their own stream. Returns false (errno set) on failure.
++inline bool sendDescriptor(int controlFd, int fd)
++{
++    static std::mutex sendLock;
++    std::lock_guard<std::mutex> lock(sendLock);
++    std::uint8_t byte = kHandoffByte;
++    iovec iov { &byte, sizeof(byte) };
++    alignas(cmsghdr) unsigned char control[CMSG_SPACE(sizeof(int))];
++    std::memset(control, 0, sizeof(control));
++    msghdr message { };
++    message.msg_iov = &iov;
++    message.msg_iovlen = 1;
++    message.msg_control = control;
++    message.msg_controllen = sizeof(control);
++    cmsghdr* header = CMSG_FIRSTHDR(&message);
++    header->cmsg_level = SOL_SOCKET;
++    header->cmsg_type = SCM_RIGHTS;
++    header->cmsg_len = CMSG_LEN(sizeof(int));
++    std::memcpy(CMSG_DATA(header), &fd, sizeof(int));
++    int flags = 0;
++#ifdef MSG_NOSIGNAL
++    flags |= MSG_NOSIGNAL;
++#endif
++    while (true) {
++        ssize_t sent = ::sendmsg(controlFd, &message, flags);
++        if (sent >= 0)
++            return true;
++        if (errno == EINTR)
++            continue;
++        return false;
++    }
++}
++
++// Opens a stream over the control socket: makes a SOCK_STREAM socketpair,
++// passes one end to the UI through `controlFd` and returns the kept end (the
++// caller then runs the wire protocol on it), or -1 with `error` set. A byte
++// stream, like the TCP socket it replaces: the audio/video wire protocols
++// coalesce several messages into one send() and the server reads with a
++// fixed-size buffer, which a SOCK_SEQPACKET datagram would truncate.
++inline int openControlConnection(int controlFd, std::string& error)
++{
++    int pair[2];
++    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) {
++        error = std::string("socketpair: ") + strerror(errno);
++        return -1;
++    }
++    if (!sendDescriptor(controlFd, pair[1])) {
++        error = std::string("passing the stream descriptor to the UI: ") + strerror(errno);
++        ::close(pair[0]);
++        ::close(pair[1]);
++        return -1;
++    }
++    ::close(pair[1]); // the UI holds its own copy now
++    return pair[0];
++}
++
++// Outcome of one receiveDescriptor() on the UI side.
++enum class Receive : std::uint8_t {
++    Received,   // *fd holds a new stream descriptor (close-on-exec set)
++    WouldBlock, // nothing pending (the socket is non-blocking)
++    Closed,     // the WebProcess end is gone: drop this control socket
++    Error,      // a malformed message was skipped; keep polling
++};
++
++// Receives one stream descriptor the WebProcess passed (openControlConnection
++// on the other end). Non-blocking; the caller polls `controlFd` for POLLIN
++// first. On Received, *fd is the new descriptor. The UI runs under the title
++// sandbox, so this uses recvmsg only (no fcntl on the socket).
++inline Receive receiveDescriptor(int controlFd, int& fd)
++{
++    fd = -1;
++    std::uint8_t byte = 0;
++    iovec iov { &byte, sizeof(byte) };
++    alignas(cmsghdr) unsigned char control[CMSG_SPACE(sizeof(int))];
++    msghdr message { };
++    message.msg_iov = &iov;
++    message.msg_iovlen = 1;
++    message.msg_control = control;
++    message.msg_controllen = sizeof(control);
++    int flags = MSG_DONTWAIT;
++#ifdef MSG_CMSG_CLOEXEC
++    flags |= MSG_CMSG_CLOEXEC;
++#endif
++    ssize_t got;
++    do {
++        got = ::recvmsg(controlFd, &message, flags);
++    } while (got < 0 && errno == EINTR);
++    if (got < 0)
++        return (errno == EAGAIN || errno == EWOULDBLOCK) ? Receive::WouldBlock : Receive::Closed;
++    if (got == 0)
++        return Receive::Closed;
++    for (cmsghdr* header = CMSG_FIRSTHDR(&message); header; header = CMSG_NXTHDR(&message, header)) {
++        if (header->cmsg_level != SOL_SOCKET || header->cmsg_type != SCM_RIGHTS)
++            continue;
++        int received = -1;
++        std::memcpy(&received, CMSG_DATA(header), sizeof(int));
++        if (fd < 0)
++            fd = received;
++        else
++            ::close(received); // one descriptor per message; drop any extra
++    }
++    if (message.msg_flags & MSG_CTRUNC) {
++        if (fd >= 0)
++            ::close(fd);
++        fd = -1;
++        return Receive::Error;
++    }
++    return fd >= 0 ? Receive::Received : Receive::Error;
++}
++
++} // namespace MediaControl
++} // namespace FFmpegMedia
++} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegPlaybackPolicy.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegPlaybackPolicy.h
 new file mode 100644
 index 000000000..92ea7d596
@@ -2824,10 +3016,10 @@ index 000000000..d966fbf06
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegRemoteAudioClient.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegRemoteAudioClient.h
 new file mode 100644
-index 000000000..7fc925774
+index 000000000..31d44077c
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegRemoteAudioClient.h
-@@ -0,0 +1,369 @@
+@@ -0,0 +1,398 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Client side of the audio forwarding protocol (FFmpegAudioWire.h): connects
@@ -2843,6 +3035,7 @@ index 000000000..7fc925774
 +#pragma once
 +
 +#include "FFmpegAudioWire.h"
++#include "FFmpegMediaControl.h"
 +
 +#include <atomic>
 +#include <cerrno>
@@ -2922,34 +3115,29 @@ index 000000000..7fc925774
 +                return fail(error, "connect");
 +            }
 +        }
-+        uint8_t hello[helloSize];
-+        encodeHello(Hello { }, hello);
-+        if (!sendAll(hello, sizeof(hello), deadline))
-+            return fail(error, "sending the hello");
-+        while (true) {
-+            auto result = m_parser.next();
-+            if (result == FrameParser::Result::Message) {
-+                auto& message = m_parser.message();
-+                if (message.type == Type::Accepted) {
-+                    auto accepted = decodeAccepted(message.payload, message.bytes);
-+                    if (!accepted)
-+                        return fail(error, "malformed accepted message", false);
-+                    m_accepted = *accepted;
-+                    std::lock_guard<std::mutex> lock(m_lock);
-+                    m_clock.setOutputLatencyFrames(accepted->outputLatencyFrames);
-+                    return true;
-+                }
-+                if (message.type == Type::Rejected)
-+                    return fail(error, "the server rejected the stream format", false);
-+                continue;
-+            }
-+            if (result == FrameParser::Result::Error)
-+                return fail(error, "protocol error", false);
-+            if (!waitFor(POLLIN, deadline))
-+                return fail(error, "no answer from the server", false);
-+            if (!receive())
-+                return fail(error, "connection closed during the handshake", false);
-+        }
++        return handshake(deadline, error);
++    }
++
++    // Opens a stream over an inherited control socket instead of TCP: makes a
++    // socketpair, passes one end to the UI's audio server over `controlFd`
++    // (FFmpegMediaControl.h) and runs the same hello handshake on the kept
++    // end. Used under the Media application-category sandbox, where the UI
++    // cannot listen() on a port.
++    bool connectControl(int controlFd, int timeoutMs, std::string& error)
++    {
++        double deadline = monotonicSeconds() + timeoutMs / 1000.0;
++        m_fd = FFmpegMedia::MediaControl::openControlConnection(controlFd, error);
++        if (m_fd < 0)
++            return false;
++        int flags = fcntl(m_fd, F_GETFL, 0);
++        fcntl(m_fd, F_SETFL, flags | O_NONBLOCK);
++        int one = 1;
++#ifdef SO_NOSIGPIPE
++        setsockopt(m_fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
++#else
++        (void)one;
++#endif
++        return handshake(deadline, error);
 +    }
 +
 +    const Accepted& accepted() const { return m_accepted; }
@@ -3054,6 +3242,39 @@ index 000000000..7fc925774
 +    }
 +
 +private:
++    // Sends the hello on m_fd and waits for Accepted/Rejected within deadline.
++    bool handshake(double deadline, std::string& error)
++    {
++        uint8_t hello[helloSize];
++        encodeHello(Hello { }, hello);
++        if (!sendAll(hello, sizeof(hello), deadline))
++            return fail(error, "sending the hello");
++        while (true) {
++            auto result = m_parser.next();
++            if (result == FrameParser::Result::Message) {
++                auto& message = m_parser.message();
++                if (message.type == Type::Accepted) {
++                    auto accepted = decodeAccepted(message.payload, message.bytes);
++                    if (!accepted)
++                        return fail(error, "malformed accepted message", false);
++                    m_accepted = *accepted;
++                    std::lock_guard<std::mutex> lock(m_lock);
++                    m_clock.setOutputLatencyFrames(accepted->outputLatencyFrames);
++                    return true;
++                }
++                if (message.type == Type::Rejected)
++                    return fail(error, "the server rejected the stream format", false);
++                continue;
++            }
++            if (result == FrameParser::Result::Error)
++                return fail(error, "protocol error", false);
++            if (!waitFor(POLLIN, deadline))
++                return fail(error, "no answer from the server", false);
++            if (!receive())
++                return fail(error, "connection closed during the handshake", false);
++        }
++    }
++
 +    bool fail(std::string& error, const char* what, bool withErrno = true)
 +    {
 +        error = what;
@@ -5723,10 +5944,10 @@ index 000000000..b3496b54a
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.cpp b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.cpp
 new file mode 100644
-index 000000000..14b2b2b70
+index 000000000..c32d803c7
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.cpp
-@@ -0,0 +1,251 @@
+@@ -0,0 +1,259 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -5858,20 +6079,24 @@ index 000000000..14b2b2b70
 +        return nullptr;
 +    }
 +    int port = overlayPort();
-+    if (port < 0) {
++    // The UI exports this when it cannot listen() (media category): players
++    // open their connection over the inherited control socket, not a port.
++    int controlFd = FFmpegMedia::MediaControl::controlFdFromEnv("PROSPEROWEB_VIDEO_CONTROL_FD");
++    if (port < 0 && controlFd < 0) {
 +        if (!std::exchange(loggedDisabled, true))
 +            ffmpegMediaLog("video overlay: off (PROSPEROWEB_VIDEO_PORT=%s)", getenv("PROSPEROWEB_VIDEO_PORT"));
 +        return nullptr;
 +    }
-+    return std::unique_ptr<FFmpegVideoOverlay>(new FFmpegVideoOverlay(nextPlayer++, port));
++    return std::unique_ptr<FFmpegVideoOverlay>(new FFmpegVideoOverlay(nextPlayer++, port, controlFd));
 +}
 +
-+FFmpegVideoOverlay::FFmpegVideoOverlay(unsigned player, int port)
++FFmpegVideoOverlay::FFmpegVideoOverlay(unsigned player, int port, int controlFd)
 +    : m_client(new Wire::VideoOverlayClient())
 +    , m_player(player)
 +{
 +    Wire::VideoOverlayClient::Config config;
 +    config.port = port;
++    config.controlFd = controlFd;
 +    config.pid = static_cast<uint32_t>(getpid());
 +    config.player = player;
 +    const char* forced = getenv("PROSPEROWEB_VIDEO_TRANSPORT");
@@ -5880,8 +6105,12 @@ index 000000000..14b2b2b70
 +    config.log = [](const std::string& line) {
 +        ffmpegMediaLog("%s", line.c_str());
 +    };
-+    ffmpegMediaLog("video overlay: player %u: on (pid %d, port %d, transport %s)", player, static_cast<int>(getpid()), port,
-+        config.force == Wire::Transport::None ? "auto: shm, file, tcp" : Wire::transportName(config.force));
++    if (controlFd >= 0)
++        ffmpegMediaLog("video overlay: player %u: on (pid %d, control fd %d, transport %s)", player, static_cast<int>(getpid()), controlFd,
++            config.force == Wire::Transport::None ? "auto: shm, file, tcp" : Wire::transportName(config.force));
++    else
++        ffmpegMediaLog("video overlay: player %u: on (pid %d, port %d, transport %s)", player, static_cast<int>(getpid()), port,
++            config.force == Wire::Transport::None ? "auto: shm, file, tcp" : Wire::transportName(config.force));
 +    m_client->start(WTF::move(config));
 +}
 +
@@ -5980,7 +6209,7 @@ index 000000000..14b2b2b70
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.h
 new file mode 100644
-index 000000000..a2f363990
+index 000000000..8ec4092b3
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlay.h
 @@ -0,0 +1,91 @@
@@ -6059,7 +6288,7 @@ index 000000000..a2f363990
 +    void logStats(double seconds);
 +
 +private:
-+    FFmpegVideoOverlay(unsigned player, int port);
++    FFmpegVideoOverlay(unsigned player, int port, int controlFd);
 +
 +    std::unique_ptr<FFmpegMedia::VideoWire::VideoOverlayClient> m_client;
 +    unsigned m_player;
@@ -6077,10 +6306,10 @@ index 000000000..a2f363990
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlayClient.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlayClient.h
 new file mode 100644
-index 000000000..d7f74060d
+index 000000000..5ced9fb0e
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoOverlayClient.h
-@@ -0,0 +1,1045 @@
+@@ -0,0 +1,1072 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Client side of the video overlay protocol (FFmpegVideoOverlayWire.h): one
@@ -6108,6 +6337,7 @@ index 000000000..d7f74060d
 +#pragma once
 +
 +#include "FFmpegVideoOverlayWire.h"
++#include "FFmpegMediaControl.h"
 +
 +#include <algorithm>
 +#include <atomic>
@@ -6379,6 +6609,10 @@ index 000000000..d7f74060d
 +
 +    struct Config {
 +        int port { defaultPort };
++        // >= 0: open the connection over this inherited control socket
++        // (FFmpegMediaControl.h) instead of connecting to `port`. Set under
++        // the Media application-category sandbox, where the UI cannot listen().
++        int controlFd { -1 };
 +        uint32_t pid { 0 };
 +        uint32_t player { 0 };
 +        Transport force { Transport::None };
@@ -6738,35 +6972,54 @@ index 000000000..d7f74060d
 +    bool connect()
 +    {
 +        double deadline = overlayMonotonicSeconds() + m_config.connectTimeoutMs / 1000.0;
-+        m_fd = ::socket(AF_INET, SOCK_STREAM, 0);
-+        if (m_fd < 0)
-+            return failed("socket");
-+        int flags = fcntl(m_fd, F_GETFL, 0);
-+        fcntl(m_fd, F_SETFL, flags | O_NONBLOCK);
-+        int one = 1;
-+        setsockopt(m_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-+#ifdef SO_NOSIGPIPE
-+        setsockopt(m_fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
-+#endif
-+        int sendBuffer = 4 << 20;
-+        setsockopt(m_fd, SOL_SOCKET, SO_SNDBUF, &sendBuffer, sizeof(sendBuffer));
-+        sockaddr_in address { };
-+        address.sin_family = AF_INET;
-+        address.sin_port = htons(static_cast<uint16_t>(m_config.port));
-+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-+        if (::connect(m_fd, reinterpret_cast<sockaddr*>(&address), sizeof(address))) {
-+            if (errno != EINPROGRESS)
-+                return failed("connect");
-+            if (!waitFor(POLLOUT, deadline)) {
-+                errno = ETIMEDOUT;
-+                return failed("connect");
++        const bool useControl = m_config.controlFd >= 0;
++        if (useControl) {
++            std::string error;
++            m_fd = FFmpegMedia::MediaControl::openControlConnection(m_config.controlFd, error);
++            if (m_fd < 0) {
++                logf("video overlay: player %u: control fd %d failed: %s", m_config.player, m_config.controlFd, error.c_str());
++                return false;
 +            }
-+            int soError = 0;
-+            socklen_t length = sizeof(soError);
-+            getsockopt(m_fd, SOL_SOCKET, SO_ERROR, &soError, &length);
-+            if (soError) {
-+                errno = soError;
-+                return failed("connect");
++            int flags = fcntl(m_fd, F_GETFL, 0);
++            fcntl(m_fd, F_SETFL, flags | O_NONBLOCK);
++            int one = 1;
++            (void)one;
++#ifdef SO_NOSIGPIPE
++            setsockopt(m_fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
++#endif
++            int sendBuffer = 4 << 20;
++            setsockopt(m_fd, SOL_SOCKET, SO_SNDBUF, &sendBuffer, sizeof(sendBuffer));
++        } else {
++            m_fd = ::socket(AF_INET, SOCK_STREAM, 0);
++            if (m_fd < 0)
++                return failed("socket");
++            int flags = fcntl(m_fd, F_GETFL, 0);
++            fcntl(m_fd, F_SETFL, flags | O_NONBLOCK);
++            int one = 1;
++            setsockopt(m_fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
++#ifdef SO_NOSIGPIPE
++            setsockopt(m_fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
++#endif
++            int sendBuffer = 4 << 20;
++            setsockopt(m_fd, SOL_SOCKET, SO_SNDBUF, &sendBuffer, sizeof(sendBuffer));
++            sockaddr_in address { };
++            address.sin_family = AF_INET;
++            address.sin_port = htons(static_cast<uint16_t>(m_config.port));
++            address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++            if (::connect(m_fd, reinterpret_cast<sockaddr*>(&address), sizeof(address))) {
++                if (errno != EINPROGRESS)
++                    return failed("connect");
++                if (!waitFor(POLLOUT, deadline)) {
++                    errno = ETIMEDOUT;
++                    return failed("connect");
++                }
++                int soError = 0;
++                socklen_t length = sizeof(soError);
++                getsockopt(m_fd, SOL_SOCKET, SO_ERROR, &soError, &length);
++                if (soError) {
++                    errno = soError;
++                    return failed("connect");
++                }
 +            }
 +        }
 +        uint8_t hello[helloSize];
@@ -6780,7 +7033,10 @@ index 000000000..d7f74060d
 +        if (!key)
 +            return failed("malformed accepted message");
 +        m_key = *key;
-+        logf("video overlay: player %u: connected to 127.0.0.1:%d (server key %u)", m_config.player, m_config.port, *key);
++        if (useControl)
++            logf("video overlay: player %u: connected over control fd %d (server key %u)", m_config.player, m_config.controlFd, *key);
++        else
++            logf("video overlay: player %u: connected to 127.0.0.1:%d (server key %u)", m_config.player, m_config.port, *key);
 +        return true;
 +    }
 +
