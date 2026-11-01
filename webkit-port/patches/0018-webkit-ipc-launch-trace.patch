@@ -7,11 +7,53 @@ the main run loop, when AuxiliaryProcessProxy::didFinishLaunching gets the
 connection identifier and opens the connection, and when the PlayStation
 SocketMonitor thread starts. PS5_HOMEBREW builds only; a no-op otherwise.
 
+Also traced (console run 24: page updates never reached the screen):
+DrawingAreaProxy Update messages, forced updates and incorporations without
+setViewNeedsDisplay, update bitmaps that cannot be mapped, and failed
+SharedMemory maps in the UI; the WebProcess side of Update and
+PlayStationWebView::setViewNeedsDisplay are traced in patches 0013 and 0011
+(the files they own).
+
 Also: Connection::platformPrepareForOpen() opens the connection even when
 the socket cannot be made non-blocking (logged). The PlayStation
 SocketMonitor waits with select() before it reads, so a blocking socket
 still works, while refusing to open left the child waiting forever (console
 run 23, where fcntl on the socket was refused).
+diff --git a/Source/WebCore/platform/unix/SharedMemoryUnix.cpp b/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
+index 16eb9a0de..14257155c 100644
+--- a/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
++++ b/Source/WebCore/platform/unix/SharedMemoryUnix.cpp
+@@ -27,6 +27,18 @@
+ 
+ #include "config.h"
+ #include "SharedMemory.h"
++#include <atomic>
++
++#if defined(PS5_HOMEBREW) && !defined(PS5_TRACE)
++// ProsperoWeb diagnostics (console run 24: page updates never reached the
++// screen in the native title): the shell's logger, when linked.
++extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
++#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++#elif !defined(PS5_TRACE)
++#define PS5_TRACE(...) do { } while (0)
++#endif
++// Logs the first 12 occurrences and then every 200th.
++#define PS5_TRACE_SOME(counter, ...) do { static std::atomic<unsigned> counter { 0 }; unsigned n_ = ++counter; if (n_ <= 12 || !(n_ % 200)) PS5_TRACE(__VA_ARGS__); } while (0)
+ 
+ #if USE(UNIX_DOMAIN_SOCKETS) && !OS(ANDROID)
+ 
+@@ -150,8 +162,10 @@ RefPtr<SharedMemory> SharedMemory::map(Handle&& handle, Protection protection, C
+     ASSERT_UNUSED(copyOnWrite, copyOnWrite == CopyOnWrite::No);
+ 
+     void* data = mmap(0, handle.size(), accessModeMMap(protection), MAP_SHARED, handle.m_handle.value(), 0);
+-    if (data == MAP_FAILED)
++    if (data == MAP_FAILED) {
++        PS5_TRACE_SOME(mapFailures, "webkit: SharedMemory::map fd %d size %zu FAILED: errno %d", handle.m_handle.value(), static_cast<size_t>(handle.size()), errno);
+         return nullptr;
++    }
+ 
+     RefPtr<SharedMemory> instance = adoptRef(new SharedMemory());
+     instance->m_data = data;
 diff --git a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
 index 0031d7fee..879a19447 100644
 --- a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
@@ -96,6 +138,63 @@ index 1c0a468db..e4a51be35 100644
      connection->setOutgoingMessageQueueIsGrowingLargeCallback([weakThis = WeakPtr { *this }] {
          ensureOnMainRunLoop([weakThis] {
              if (RefPtr protectedThis = weakThis.get())
+diff --git a/Source/WebKit/UIProcess/CoordinatedGraphics/DrawingAreaProxyCoordinatedGraphics.cpp b/Source/WebKit/UIProcess/CoordinatedGraphics/DrawingAreaProxyCoordinatedGraphics.cpp
+index 886d1f9b3..b86ddbfbf 100644
+--- a/Source/WebKit/UIProcess/CoordinatedGraphics/DrawingAreaProxyCoordinatedGraphics.cpp
++++ b/Source/WebKit/UIProcess/CoordinatedGraphics/DrawingAreaProxyCoordinatedGraphics.cpp
+@@ -27,6 +27,18 @@
+ 
+ #include "config.h"
+ #include "DrawingAreaProxyCoordinatedGraphics.h"
++#include <atomic>
++
++#if defined(PS5_HOMEBREW) && !defined(PS5_TRACE)
++// ProsperoWeb diagnostics (console run 24: page updates never reached the
++// screen in the native title): the shell's logger, when linked.
++extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
++#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++#elif !defined(PS5_TRACE)
++#define PS5_TRACE(...) do { } while (0)
++#endif
++// Logs the first 12 occurrences and then every 200th.
++#define PS5_TRACE_SOME(counter, ...) do { static std::atomic<unsigned> counter { 0 }; unsigned n_ = ++counter; if (n_ <= 12 || !(n_ % 200)) PS5_TRACE(__VA_ARGS__); } while (0)
+ 
+ #include "DrawingAreaMessages.h"
+ #include "DrawingAreaProxyMessages.h"
+@@ -108,6 +120,7 @@ bool DrawingAreaProxyCoordinatedGraphics::forceUpdateIfNeeded()
+         return false;
+ 
+     SetForScope inForceUpdate(m_inForceUpdate, true);
++    PS5_TRACE_SOME(forceUpdates, "webkit: DrawingAreaProxy %p forceUpdate (synchronous wait for an Update)", this);
+     send(Messages::DrawingArea::ForceUpdate());
+     webProcessProxy().connection().waitForAndDispatchImmediately<Messages::DrawingAreaProxy::Update>(identifier(), 500_ms);
+     return !!m_backingStore;
+@@ -124,13 +137,16 @@ void DrawingAreaProxyCoordinatedGraphics::incorporateUpdate(UpdateInfo&& updateI
+         m_backingStore = makeUnique<BackingStore>(updateInfo.viewSize, updateInfo.deviceScaleFactor);
+ 
+     if (m_inForceUpdate) {
++        PS5_TRACE_SOME(forcedIncorporations, "webkit: DrawingAreaProxy %p incorporates a forced update (no setViewNeedsDisplay)", this);
+         m_backingStore->incorporateUpdate(WTF::move(updateInfo));
+         return;
+     }
+ 
+     RefPtr page = this->page();
+-    if (!page)
++    if (!page) {
++        PS5_TRACE_SOME(noPage, "webkit: DrawingAreaProxy %p update without a page", this);
+         return;
++    }
+ 
+     Region damageRegion;
+     if (updateInfo.scrollRect.isEmpty()) {
+@@ -209,6 +225,7 @@ void DrawingAreaProxyCoordinatedGraphics::enterAcceleratedCompositingMode(uint64
+ #if !PLATFORM(WPE) && !PLATFORM(GTK)
+ void DrawingAreaProxyCoordinatedGraphics::update(uint64_t, UpdateInfo&& updateInfo)
+ {
++    PS5_TRACE_SOME(updates, "webkit: DrawingAreaProxy %p Update %dx%d bounds %dx%d rects %zu bitmap %s waitingForGeometry %d", this, updateInfo.viewSize.width(), updateInfo.viewSize.height(), updateInfo.updateRectBounds.width(), updateInfo.updateRectBounds.height(), updateInfo.updateRects.size(), updateInfo.bitmapHandle ? "yes" : "no", m_isWaitingForDidUpdateGeometry);
+     if (m_isWaitingForDidUpdateGeometry && updateInfo.viewSize != m_lastSentSize) {
+         send(Messages::DrawingArea::DisplayDidRefresh(MonotonicTime::now()));
+         return;
 diff --git a/Source/WebKit/UIProcess/Launcher/ProcessLauncher.cpp b/Source/WebKit/UIProcess/Launcher/ProcessLauncher.cpp
 index 4c9b9d6cc..ccee8c6a5 100644
 --- a/Source/WebKit/UIProcess/Launcher/ProcessLauncher.cpp
@@ -124,3 +223,38 @@ index 4c9b9d6cc..ccee8c6a5 100644
      if (!client) {
  #if OS(DARWIN) && !USE(UNIX_DOMAIN_SOCKETS)
          // FIXME: Release port rights/connections in the Connection::Identifier destructor.
+diff --git a/Source/WebKit/UIProcess/skia/BackingStoreSkia.cpp b/Source/WebKit/UIProcess/skia/BackingStoreSkia.cpp
+index 05e0e9a5a..cdcbbb43a 100644
+--- a/Source/WebKit/UIProcess/skia/BackingStoreSkia.cpp
++++ b/Source/WebKit/UIProcess/skia/BackingStoreSkia.cpp
+@@ -25,6 +25,18 @@
+ 
+ #include "config.h"
+ #include "BackingStore.h"
++#include <atomic>
++
++#if defined(PS5_HOMEBREW) && !defined(PS5_TRACE)
++// ProsperoWeb diagnostics (console run 24: page updates never reached the
++// screen in the native title): the shell's logger, when linked.
++extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
++#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++#elif !defined(PS5_TRACE)
++#define PS5_TRACE(...) do { } while (0)
++#endif
++// Logs the first 12 occurrences and then every 200th.
++#define PS5_TRACE_SOME(counter, ...) do { static std::atomic<unsigned> counter { 0 }; unsigned n_ = ++counter; if (n_ <= 12 || !(n_ % 200)) PS5_TRACE(__VA_ARGS__); } while (0)
+ 
+ #if USE(SKIA)
+ 
+@@ -67,8 +79,10 @@ void BackingStore::incorporateUpdate(UpdateInfo&& updateInfo)
+         return;
+ 
+     auto bitmap = WebCore::ShareableBitmap::create(WTF::move(*updateInfo.bitmapHandle));
+-    if (!bitmap)
++    if (!bitmap) {
++        PS5_TRACE_SOME(bitmapFailures, "webkit: BackingStore::incorporateUpdate: the update bitmap could not be mapped (%dx%d)", updateInfo.updateRectBounds.width(), updateInfo.updateRectBounds.height());
+         return;
++    }
+ 
+ #if ASSERT_ENABLED
+     WebCore::IntSize updateSize = expandedIntSize(updateInfo.updateRectBounds.size() * m_deviceScaleFactor);

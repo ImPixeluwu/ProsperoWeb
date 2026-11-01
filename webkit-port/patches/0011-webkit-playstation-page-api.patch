@@ -220,10 +220,29 @@ index 674924662..96fc98abe 100644
  }
  #endif
 diff --git a/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp b/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp
-index f5ba02041..3f69a66ac 100644
+index f5ba02041..12e9a1936 100644
 --- a/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp
 +++ b/Source/WebKit/UIProcess/playstation/PlayStationWebView.cpp
-@@ -95,6 +95,14 @@ void PlayStationWebView::setClient(std::unique_ptr<API::ViewClient>&& client)
+@@ -25,6 +25,18 @@
+ 
+ #include "config.h"
+ #include "PlayStationWebView.h"
++#include <atomic>
++
++#if defined(PS5_HOMEBREW) && !defined(PS5_TRACE)
++// ProsperoWeb diagnostics (console run 24: page updates never reached the
++// screen in the native title): the shell's logger, when linked.
++extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
++#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++#elif !defined(PS5_TRACE)
++#define PS5_TRACE(...) do { } while (0)
++#endif
++// Logs the first 12 occurrences and then every 200th.
++#define PS5_TRACE_SOME(counter, ...) do { static std::atomic<unsigned> counter { 0 }; unsigned n_ = ++counter; if (n_ <= 12 || !(n_ % 200)) PS5_TRACE(__VA_ARGS__); } while (0)
+ 
+ #include "APIPageConfiguration.h"
+ #include "DrawingAreaProxyCoordinatedGraphics.h"
+@@ -95,6 +107,14 @@ void PlayStationWebView::setClient(std::unique_ptr<API::ViewClient>&& client)
  void PlayStationWebView::setViewSize(WebCore::IntSize viewSize)
  {
      m_viewSize = viewSize;
@@ -238,7 +257,15 @@ index f5ba02041..3f69a66ac 100644
  }
  
  void PlayStationWebView::setViewState(OptionSet<WebCore::ActivityState> flags)
-@@ -139,10 +147,25 @@ bool PlayStationWebView::isFullScreen()
+@@ -108,6 +128,7 @@ void PlayStationWebView::setViewState(OptionSet<WebCore::ActivityState> flags)
+ 
+ void PlayStationWebView::setViewNeedsDisplay(const WebCore::Region& region)
+ {
++    PS5_TRACE_SOME(needsDisplay, "webkit: PlayStationWebView %p setViewNeedsDisplay %dx%d, client %s", this, region.bounds().width(), region.bounds().height(), m_client ? "set" : "MISSING");
+     if (m_client)
+         m_client->setViewNeedsDisplay(*this, region);
+ }
+@@ -139,10 +160,25 @@ bool PlayStationWebView::isFullScreen()
  
  void PlayStationWebView::enterFullScreen(CompletionHandler<void(bool)>&& completionHandler)
  {

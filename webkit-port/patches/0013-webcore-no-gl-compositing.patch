@@ -73,10 +73,29 @@ index 9acfd0a4d..ad8177811 100644
          m_compositing = enable;
          
 diff --git a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp
-index efd16800d..7bb80090d 100644
+index efd16800d..8f06c5c28 100644
 --- a/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp
 +++ b/Source/WebKit/WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphics.cpp
-@@ -42,6 +42,7 @@
+@@ -27,6 +27,18 @@
+ 
+ #include "config.h"
+ #include "DrawingAreaCoordinatedGraphics.h"
++#include <atomic>
++
++#if defined(PS5_HOMEBREW) && !defined(PS5_TRACE)
++// ProsperoWeb diagnostics (console run 24: page updates never reached the
++// screen in the native title): the shell's logger, when linked.
++extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
++#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++#elif !defined(PS5_TRACE)
++#define PS5_TRACE(...) do { } while (0)
++#endif
++// Logs the first 12 occurrences and then every 200th.
++#define PS5_TRACE_SOME(counter, ...) do { static std::atomic<unsigned> counter { 0 }; unsigned n_ = ++counter; if (n_ <= 12 || !(n_ % 200)) PS5_TRACE(__VA_ARGS__); } while (0)
+ 
+ #include "DrawingAreaProxyMessages.h"
+ #include "MessageSenderInlines.h"
+@@ -42,6 +54,7 @@
  #include <WebCore/LocalFrameView.h>
  #include <WebCore/Page.h>
  #include <WebCore/PageOverlayController.h>
@@ -84,7 +103,16 @@ index efd16800d..7bb80090d 100644
  #include <WebCore/Region.h>
  #include <WebCore/Settings.h>
  #include <WebCore/ShareableBitmap.h>
-@@ -440,6 +441,14 @@ void DrawingAreaCoordinatedGraphics::resumePainting()
+@@ -369,7 +382,7 @@ void DrawingAreaCoordinatedGraphics::updateGeometry(const IntSize& size, Complet
+         } else
+             display(updateInfo);
+         if (!m_layerTreeHost)
+-            send(Messages::DrawingAreaProxy::Update(0, WTF::move(updateInfo)));
++            PS5_TRACE_SOME(sentUpdates, "webkit: DrawingArea (WebProcess) sends Update %dx%d rects %zu", updateInfo.updateRectBounds.width(), updateInfo.updateRectBounds.height(), updateInfo.updateRects.size()); send(Messages::DrawingAreaProxy::Update(0, WTF::move(updateInfo)));
+     }
+ 
+     completionHandler();
+@@ -440,6 +453,14 @@ void DrawingAreaCoordinatedGraphics::resumePainting()
  
  void DrawingAreaCoordinatedGraphics::enterAcceleratedCompositingMode(GraphicsLayer* graphicsLayer)
  {
@@ -99,6 +127,24 @@ index efd16800d..7bb80090d 100644
      m_exitCompositingTimer.stop();
      m_wantsToExitAcceleratedCompositingMode = false;
  
+@@ -529,7 +550,7 @@ void DrawingAreaCoordinatedGraphics::exitAcceleratedCompositingMode()
+     } else {
+         // If we left accelerated compositing mode before we sent an EnterAcceleratedCompositingMode message to the
+         // UI process, we still need to let it know about the new contents, so send an Update message.
+-        send(Messages::DrawingAreaProxy::Update(0, WTF::move(updateInfo)));
++        PS5_TRACE_SOME(sentUpdates, "webkit: DrawingArea (WebProcess) sends Update %dx%d rects %zu", updateInfo.updateRectBounds.width(), updateInfo.updateRectBounds.height(), updateInfo.updateRects.size()); send(Messages::DrawingAreaProxy::Update(0, WTF::move(updateInfo)));
+     }
+ }
+ 
+@@ -584,7 +605,7 @@ void DrawingAreaCoordinatedGraphics::display()
+         send(Messages::DrawingAreaProxy::ExitAcceleratedCompositingMode(0, WTF::move(updateInfo)));
+         m_compositingAccordingToProxyMessages = false;
+     } else
+-        send(Messages::DrawingAreaProxy::Update(0, WTF::move(updateInfo)));
++        PS5_TRACE_SOME(sentUpdates, "webkit: DrawingArea (WebProcess) sends Update %dx%d rects %zu", updateInfo.updateRectBounds.width(), updateInfo.updateRectBounds.height(), updateInfo.updateRects.size()); send(Messages::DrawingAreaProxy::Update(0, WTF::move(updateInfo)));
+     m_isWaitingForDidUpdate = true;
+     m_scheduledWhileWaitingForDidUpdate = false;
+ }
 diff --git a/Source/WebKit/WebProcess/playstation/WebProcessPlayStation.cpp b/Source/WebKit/WebProcess/playstation/WebProcessPlayStation.cpp
 index d1a4f8121..6b675aa7f 100644
 --- a/Source/WebKit/WebProcess/playstation/WebProcessPlayStation.cpp
