@@ -97,6 +97,18 @@ void HwStream::packet(std::uint32_t serial, std::int64_t pts, bool keyframe,
 void HwStream::flush(std::uint32_t serial) {
   {
     std::lock_guard<std::mutex> lock(lock_);
+    const int held = slots_.held_count();
+    std::size_t packets = 0;
+    for (const Item& item : queue_) {
+      packets += item.kind == Item::Kind::Packet ? 1 : 0;
+    }
+    char pts[32] = "none";
+    if (slots_.has_position()) {
+      std::snprintf(pts, sizeof(pts), "%" PRId64, slots_.current_pts());
+    }
+    ps5_log_printf("hwdec: stream %u flushed for seek at pts %s (dropped held %d, queue %zu; "
+                   "serial %u -> %u)",
+                   id_, pts, held, packets, queue_serial_, serial);
     queue_serial_ = serial;
     // Queued packets of the old position go now; they count as consumed.
     std::deque<Item> kept;
@@ -113,6 +125,7 @@ void HwStream::flush(std::uint32_t serial) {
     item.serial = serial;
     queue_.push_back(std::move(item));
     slots_.release_held();
+    slots_.forget_position();
   }
   slot_freed_.notify_all();
   decode_wake_.notify_one();
@@ -215,7 +228,7 @@ void HwStream::set_visible(bool visible) {
       wake = true;
     }
     char pts[32] = "none";
-    if (on_screen) {
+    if (slots_.has_position()) {
       std::snprintf(pts, sizeof(pts), "%" PRId64, slots_.current_pts());
     }
     ps5_log_printf("hwdec: stream %u %s at pts %s, held %d, queue %zu", id_,
@@ -448,6 +461,7 @@ void HwStream::handle_flush(std::uint32_t serial) {
     std::lock_guard<std::mutex> lock(lock_);
     slots_.reset_decoder();
     slots_.release_held();
+    slots_.forget_position();
   }
   slot_freed_.notify_all();
   if (!reset) {
@@ -540,6 +554,16 @@ int HwStream::wait_for_free_slot() {
         continue;
       case SlotWaitPolicy::Action::ReleaseHeld:
         stats_.dropped += static_cast<std::uint32_t>(slots_.release_held());
+        continue;
+      case SlotWaitPolicy::Action::EvictNewest:
+        if (slots_.evict_newest()) {
+          stats_.evicted++;
+          ps5_log_printf("hwdec: stream %u: no show for %lld ms with every slot held (%d): "
+                         "freeing the newest picture",
+                         id_, static_cast<long long>(SlotWaitPolicy::kNoShowMs),
+                         slots_.held_count() + 1);
+        }
+        policy.start(now_ms(), show_count_);
         continue;
       case SlotWaitPolicy::Action::EvictOldest:
         if (slots_.evict_oldest()) {

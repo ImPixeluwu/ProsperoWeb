@@ -366,6 +366,16 @@ void FFmpegVideoDecoder::runRemote()
                 handlePacket(pending->packet.get());
             return;
         }
+        // A seek (the queue moved to a new serial): flush the UI's decoder
+        // now. Waiting for the first packet of the new position deadlocks:
+        // a packet of the old position may be waiting here for credit that
+        // only comes back when the UI's decoder gets a picture slot, and its
+        // slots hold old pictures the presenter will never show.
+        if (unsigned queueSerial = m_queue.serial(); queueSerial != m_serial) {
+            if (pending && pending->serial != queueSerial)
+                pending.reset();
+            flushForSerial(queueSerial);
+        }
         if (!pending) {
             pending = m_queue.pop(remotePacketWait);
             if (!pending) {
@@ -414,6 +424,8 @@ void FFmpegVideoDecoder::runRemote()
             }
         }
         if (!remote->hasCredit(static_cast<size_t>(std::max(0, packet->size)))) {
+            if (m_queue.serial() != pending->serial)
+                pending.reset(); // a seek meanwhile: flushed at the top
             remote->waitForEvent(remoteEventWaitSeconds);
             continue;
         }

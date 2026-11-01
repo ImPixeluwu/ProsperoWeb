@@ -21,6 +21,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <iterator>
 #include <optional>
 #include <set>
@@ -120,6 +121,11 @@ class FrameSlots {
 
   ShowResult show(std::int64_t pts) {
     ShowResult result;
+    if (current_ >= 0 && pts < current_pts_) {
+      // The player went back without a flush (a discontinuity): the held
+      // pictures are of the old position and out of its reach.
+      result.released = release_held();
+    }
     int best = -1;
     for (int i = 0; i < count(); ++i) {
       const Slot& s = slots_[static_cast<std::size_t>(i)];
@@ -200,6 +206,22 @@ class FrameSlots {
     return released;
   }
 
+  // Frees the newest held picture (the one the player needs last).
+  bool evict_newest() {
+    int newest = -1;
+    for (int i = 0; i < count(); ++i) {
+      const Slot& s = slots_[static_cast<std::size_t>(i)];
+      if (s.held && (newest < 0 || s.pts > slots_[static_cast<std::size_t>(newest)].pts)) {
+        newest = i;
+      }
+    }
+    if (newest < 0) {
+      return false;
+    }
+    slots_[static_cast<std::size_t>(newest)].held = false;
+    return true;
+  }
+
   // Frees the oldest held picture (the WebProcess never answered for it).
   bool evict_oldest() {
     int oldest = -1;
@@ -226,6 +248,14 @@ class FrameSlots {
     if (valid(slot) && slots_[static_cast<std::size_t>(slot)].pins > 0) {
       --slots_[static_cast<std::size_t>(slot)].pins;
     }
+  }
+
+  // A seek: the picture on screen stays shown, but its pts says nothing
+  // about the new position (no "went back" or "stale" judgement against it).
+  void forget_position() { current_pts_ = std::numeric_limits<std::int64_t>::min(); }
+  // A picture is on screen and its pts is the player's position.
+  bool has_position() const {
+    return current_ >= 0 && current_pts_ != std::numeric_limits<std::int64_t>::min();
   }
 
   // Forget the picture on screen (the overlay was cleared, the stream ends).
@@ -269,8 +299,14 @@ class FrameSlots {
 // the one on screen are frames the WebProcess will show: a paused player or
 // one whose clock trails the decoder (resuming a hidden tab, a quality
 // switch) frees them later, so the decoder waits (the client's credit stops
-// the packets meanwhile). Evicting them instead loses exactly the frames
-// shown next, and the picture freezes while the audio goes on.
+// the packets meanwhile). Evicting the oldest instead loses exactly the
+// frame shown next, and the picture freezes while the audio goes on.
+//
+// Waiting is bounded all the same: with no show at all for kNoShowMs (a
+// seek whose flush never came: the player waits for a first frame of the new
+// position the decoder cannot make) the newest held picture goes, so the
+// decoder takes one more packet and the client's credit flows again. A
+// paused player loses one far-ahead frame per kNoShowMs that way.
 //
 // Pure, with the time passed in (tests drive it with a fake clock).
 class SlotWaitPolicy {
@@ -280,12 +316,16 @@ class SlotWaitPolicy {
     ReleaseStale,  // free the held pictures older than the one on screen
     ReleaseHeld,   // hidden: nothing is presented, free every held picture
     EvictOldest,   // the player shows frames but never these: a leak
+    EvictNewest,   // no show at all for kNoShowMs: unblock the decoder
   };
   // Shows arriving all along without freeing a slot for this long mean the
   // held pictures will never be shown.
   static constexpr std::int64_t kLeakMs = 10000;
+  // No show at all for this long: free one slot.
+  static constexpr std::int64_t kNoShowMs = 3000;
 
-  // A wait for a slot begins (`shows`: the stream's show counter).
+  // A wait for a slot begins, or starts over after an eviction (`shows`:
+  // the stream's show counter).
   void start(std::int64_t now_ms, std::uint32_t shows) {
     start_ms_ = now_ms;
     shows_ = shows;
@@ -298,10 +338,11 @@ class SlotWaitPolicy {
     if (stale > 0) {
       return Action::ReleaseStale;
     }
-    if (shows != shows_ && now_ms - start_ms_ >= kLeakMs) {
-      return Action::EvictOldest;
+    const std::int64_t waited = now_ms - start_ms_;
+    if (shows == shows_) {
+      return waited >= kNoShowMs ? Action::EvictNewest : Action::Wait;
     }
-    return Action::Wait;
+    return waited >= kLeakMs ? Action::EvictOldest : Action::Wait;
   }
 
  private:

@@ -998,8 +998,12 @@ TEST_SUITE("hwdec_geometry") {
     video::SlotWaitPolicy policy;
     using Action = video::SlotWaitPolicy::Action;
     policy.start(1000, 50);
-    // Paused (no shows) for a minute: keep waiting.
-    CHECK(policy.on_timeout(61000, 50, false, 0) == Action::Wait);
+    // Paused (no shows) for a moment: keep waiting.
+    CHECK(policy.on_timeout(2500, 50, false, 0) == Action::Wait);
+    // No show at all for kNoShowMs (a seek whose flush never came, or a long
+    // pause): one slot goes, the newest picture's.
+    CHECK(policy.on_timeout(1000 + video::SlotWaitPolicy::kNoShowMs, 50, false, 0) ==
+          Action::EvictNewest);
     // Shows arriving, the clock trailing the decoder: wait.
     CHECK(policy.on_timeout(5000, 80, false, 0) == Action::Wait);
     // Late pictures behind the one on screen go first.
@@ -1019,6 +1023,27 @@ TEST_SUITE("hwdec_geometry") {
     CHECK(slots.stale_count() == 1);
     CHECK(slots.release_stale() == 1);
     CHECK(slots.held_count() == 1);  // 300 stays: it is shown next
+    CHECK(slots.evict_newest());
+    CHECK(slots.held_count() == 0);
+
+    // The player goes back without a flush: the held pictures are of the
+    // old position and go.
+    video::FrameSlots back(4);
+    back.hold(0, 1000);
+    CHECK(back.show(1000).slot == 0);
+    back.hold(1, 1040);
+    back.hold(2, 1080);
+    const auto result = back.show(40);
+    CHECK(result.released == 2);
+    CHECK(back.held_count() == 0);
+    // After a flush the position is unknown: a lower pts is no discontinuity.
+    video::FrameSlots seek(4);
+    seek.hold(0, 1000);
+    CHECK(seek.show(1000).slot == 0);
+    seek.release_held();
+    seek.forget_position();
+    seek.hold(1, 40);
+    CHECK(seek.show(40).slot == 1);
   }
 }
 
@@ -1084,6 +1109,51 @@ TEST_SUITE("hwdec_visibility") {
       h.stream->show(0, 100 + i);
       REQUIRE(wait_until([&] { return h.last_grey.load() == expected_grey(100 + i); }));
     }
+  }
+
+  TEST_CASE("a seek with every slot held: the flush frees them, the new position shows") {
+    Harness h(avcc_record());
+    // Pictures of the old position fill every slot; the player shows none
+    // (it waits for the first frame of the new position).
+    for (int i = 0; i < 12; ++i) {
+      h.send(100 + i, i == 0);
+    }
+    REQUIRE(wait_until([&] { return h.decoded() >= 7; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(700));
+    CHECK(h.stream->held_pictures() >= 7);
+    CHECK(h.stream->queued_packets() > 0);  // the decoder is blocked
+    // The seek: flush to serial 1, packets of the new position.
+    h.stream->flush(1);
+    CHECK(h.stream->held_pictures() == 0);
+    const Bytes key = length_prefixed({kIdr});
+    const Bytes delta = length_prefixed({kSlice});
+    h.stream->packet(1, 40, true, key.data(), key.size());
+    h.stream->packet(1, 41, false, delta.data(), delta.size());
+    REQUIRE(wait_until([&] {
+      std::lock_guard<std::mutex> guard(h.lock);
+      return std::any_of(h.notices.begin(), h.notices.end(),
+                         [](const wire::Decoded& d) { return d.serial == 1 && d.pts == 40; });
+    }));
+    h.stream->show(1, 40);
+    REQUIRE(wait_until([&] { return h.last_grey.load() == expected_grey(40); }));
+  }
+
+  TEST_CASE("every slot held, no flush, no show: the wait is bounded") {
+    Harness h(avcc_record());
+    for (int i = 0; i < 12; ++i) {
+      h.send(100 + i, i == 0);
+    }
+    REQUIRE(wait_until([&] { return h.decoded() >= 7; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(700));
+    const std::size_t blocked = h.stream->queued_packets();
+    REQUIRE(blocked > 0);
+    // Within kNoShowMs plus a wait period a slot is freed and the decoder
+    // takes the next packet (the client's credit flows again).
+    REQUIRE(wait_until([&] { return h.stream->queued_packets() < blocked; },
+                       static_cast<int>(video::SlotWaitPolicy::kNoShowMs) + 2000));
+    // The next frame to show is still there.
+    h.stream->show(0, 100);
+    REQUIRE(wait_until([&] { return h.last_grey.load() == expected_grey(100); }));
   }
 
   TEST_CASE("hidden: held pictures freed, no presenting; shown: the picture comes back") {

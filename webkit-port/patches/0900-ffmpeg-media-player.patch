@@ -4718,10 +4718,10 @@ index 000000000..4b6fe252f
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp
 new file mode 100644
-index 000000000..32938902b
+index 000000000..b692255f4
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp
-@@ -0,0 +1,754 @@
+@@ -0,0 +1,766 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -5090,6 +5090,16 @@ index 000000000..32938902b
 +                handlePacket(pending->packet.get());
 +            return;
 +        }
++        // A seek (the queue moved to a new serial): flush the UI's decoder
++        // now. Waiting for the first packet of the new position deadlocks:
++        // a packet of the old position may be waiting here for credit that
++        // only comes back when the UI's decoder gets a picture slot, and its
++        // slots hold old pictures the presenter will never show.
++        if (unsigned queueSerial = m_queue.serial(); queueSerial != m_serial) {
++            if (pending && pending->serial != queueSerial)
++                pending.reset();
++            flushForSerial(queueSerial);
++        }
 +        if (!pending) {
 +            pending = m_queue.pop(remotePacketWait);
 +            if (!pending) {
@@ -5138,6 +5148,8 @@ index 000000000..32938902b
 +            }
 +        }
 +        if (!remote->hasCredit(static_cast<size_t>(std::max(0, packet->size)))) {
++            if (m_queue.serial() != pending->serial)
++                pending.reset(); // a seek meanwhile: flushed at the top
 +            remote->waitForEvent(remoteEventWaitSeconds);
 +            continue;
 +        }
