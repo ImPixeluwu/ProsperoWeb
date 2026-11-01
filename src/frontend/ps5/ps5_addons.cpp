@@ -33,6 +33,9 @@ namespace {
 
 std::int64_t now_epoch() { return static_cast<std::int64_t>(std::time(nullptr)); }
 
+// Overall wall-clock budget for one background refresh (fetch all lists).
+constexpr std::int64_t kUpdateDeadlineSeconds = 90;
+
 void make_dirs(const std::string& path) {
   std::string acc;
   for (char c : path) {
@@ -98,11 +101,20 @@ bool https_get(const std::string& url, std::string& out) {
     return false;
   }
   out.clear();
+  const std::int64_t t0 = now_epoch();
+  log_printf("addons: fetch start %s", url.c_str());
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
   curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
-  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 45L);
-  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+  // Hard, fast-failing timeouts so a stalled fetch can never wedge the update.
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+  // Abort a transfer that creeps below 1 KB/s for 15 s (a silent stall).
+  curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
+  curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 15L);
+  // Off the main thread: curl must not use signals for timeouts (unreliable
+  // and can hang); this makes the timeouts above the only mechanism.
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &curl_sink);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &out);
   curl_easy_setopt(curl, CURLOPT_USERAGENT, "ProsperoWeb-addons/1.0");
@@ -114,14 +126,19 @@ bool https_get(const std::string& url, std::string& out) {
   long status = 0;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
   curl_easy_cleanup(curl);
+  const std::int64_t elapsed = now_epoch() - t0;
   if (rc != CURLE_OK) {
-    log_printf("addons: fetch %s failed: %s", url.c_str(), curl_easy_strerror(rc));
+    log_printf("addons: fetch FAILED %s: %s (%llds)", url.c_str(), curl_easy_strerror(rc),
+               static_cast<long long>(elapsed));
     return false;
   }
   if (status < 200 || status >= 300 || out.empty()) {
-    log_printf("addons: fetch %s: http %ld, %zu bytes", url.c_str(), status, out.size());
+    log_printf("addons: fetch %s: http %ld, %zu bytes (%llds)", url.c_str(), status, out.size(),
+               static_cast<long long>(elapsed));
     return false;
   }
+  log_printf("addons: fetch ok %s: %zu bytes (%llds)", url.c_str(), out.size(),
+             static_cast<long long>(elapsed));
   return true;
 }
 
@@ -510,9 +527,16 @@ void Ps5Addons::worker_run() {
   // The freshly cached chunks are compiled and attached on the NEXT launch;
   // we never hot re-attach during a running session (the SharedMemory handle
   // budget is spent by the startup attach and handles are move-once).
-  auto fetch_all = [](const std::vector<std::string>& urls, bool& ok) {
+  // Overall deadline so even many slow lists cannot wedge the update forever.
+  const std::int64_t deadline = now_epoch() + kUpdateDeadlineSeconds;
+  auto fetch_all = [&](const std::vector<std::string>& urls, bool& ok) {
     std::vector<std::string> texts;
     for (const auto& u : urls) {
+      if (now_epoch() >= deadline) {
+        log_line("addons: fetch deadline reached; aborting refresh");
+        ok = false;
+        return texts;
+      }
       std::string body;
       if (!https_get(u, body)) {
         ok = false;
@@ -572,7 +596,7 @@ void Ps5Addons::pump() {
         log_line("addons: filter-list refresh failed; keeping cached/bundled lists");
       }
       finish_update(ok);
-    } else if (update_started_at_ > 0 && now_epoch() - update_started_at_ > 240) {
+    } else if (update_started_at_ > 0 && now_epoch() - update_started_at_ > 150) {
       log_line("addons: filter-list update timed out; keeping cached/bundled lists");
       finish_update(/*ok=*/false);
     }

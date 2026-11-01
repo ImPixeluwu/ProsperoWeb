@@ -16,9 +16,12 @@ inline constexpr std::int64_t kFilterRefreshThresholdSeconds = 24 * 60 * 60;
 // True when a background refresh should run now:
 //   - the ad blocker is enabled, and
 //   - auto-update is enabled, and
-//   - the cached lists have never been updated (last_updated <= 0) or are
-//     older than `threshold` seconds relative to `now`.
-// A last_updated in the future (clock skew) is treated as fresh.
+//   - a real update has happened before (last_updated > 0) and the cached
+//     lists are older than `threshold` seconds relative to `now`.
+// last_updated <= 0 (the shipped default) means "never updated": the bundled
+// snapshot is treated as current, so first run does NOT auto-download - the
+// user triggers the first refresh manually ("Update now"). A last_updated in
+// the future (clock skew) is treated as fresh.
 inline bool should_refresh_filters(bool adblock_enabled, bool auto_update,
                                    std::int64_t last_updated, std::int64_t now,
                                    std::int64_t threshold = kFilterRefreshThresholdSeconds) {
@@ -26,7 +29,7 @@ inline bool should_refresh_filters(bool adblock_enabled, bool auto_update,
     return false;
   }
   if (last_updated <= 0) {
-    return true;
+    return false;  // bundled snapshot is the baseline; no auto-download on first run
   }
   if (last_updated > now) {
     return false;

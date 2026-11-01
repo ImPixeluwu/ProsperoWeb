@@ -63,8 +63,10 @@ TEST_SUITE("addons_config") {
 }
 
 TEST_SUITE("filter_update") {
-  TEST_CASE("never updated -> refresh when enabled") {
-    CHECK(should_refresh_filters(/*adblock=*/true, /*auto=*/true, /*last=*/0, /*now=*/1000));
+  TEST_CASE("never updated -> no refresh (bundled snapshot is the baseline)") {
+    // First run (last_updated == 0) must NOT auto-download; the user refreshes
+    // manually. Auto-update only kicks in once a real update has happened.
+    CHECK_FALSE(should_refresh_filters(/*adblock=*/true, /*auto=*/true, /*last=*/0, /*now=*/1000));
   }
 
   TEST_CASE("disabled ad blocker or auto-update -> no refresh") {
@@ -84,9 +86,9 @@ TEST_SUITE("filter_update") {
     CHECK_FALSE(should_refresh_filters(true, true, 5000, 1000));
   }
 
-  TEST_CASE("custom threshold") {
-    CHECK(should_refresh_filters(true, true, 0, 1000, 60));
-    CHECK_FALSE(should_refresh_filters(true, true, 950, 1000, 60));
-    CHECK(should_refresh_filters(true, true, 900, 1000, 60));
+  TEST_CASE("custom threshold (with a real last_updated)") {
+    CHECK_FALSE(should_refresh_filters(true, true, 0, 1000, 60));    // never updated -> no refresh
+    CHECK_FALSE(should_refresh_filters(true, true, 950, 1000, 60));  // fresh
+    CHECK(should_refresh_filters(true, true, 900, 1000, 60));        // stale past the threshold
   }
 }
