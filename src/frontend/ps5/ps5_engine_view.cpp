@@ -241,6 +241,16 @@ Ps5EngineFactory::Ps5EngineFactory(const std::string& base_dir,
     WKWebsiteDataStoreConfigurationSetLocalStorageDirectory(ds_config, local.get());
     auto idb = make_wk_string(base_dir + "/indexeddb");
     WKWebsiteDataStoreConfigurationSetIndexedDBDatabaseDirectory(ds_config, idb.get());
+    // WebKit only defaults the cookie file on Cocoa: without one the curl
+    // backend keeps no cookie jar and pages read document.cookie back empty
+    // (console run 30: hdrezka "cookies are disabled").
+    const std::string cookie_file = base_dir + "/cookies.db";
+    auto cookies = make_wk_string(cookie_file);
+    WKWebsiteDataStoreConfigurationSetCookieStorageFile(ds_config, cookies.get());
+    log_printf("data store: cookies %s, storage %s/storage, local storage %s/localstorage, "
+               "IndexedDB %s/indexeddb, cache %s/cache",
+               cookie_file.c_str(), base_dir.c_str(), base_dir.c_str(), base_dir.c_str(),
+               base_dir.c_str());
   }
   data_store_ = WKWebsiteDataStoreCreateWithConfiguration(ds_config);
   WKRelease(ds_config);
