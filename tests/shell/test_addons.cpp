@@ -160,6 +160,41 @@ TEST_SUITE("shell.addons") {
     CHECK(f.persisted.adblock.last_updated == 1000);
   }
 
+  TEST_CASE("natural-scroll menu toggle round-trips to the model and persists") {
+    core::InMemoryStorage storage;
+    FakeEngineFactory factory;
+    FakeChromeUi chrome;
+    bool persisted = false;
+    bool persisted_value = false;
+    ShellController::Config config;
+    config.home_url = "https://home.example/";
+    config.now = [] { return std::int64_t{1000}; };
+    config.natural_scroll = false;  // default
+    config.on_natural_scroll_changed = [&](bool v) {
+      persisted = true;
+      persisted_value = v;
+    };
+    ShellController shell(factory, chrome, storage, config);
+    shell.start();
+    CHECK(shell.natural_scroll() == false);  // config default applied to the model
+
+    shell.on_chrome_event({{"type", "menu_open"}});
+    shell.render_now();
+    const auto& items = chrome.last["menu"]["items"];
+    long idx = -1;
+    for (std::size_t i = 0; i < items.size(); ++i) {
+      if (items[i]["label"].get<std::string>().rfind("Natural scrolling: ", 0) == 0) {
+        idx = static_cast<long>(i);
+      }
+    }
+    REQUIRE(idx >= 0);
+    CHECK(items[static_cast<std::size_t>(idx)]["label"] == "Natural scrolling: Off");
+    shell.on_chrome_event({{"type", "menu_select"}, {"index", idx}});
+    CHECK(shell.natural_scroll() == true);  // applied live to the model
+    CHECK(persisted);
+    CHECK(persisted_value == true);
+  }
+
   TEST_CASE("no backend -> no add-on menu entries") {
     core::InMemoryStorage storage;
     FakeEngineFactory factory;

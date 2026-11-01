@@ -86,6 +86,12 @@ class ShellController {
     // Persists the add-ons state after a toggle (the frontend writes
     // config.json). Called with the new state.
     std::function<void(const core::AddonsConfig&)> on_addons_changed;
+    // Natural (content-follows-finger) touchpad scrolling. Default false
+    // (mouse-wheel direction). Applied to the touchpad model at startup.
+    bool natural_scroll = false;
+    // Persists the natural-scroll setting on toggle; nullptr hides the menu
+    // entry. Must outlive the controller.
+    std::function<void(bool)> on_natural_scroll_changed;
   };
 
   enum class Focus : std::uint8_t { Page, Chrome, Osk, Menu, Notice };
@@ -194,6 +200,8 @@ class ShellController {
   EngineView* active_view();
   EngineView* view_for(std::uint64_t tab_id);
   bool quit_requested() const { return quit_requested_; }
+  // Whether natural touchpad scrolling is active (reflects the touchpad model).
+  bool natural_scroll() const { return touchpad_.natural_scroll(); }
   // True while the active page reports a focused editable element; hosts
   // with a physical keyboard use it to stop treating letters as buttons.
   bool text_input_focused() const { return text_input_focused_; }

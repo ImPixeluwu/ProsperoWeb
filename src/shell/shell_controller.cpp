@@ -136,6 +136,7 @@ ShellController::ShellController(EngineFactory& factory, ChromeUi& chrome, core:
       pointer_(static_cast<float>(config_.width), static_cast<float>(config_.height)) {
   pointer_.set_position({config_.width / 2.0f, config_.height / 2.0f});
   addons_ = config_.addons;
+  touchpad_.set_natural_scroll(config_.natural_scroll);
 }
 
 ShellController::~ShellController() {
@@ -1132,6 +1133,16 @@ void ShellController::show_menu_section(MenuSection section) {
             {"Ad blocker", "", [this] { show_menu_section(MenuSection::Adblock); }});
         menu_items_.push_back(
             {"SponsorBlock", "", [this] { show_menu_section(MenuSection::SponsorBlock); }});
+      }
+      if (config_.on_natural_scroll_changed) {
+        menu_items_.push_back(
+            {std::string("Natural scrolling: ") + (touchpad_.natural_scroll() ? "On" : "Off"), "",
+             [this] {
+               const bool v = !touchpad_.natural_scroll();
+               touchpad_.set_natural_scroll(v);
+               config_.on_natural_scroll_changed(v);
+               rebuild_menu_keeping(menu_selected_);
+             }});
       }
       if (!config_.diagnostics_url.empty()) {
         menu_items_.push_back({"Diagnostics", "", [this] {

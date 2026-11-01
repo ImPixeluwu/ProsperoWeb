@@ -324,6 +324,13 @@ int Ps5App::run() {
       log_line("addons: failed to persist config.json");
     }
   };
+  cfg.natural_scroll = config_.natural_scroll;
+  cfg.on_natural_scroll_changed = [this](bool v) {
+    log_printf("input: natural scrolling %s", v ? "on" : "off");
+    if (!Ps5Config::save_natural_scroll(*storage_, v)) {
+      log_line("input: failed to persist natural_scroll");
+    }
+  };
   if (use_system_ime(config_.osk)) {
     ime_input_ = std::make_unique<Ps5ImeTextInput>();
     cfg.text_input = ime_input_.get();

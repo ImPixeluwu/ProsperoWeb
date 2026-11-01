@@ -2,6 +2,7 @@
 #include "ps5_config.h"
 
 #include <cstdlib>
+#include <functional>
 
 #include <nlohmann/json.hpp>
 
@@ -46,13 +47,18 @@ Ps5Config Ps5Config::load(core::Storage& storage) {
   if (auto it = doc.find("height"); it != doc.end() && it->is_number_integer()) {
     cfg.height = it->get<int>();
   }
+  if (auto it = doc.find("natural_scroll"); it != doc.end() && it->is_boolean()) {
+    cfg.natural_scroll = it->get<bool>();
+  }
   cfg.addons = core::AddonsConfig::from_config_root(doc);
 
   return cfg;
 }
 
-bool Ps5Config::save_addons(core::Storage& storage, const core::AddonsConfig& addons) {
-  // Preserve every other key in config.json: read, merge, write back.
+namespace {
+// Read config.json, apply `mutate` to its root object (preserving every other
+// key), and write it back. Returns false on write failure.
+bool update_config(core::Storage& storage, const std::function<void(nlohmann::json&)>& mutate) {
   nlohmann::json doc = nlohmann::json::object();
   if (auto raw = storage.read("config")) {
     nlohmann::json parsed = nlohmann::json::parse(*raw, nullptr, /*allow_exceptions=*/false);
@@ -60,8 +66,17 @@ bool Ps5Config::save_addons(core::Storage& storage, const core::AddonsConfig& ad
       doc = std::move(parsed);
     }
   }
-  doc["addons"] = addons.to_json();
+  mutate(doc);
   return storage.write("config", doc.dump(2));
+}
+}  // namespace
+
+bool Ps5Config::save_addons(core::Storage& storage, const core::AddonsConfig& addons) {
+  return update_config(storage, [&](nlohmann::json& doc) { doc["addons"] = addons.to_json(); });
+}
+
+bool Ps5Config::save_natural_scroll(core::Storage& storage, bool natural_scroll) {
+  return update_config(storage, [&](nlohmann::json& doc) { doc["natural_scroll"] = natural_scroll; });
 }
 
 }  // namespace prosperoweb::frontend
