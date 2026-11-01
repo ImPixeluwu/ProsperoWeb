@@ -1,0 +1,103 @@
+Subject: [PATCH] webkit: trace auxiliary process launch and IPC connection open
+
+The native PS5 title spawned its WebProcess and NetworkProcess but never
+sent them a message (console run 22). Log, through the shell's logger when
+it is linked (weak ps5_log_printf), when the launcher's completion runs on
+the main run loop, when AuxiliaryProcessProxy::didFinishLaunching gets the
+connection identifier and opens the connection, and when the PlayStation
+SocketMonitor thread starts. PS5_HOMEBREW builds only; a no-op otherwise.
+diff --git a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
+index 0031d7fee..038523112 100644
+--- a/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
++++ b/Source/WebKit/Platform/IPC/unix/ConnectionUnix.cpp
+@@ -28,6 +28,15 @@
+ #include "config.h"
+ #include "Connection.h"
+ 
++#if defined(PS5_HOMEBREW)
++// ProsperoWeb diagnostics (console run 22: the UI never opened its IPC
++// connections in the native title): the shell's logger, when linked.
++extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
++#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++#else
++#define PS5_TRACE(...) do { } while (0)
++#endif
++
+ #include "IPCUtilities.h"
+ #include "Logging.h"
+ #include "UnixMessage.h"
+@@ -336,8 +345,10 @@ void Connection::platformOpen()
+     m_isConnected = true;
+ 
+ #if PLATFORM(PLAYSTATION)
++    PS5_TRACE("webkit: IPC::Connection::platformOpen fd %d, starting SocketMonitor", m_socketDescriptor.value());
+     m_socketMonitor = Thread::create("SocketMonitor"_s, [protectedThis] {
+         {
++            PS5_TRACE("webkit: SocketMonitor running for fd %d", protectedThis->socketDescriptor());
+             int fd;
+             while ((fd = protectedThis->socketDescriptor()) != -1) {
+                 int maxFd = fd;
+diff --git a/Source/WebKit/UIProcess/AuxiliaryProcessProxy.cpp b/Source/WebKit/UIProcess/AuxiliaryProcessProxy.cpp
+index 1c0a468db..e4a51be35 100644
+--- a/Source/WebKit/UIProcess/AuxiliaryProcessProxy.cpp
++++ b/Source/WebKit/UIProcess/AuxiliaryProcessProxy.cpp
+@@ -26,6 +26,15 @@
+ #include "config.h"
+ #include "AuxiliaryProcessProxy.h"
+ 
++#if defined(PS5_HOMEBREW)
++// ProsperoWeb diagnostics (console run 22: the UI never opened its IPC
++// connections in the native title): the shell's logger, when linked.
++extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
++#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++#else
++#define PS5_TRACE(...) do { } while (0)
++#endif
++
+ #include "AuxiliaryProcessCreationParameters.h"
+ #include "AuxiliaryProcessMessages.h"
+ #include "Connection.h"
+@@ -425,6 +434,7 @@ void AuxiliaryProcessProxy::didFinishLaunching(ProcessLauncher* launcher, IPC::C
+     if (launchTime > 1_s)
+         RELEASE_LOG_FAULT(Process, "%s process (%p) took %f seconds to launch", processName().characters(), this, launchTime.value());
+     
++    PS5_TRACE("webkit: AuxiliaryProcessProxy::didFinishLaunching %s, identifier %s", processName().characters(), connectionIdentifier ? "valid" : "INVALID (launch failed)");
+     if (!connectionIdentifier)
+         return;
+ 
+@@ -455,6 +465,7 @@ void AuxiliaryProcessProxy::didFinishLaunching(ProcessLauncher* launcher, IPC::C
+ 
+     connectionWillOpen(*connection);
+     connection->open(*this);
++    PS5_TRACE("webkit: AuxiliaryProcessProxy: %s connection opened", processName().characters());
+     connection->setOutgoingMessageQueueIsGrowingLargeCallback([weakThis = WeakPtr { *this }] {
+         ensureOnMainRunLoop([weakThis] {
+             if (RefPtr protectedThis = weakThis.get())
+diff --git a/Source/WebKit/UIProcess/Launcher/ProcessLauncher.cpp b/Source/WebKit/UIProcess/Launcher/ProcessLauncher.cpp
+index 4c9b9d6cc..ccee8c6a5 100644
+--- a/Source/WebKit/UIProcess/Launcher/ProcessLauncher.cpp
++++ b/Source/WebKit/UIProcess/Launcher/ProcessLauncher.cpp
+@@ -26,6 +26,15 @@
+ #include "config.h"
+ #include "ProcessLauncher.h"
+ 
++#if defined(PS5_HOMEBREW)
++// ProsperoWeb diagnostics (console run 22: the UI never opened its IPC
++// connections in the native title): the shell's logger, when linked.
++extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
++#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++#else
++#define PS5_TRACE(...) do { } while (0)
++#endif
++
+ #include <wtf/StdLibExtras.h>
+ #include <wtf/SystemTracing.h>
+ #include <wtf/WorkQueue.h>
+@@ -67,6 +76,7 @@ void ProcessLauncher::didFinishLaunchingProcess(ProcessID processIdentifier, IPC
+     tracePoint(ProcessLaunchEnd, m_launchOptions.processIdentifier.toUInt64(), static_cast<uint64_t>(m_launchOptions.processType), static_cast<uint64_t>(m_processID));
+ 
+     RefPtr client = m_client.get();
++    PS5_TRACE("webkit: ProcessLauncher::didFinishLaunchingProcess pid %d, client %s", static_cast<int>(processIdentifier), client ? "present" : "GONE (connection dropped)");
+     if (!client) {
+ #if OS(DARWIN) && !USE(UNIX_DOMAIN_SOCKETS)
+         // FIXME: Release port rights/connections in the Connection::Identifier destructor.

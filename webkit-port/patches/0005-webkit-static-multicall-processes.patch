@@ -151,11 +151,22 @@ index 0a6968d20..8caba173f 100644
      UIProcess/API/C/playstation/WKViewClient.h
  )
 diff --git a/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp b/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp
-index f510f5eeb..a669c8c67 100644
+index f510f5eeb..cac262644 100644
 --- a/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp
 +++ b/Source/WebKit/UIProcess/Launcher/playstation/ProcessLauncherPlayStation.cpp
-@@ -36,13 +36,21 @@
+@@ -34,15 +34,32 @@
+ #include <sys/socket.h>
+ #include <wtf/StdLibExtras.h>
  
++#if defined(PS5_HOMEBREW)
++// ProsperoWeb diagnostics (console run 22: the UI never opened its IPC
++// connections in the native title): the shell's logger, when linked.
++extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
++#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++#else
++#define PS5_TRACE(...) do { } while (0)
++#endif
++
  #if USE(WPE_BACKEND_PLAYSTATION)
  #include "ProcessProviderLibWPE.h"
 +#elif defined(PS5_HOMEBREW)
@@ -177,7 +188,7 @@ index f510f5eeb..a669c8c67 100644
  #define MAKE_PROCESS_PATH(x) "/app0/" #x "Process.self"
  static const char* defaultProcessPath(ProcessLauncher::ProcessType processType)
  {
-@@ -72,6 +80,50 @@ void ProcessLauncher::launchProcess()
+@@ -72,6 +89,52 @@ void ProcessLauncher::launchProcess()
      setsockopt(socketPair.server.value(), SOL_SOCKET, SO_RCVBUF, &recvBufSize, 4);
      setsockopt(socketPair.client.value(), SOL_SOCKET, SO_RCVBUF, &recvBufSize, 4);
  
@@ -211,7 +222,9 @@ index f510f5eeb..a669c8c67 100644
 +        int fds[] = { socketPair.client.value() };
 +        int32_t appLocalPid = ps5_spawn_self(argv, fds, 1);
 +
++        PS5_TRACE("webkit: launcher: %s pid %d spawned, posting didFinishLaunchingProcess (server fd %d)", processName, appLocalPid, socketPair.server.value());
 +        RunLoop::mainSingleton().dispatch([protectedThis = WTF::move(protectedThis), appLocalPid, processType, serverIdentifier = WTF::move(socketPair.server)]() mutable {
++            PS5_TRACE("webkit: launcher: main run loop runs didFinishLaunchingProcess for pid %d (server fd %d)", appLocalPid, serverIdentifier.value());
 +            if (appLocalPid < 0) {
 +                // Report the failure like the GLib launcher does: an invalid
 +                // connection identifier makes the process proxy run its
@@ -228,7 +241,7 @@ index f510f5eeb..a669c8c67 100644
      char coreProcessIdentifierString[16];
      snprintf(coreProcessIdentifierString, sizeof coreProcessIdentifierString, "%ld", m_launchOptions.processIdentifier.toUInt64());
  
-@@ -90,7 +142,7 @@ void ProcessLauncher::launchProcess()
+@@ -90,7 +153,7 @@ void ProcessLauncher::launchProcess()
  #endif
  
      if (appLocalPid < 0) {
@@ -237,7 +250,7 @@ index f510f5eeb..a669c8c67 100644
          SAFE_FPRINTF(stderr, "Failed to launch process. err=0x%08x path=%s\n", appLocalPid, m_launchOptions.processPath.utf8());
  #endif
          return;
-@@ -100,6 +152,7 @@ void ProcessLauncher::launchProcess()
+@@ -100,6 +163,7 @@ void ProcessLauncher::launchProcess()
      RunLoop::mainSingleton().dispatch([protectedThis = Ref { *this }, appLocalPid, serverIdentifier = WTF::move(socketPair.server)] mutable {
          protectedThis->didFinishLaunchingProcess(appLocalPid, IPC::Connection::Identifier { WTF::move(serverIdentifier) });
      });
@@ -245,7 +258,7 @@ index f510f5eeb..a669c8c67 100644
  }
  
  void ProcessLauncher::terminateProcess(const String&)
-@@ -109,6 +162,8 @@ void ProcessLauncher::terminateProcess(const String&)
+@@ -109,6 +173,8 @@ void ProcessLauncher::terminateProcess(const String&)
  
  #if USE(WPE_BACKEND_PLAYSTATION)
      ProcessProviderLibWPE::singleton().kill(m_processID);
