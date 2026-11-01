@@ -169,6 +169,31 @@ void ipc_selftest_ui(BrokerClient& client) {
   const int own = make_shm(kUiPattern, &why);
   ps5_log_printf("ipc selftest: shm_open(SHM_ANON)+mmap in this process: %s",
                  own >= 0 ? "ok" : why.c_str());
+  // WebKit's out-of-line IPC bodies: an odd size, then a duplicate of the
+  // descriptor (console run 27: allocation failed with EPERM in the title).
+  {
+    const int fd = shm_open(SHM_ANON, O_RDWR | O_CREAT, 0600);
+    const int t_odd = fd >= 0 ? ftruncate(fd, 7746) : -1;
+    const int e_odd = errno;
+    void* p = fd >= 0 && t_odd == 0 ? mmap(nullptr, 7746, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)
+                                     : MAP_FAILED;
+    const int e_map = errno;
+    const int d = fd >= 0 ? dup(fd) : -1;
+    const int e_dup = errno;
+    ps5_log_printf("ipc selftest: shm 7746 bytes: open %s, ftruncate %s, mmap %s, dup %s",
+                   fd >= 0 ? "ok" : std::strerror(errno), t_odd == 0 ? "ok" : std::strerror(e_odd),
+                   p != MAP_FAILED ? "ok" : std::strerror(e_map),
+                   d >= 0 ? "ok" : std::strerror(e_dup));
+    if (p != MAP_FAILED) {
+      munmap(p, 7746);
+    }
+    if (d >= 0) {
+      close(d);
+    }
+    if (fd >= 0) {
+      close(fd);
+    }
+  }
   int sv[2];
   if (socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sv) != 0) {
     ps5_log_printf("ipc selftest: %s; stop", err("socketpair(SOCK_SEQPACKET)").c_str());
