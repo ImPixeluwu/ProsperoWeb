@@ -429,6 +429,11 @@ WkWebView::WkWebView(WKContextRef context, WKWebsiteDataStoreRef data_store,
   WKPreferencesSetFullScreenEnabled(preferences_, fullscreen_enabled);
   // Phase 1 is the non-accelerated raster path (WKPagePaint + SDL framebuffer).
   WKPreferencesSetAcceleratedCompositingEnabled(preferences_, false);
+  // PROSPEROWEB_CONSOLE_LOG=1: the WebProcess writes the page's console
+  // messages to its stderr (stderr-<role>.txt with PROSPEROWEB_CHILD_STDERR).
+  if (const char* console = std::getenv("PROSPEROWEB_CONSOLE_LOG"); console && !std::strcmp(console, "1")) {
+    WKPreferencesSetLogsPageMessagesToSystemConsoleEnabled(preferences_, true);
+  }
   // The PlayStation port resolves form-control and default text through the
   // generic font-family preferences (SystemFontDatabasePlayStation returns
   // the standard family). Sony's own browser sets them; unset, buttons and
