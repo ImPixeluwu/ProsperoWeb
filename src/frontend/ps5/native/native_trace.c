@@ -17,6 +17,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -40,6 +41,7 @@ int __real_socketpair(int domain, int type, int protocol, int fds[2]);
 ssize_t __real_sendmsg(int fd, const struct msghdr* msg, int flags);
 ssize_t __real_recvmsg(int fd, struct msghdr* msg, int flags);
 int __real_select(int n, fd_set* r, fd_set* w, fd_set* e, struct timeval* t);
+int __real_fcntl(int fd, int command, ...);
 
 // ---- access() ------------------------------------------------------------------
 
@@ -70,6 +72,56 @@ int __wrap_access(const char* path, int mode) {
     close(fd);
   }
   return 0;
+}
+
+// ---- fcntl() on sockets ------------------------------------------------------------
+//
+// A title's libc refuses fcntl on sockets with EINVAL (syobon-action-ps5
+// docs/UPDATE_CHECK.md, the Stremio port's native/console_curl.c; console
+// run 23: WebKit's IPC connections never opened). On a refusal:
+// close-on-exec is accepted (a title never execs), and O_NONBLOCK goes
+// through the console's own SO_NBIO socket option (0x1200).
+
+#define kSoNbio 0x1200
+static atomic_int g_fcntl_logged;
+
+int __wrap_fcntl(int fd, int command, ...) {
+  va_list args;
+  va_start(args, command);
+  const intptr_t argument = va_arg(args, intptr_t);
+  va_end(args);
+  const int rc = __real_fcntl(fd, command, argument);
+  if (rc >= 0 || errno != EINVAL) {
+    return rc;
+  }
+  int result = rc;
+  switch (command) {
+    case F_GETFD:
+    case F_SETFD:
+      result = 0;
+      break;
+    case F_SETFL: {
+      const int on = (argument & O_NONBLOCK) != 0;
+      result = setsockopt(fd, SOL_SOCKET, kSoNbio, &on, sizeof(on));
+      break;
+    }
+    case F_GETFL: {
+      int on = 0;
+      socklen_t length = sizeof(on);
+      result = getsockopt(fd, SOL_SOCKET, kSoNbio, &on, &length) < 0
+                   ? O_RDWR
+                   : (O_RDWR | (on ? O_NONBLOCK : 0));
+      break;
+    }
+    default:
+      errno = EINVAL;
+      return -1;
+  }
+  if (atomic_fetch_add(&g_fcntl_logged, 1) < 16) {
+    ps5_log_printf("trace: fcntl(fd %d, cmd %d) refused (EINVAL); emulated -> %d", fd, command,
+                   result);
+  }
+  return result;
 }
 
 // ---- IPC tracing ----------------------------------------------------------------

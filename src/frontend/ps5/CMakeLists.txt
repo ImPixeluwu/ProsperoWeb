@@ -247,7 +247,9 @@ if(PROSPEROWEB_NATIVE_TITLE_TARGET)
     mmap munmap pipe
     sceImeDialogGetStatus sceImeDialogInit
     # native/native_trace.c: access() past EPERM, the IPC calls logged.
-    access socketpair sendmsg recvmsg select)
+    access socketpair sendmsg recvmsg select
+    # fcntl on sockets is refused in a title (native_trace.c).
+    fcntl)
   list(TRANSFORM _native_wraps PREPEND "-Wl,--wrap=")
   target_link_options(prosperoweb_native PRIVATE
     -nostartfiles -nodefaultlibs
