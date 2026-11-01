@@ -1150,10 +1150,11 @@ void ShellController::show_menu_section(MenuSection section) {
                                  open_tab(config_.diagnostics_url, true);
                                }});
       }
-      menu_items_.push_back({"Quit", "", [this] {
-                               close_menu();
-                               quit_requested_ = true;
-                             }});
+      // No "Quit" item: the native title's programmatic exit does not return
+      // to the home screen (black screen), so the user closes the app via the
+      // PS button / system "Close". The session is persisted continuously
+      // (save_session_if_due on tick, bookmarks on change), so a system close
+      // restores the open tabs, history and bookmarks next launch.
       break;
     }
     case MenuSection::Bookmarks:

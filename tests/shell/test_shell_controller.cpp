@@ -1058,9 +1058,9 @@ TEST_SUITE("shell.chrome_events") {
     f.make();
     f.press(Button::Options);
     f.frame();
-    REQUIRE(f.chrome.last["menu"]["items"].size() == 9);
+    // No Quit item any more: Diagnostics is last.
+    REQUIRE(f.chrome.last["menu"]["items"].size() == 8);
     CHECK(f.chrome.last["menu"]["items"][7]["label"] == "Diagnostics");
-    CHECK(f.chrome.last["menu"]["items"][8]["label"] == "Quit");
     f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 7}});
     CHECK(f.shell->tabs().size() == 2);
     CHECK(f.active().called("load file:///data/prosperoweb/chrome/diag.html"));
@@ -1077,13 +1077,41 @@ TEST_SUITE("shell.chrome_events") {
     }
   }
 
-  TEST_CASE("Quit menu item requests exit") {
+  TEST_CASE("no Quit menu item (closed via the system)") {
     Fixture f;
     f.make();
     f.press(Button::Options);
-    // Main menu without a diagnostics URL or add-ons backend: Quit is last (7).
-    f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 7}});
-    CHECK(f.shell->quit_requested());
+    f.frame();
+    for (const auto& item : f.chrome.last["menu"]["items"]) {
+      CHECK(item["label"] != "Quit");
+    }
+  }
+
+  TEST_CASE("session persists without an explicit quit") {
+    // Tabs/history are saved by the periodic debounced save (tick), not only
+    // by a quit path, so a system close restores them next launch.
+    core::InMemoryStorage storage;
+    {
+      FakeEngineFactory factory;
+      FakeChromeUi chrome;
+      ShellController::Config config;
+      config.home_url = kHome;
+      config.now = [] { return std::int64_t{1000}; };
+      ShellController shell(factory, chrome, storage, config);
+      shell.start();
+      shell.on_chrome_event({{"type", "tab_new"}});  // open a second tab
+      // Let the debounce elapse and tick to flush, with NO shutdown()/quit.
+      shell.tick(ShellController::kSessionSaveDelaySeconds + 1.0f);
+    }
+    // A fresh controller on the same storage restores both tabs.
+    FakeEngineFactory factory2;
+    FakeChromeUi chrome2;
+    ShellController::Config config2;
+    config2.home_url = kHome;
+    config2.now = [] { return std::int64_t{1000}; };
+    ShellController shell2(factory2, chrome2, storage, config2);
+    shell2.start();
+    CHECK(shell2.tabs().size() == 2);
   }
 }
 
