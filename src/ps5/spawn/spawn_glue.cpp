@@ -25,6 +25,7 @@
 #include <thread>
 #include <vector>
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -451,6 +452,55 @@ int terminate_via_broker(int pid) {
 
 // --- Broker role ------------------------------------------------------------
 
+// Opens the profile to every process: the native title's UI runs as an
+// unprivileged user (uid 1, console run 28) and could not write files the
+// root payloads had created there (0755/0644). Directories get rwx and files
+// rw for everyone; symbolic links are not followed. Returns the number of
+// entries changed; *failed counts chmod failures.
+int open_profile_tree(const std::string& dir, int depth, int* failed, int* seen) {
+  int changed = 0;
+  DIR* d = opendir(dir.c_str());
+  if (!d) {
+    return 0;
+  }
+  while (dirent* e = readdir(d)) {
+    if (!std::strcmp(e->d_name, ".") || !std::strcmp(e->d_name, "..") || *seen > 50000) {
+      continue;
+    }
+    (*seen)++;
+    const std::string path = dir + "/" + e->d_name;
+    struct stat st {};
+    if (lstat(path.c_str(), &st) != 0 || S_ISLNK(st.st_mode)) {
+      continue;
+    }
+    const mode_t want = S_ISDIR(st.st_mode) ? (st.st_mode | 0777) : (st.st_mode | 0666);
+    if ((st.st_mode & 07777) != (want & 07777)) {
+      if (chmod(path.c_str(), want & 07777) == 0) {
+        changed++;
+      } else {
+        (*failed)++;
+      }
+    }
+    if (S_ISDIR(st.st_mode) && depth < 16) {
+      changed += open_profile_tree(path, depth + 1, failed, seen);
+    }
+  }
+  closedir(d);
+  return changed;
+}
+
+void open_profile(const char* root) {
+  const auto t0 = Clock::now();
+  mkdir(root, 0777);
+  int failed = 0;
+  int seen = 0;
+  int changed = chmod(root, 0777) == 0 ? 1 : 0;
+  changed += open_profile_tree(root, 0, &failed, &seen);
+  ps5_log_printf("broker: profile %s opened to all users: %d entries changed, %d failed, %d "
+                 "seen, %lldms",
+                 root, changed, failed, seen, ms_since(t0));
+}
+
 std::atomic<bool> g_stop{false};
 
 void on_sigterm(int) { g_stop.store(true); }
@@ -509,6 +559,9 @@ extern "C" int ps5_terminate_process(int pid) {
 }
 
 extern "C" int ps5_spawn_broker_main(void) {
+  // Files the broker and its children create stay usable by the UI.
+  umask(0);
+  open_profile("/data/prosperoweb");
   // websrv hands the daemon the write end of a pipe as stdout/stderr and
   // closes the read end when the request does not ask for pipe=1: point
   // stdio at /dev/null (log.txt and klog carry the log), then restore

@@ -19,6 +19,7 @@
 // it (<title>/prosperoweb.elf).
 
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
@@ -202,6 +203,7 @@ void setup_native_title_env() {
 
   native_boot_say("[prosperoweb] main: title layout resolved, file selftest\n");
   native_file_selftest(layout.ui_root.c_str(), layout.child_root.c_str());
+  native_profile_probe(prosperoweb::frontend::kPs5DataDir);
   native_boot_say("[prosperoweb] main: file selftest done\n");
   prosperoweb::frontend::setup_runtime_env(prosperoweb::frontend::kPs5DataDir,
                                            layout.ui_root + "/data");
@@ -211,6 +213,10 @@ void setup_native_title_env() {
   setenv("JSC_useJIT", "false", 1);
   setenv("JSC_useWasm", "false", 1);
   setenv("PROSPEROWEB_UI_ONLY_ENV", "JSC_useJIT JSC_useWasm", 1);
+  // While the native title is being brought up: the children keep their
+  // stderr in the profile and log the pages' console messages there.
+  setenv("PROSPEROWEB_CHILD_STDERR", "1", 0);
+  setenv("PROSPEROWEB_CONSOLE_LOG", "1", 0);
   log_printf("env JSC_useJIT=false JSC_useWasm=false (UI only; the children keep theirs)");
 }
 
@@ -272,6 +278,8 @@ long long now_ms() {
 void start_main_loop_watchdog() {
   std::thread([] {
     std::this_thread::sleep_for(std::chrono::seconds(10));
+    // After the broker opened the profile to every user (spawn_glue.cpp).
+    native_profile_probe(prosperoweb::frontend::kPs5DataDir);
     for (int i = 0; i < 60; i++) {
       const long long posted = g_heartbeat_posted.load();
       const long long ran = g_heartbeat_ran.load();
@@ -321,6 +329,9 @@ int main(int argc, char** argv) {
 #if PROSPEROWEB_NATIVE_TITLE
   native_boot_say("[prosperoweb] main: entered\n");
 #endif
+  // Every role: what one process creates in the profile, the others (the
+  // native title's UI runs as another user) can use.
+  umask(0);
   apply_arg_env(argc, argv);
   // Before anything reads the environment (the role, then every module).
   // The children inherit the new names, so only the UI or broker logs this.
@@ -408,6 +419,16 @@ int main(int argc, char** argv) {
                static_cast<int>(getppid()));
     // The IPC descriptor the UI handed over (ps5webkit/spawn.h: fd 3).
     prosperoweb::spawn::ipc_describe_inherited_fd(3);
+    // PROSPEROWEB_CHILD_STDERR=1: the child's stderr (WebKit's own messages,
+    // console messages with PROSPEROWEB_CONSOLE_LOG=1) goes to a file, as the
+    // broker starts children with stderr on /dev/null.
+    if (const char* keep = std::getenv("PROSPEROWEB_CHILD_STDERR"); keep && !std::strcmp(keep, "1")) {
+      const std::string path = std::string(kPs5DataDir) + "/stderr-" + role + ".txt";
+      if (std::freopen(path.c_str(), "a", stderr)) {
+        std::setvbuf(stderr, nullptr, _IONBF, 0);
+        log_printf("main: stderr -> %s", path.c_str());
+      }
+    }
   }
 
   // Every role, before it starts a thread: the threads inherit the mask.

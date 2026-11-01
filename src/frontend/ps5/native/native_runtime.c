@@ -272,6 +272,14 @@ off_t __syscall(quad_t number, ...) {
   return no_syscall();
 }
 
+// The title may not set its file mode mask (libc.a's umask is a raw
+// syscall and libkernel has none); what it creates is used by the root
+// payloads, which can access it anyway. Reports the conventional mask.
+mode_t umask(mode_t mask) {
+  (void)mask;
+  return 022;
+}
+
 int ptrace(int request, pid_t pid, caddr_t addr, int data) {
   (void)request;
   (void)pid;

@@ -42,6 +42,8 @@ ssize_t __real_sendmsg(int fd, const struct msghdr* msg, int flags);
 ssize_t __real_recvmsg(int fd, struct msghdr* msg, int flags);
 int __real_select(int n, fd_set* r, fd_set* w, fd_set* e, struct timeval* t);
 int __real_fcntl(int fd, int command, ...);
+int __real_dup(int fd);
+int sceKernelRdup(int pid, int fd);
 
 // ---- access() ------------------------------------------------------------------
 
@@ -139,6 +141,47 @@ int __wrap_fcntl(int fd, int command, ...) {
   if (atomic_fetch_add(&g_fcntl_logged, 1) < 16) {
     ps5_log_printf("trace: fcntl(fd %d, cmd %d) refused (EINVAL); emulated -> %d", fd, command,
                    result);
+  }
+  return result;
+}
+
+// ---- dup() -----------------------------------------------------------------------
+//
+// A title may not duplicate a descriptor with dup() (EPERM, console run 28:
+// WebKit's shared-memory handles failed). On a refusal: dup2() onto a
+// descriptor number reserved with open("/dev/null"), then rdup of our own
+// process. The first attempts are logged.
+
+static atomic_int g_dup_logged;
+
+int __wrap_dup(int fd) {
+  const int rc = __real_dup(fd);
+  if (rc >= 0 || errno != EPERM) {
+    return rc;
+  }
+  int result = -1;
+  const char* how = "nothing worked";
+  const int slot = open("/dev/null", O_RDONLY);
+  if (slot >= 0) {
+    if (dup2(fd, slot) == slot) {
+      result = slot;
+      how = "dup2 onto a reserved number";
+    } else {
+      close(slot);
+    }
+  }
+  if (result < 0) {
+    const int r = sceKernelRdup(getpid(), fd);
+    if (r >= 0) {
+      result = r;
+      how = "sceKernelRdup";
+    }
+  }
+  if (atomic_fetch_add(&g_dup_logged, 1) < 8) {
+    ps5_log_printf("trace: dup(%d) refused (EPERM); %s -> %d", fd, how, result);
+  }
+  if (result < 0) {
+    errno = EPERM;
   }
   return result;
 }
@@ -319,6 +362,36 @@ static void test_dir(const char* path) {
   step("done", path);
   ps5_log_printf("file selftest: opendir %s: %s (%d entries); cwd %s", path,
                  result(d != NULL, saved), entries, cwd);
+}
+
+void native_profile_probe(const char* base) {
+  static const char* const kDirs[] = {"", "/tmp", "/cache", "/storage", "/localstorage",
+                                      "/indexeddb"};
+  char line[1024];
+  size_t used = 0;
+  line[0] = 0;
+  for (size_t i = 0; i < sizeof(kDirs) / sizeof(kDirs[0]); i++) {
+    char dir[256];
+    char probe[300];
+    snprintf(dir, sizeof(dir), "%s%s", base, kDirs[i]);
+    snprintf(probe, sizeof(probe), "%s/.ui-write-probe", dir);
+    struct stat st;
+    const int exists = stat(dir, &st) == 0;
+    const int fd = open(probe, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    const int saved = errno;
+    if (fd >= 0) {
+      close(fd);
+      unlink(probe);
+    }
+    const int n = snprintf(line + used, sizeof(line) - used, "%s%s %s%s", used ? "; " : "",
+                           dir, !exists ? "missing" : (fd >= 0 ? "writable" : "NOT writable: "),
+                           exists && fd < 0 ? strerror(saved) : "");
+    used += n > 0 ? (size_t)n : 0;
+    if (used >= sizeof(line)) {
+      break;
+    }
+  }
+  ps5_log_printf("profile: UI write access: %s", line);
 }
 
 void native_file_selftest(const char* ui_root, const char* child_root) {

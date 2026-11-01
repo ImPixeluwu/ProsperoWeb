@@ -32,6 +32,7 @@ int main(int argc, char** argv) {
       setenv(entry.substr(0, eq).c_str(), entry.substr(eq + 1).c_str(), 1);
     }
   }
+  umask(0);
   // The loader's stdout/stderr may be a closed pipe.
   std::signal(SIGPIPE, SIG_IGN);
   mkdir(kPs5DataDir, 0755);
