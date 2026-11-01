@@ -100,14 +100,16 @@ done < "${LOCK}"
 # several small lists: WebKit's on-device compiler traps/OOMs on one huge
 # list, so each chunk is kept small (<= PER_CHUNK rules). Network rules come
 # first; cosmetic overflow past MAX_TOTAL is dropped.
-# Each attached content rule list costs one SharedMemory descriptor in the
-# WebProcess, and the title sandbox cannot dup handles (~5 lists exhaust the
-# budget). So ship FEW lists: ~20000 rules/chunk (known to compile) and a
-# total that yields only 2 ads chunks; MAX_LISTS caps attaches at runtime.
-# Network rules are prioritised. All tunable via sources.json.
+# Each attached content rule list hands one SharedMemory descriptor to the
+# WebProcess, and the title sandbox's handle budget turned out to be ~ONE for
+# these ~20000-rule (~7-8 MB compiled) lists: at startup only the first handle
+# succeeded, the 2nd/3rd logged "no descriptor left". Correctness over
+# coverage - ship ONE network-prioritised list that compiles cleanly (20000
+# rules) and attaches with a working handle. MAX_LISTS caps attaches at
+# runtime. All tunable via sources.json if a bigger budget is found on HW.
 PER_CHUNK="${ADDONS_PER_CHUNK:-20000}"
-MAX_TOTAL="${ADDONS_MAX_TOTAL:-40000}"
-MAX_LISTS="${ADDONS_MAX_LISTS:-3}"
+MAX_TOTAL="${ADDONS_MAX_TOTAL:-20000}"
+MAX_LISTS="${ADDONS_MAX_LISTS:-1}"
 log "building ads ruleset -> adblock-ads-*.json (per-chunk ${PER_CHUNK}, total ${MAX_TOTAL})"
 ADS_CHUNKS="$("${CONVERT}" --chunked --per-chunk "${PER_CHUNK}" --max-total "${MAX_TOTAL}" \
     "${ADDONS}/adblock-ads.json" "${ADS_INPUTS[@]}")"

@@ -111,12 +111,13 @@ class Ps5Addons final : public shell::AddonsBackend {
   RuleSet ads_;
   RuleSet cookie_;
   std::size_t per_chunk_ = 20000;
-  std::size_t max_total_ = 40000;
-  // Hard cap on attached content rule lists: each one hands a SharedMemory
-  // descriptor to the WebProcess and the title sandbox cannot dup handles, so
-  // ~5 lists exhaust the budget and the next createHandle fails. Stay well
-  // under it; attach network (ads) lists first. Tunable via sources.json.
-  std::size_t max_lists_ = 3;
+  std::size_t max_total_ = 20000;
+  // Hard cap on attached content rule lists. Each one hands a SharedMemory
+  // descriptor to the WebProcess and the sandbox's handle budget is ~ONE for
+  // these ~20000-rule lists (2nd handover logs "no descriptor left" at
+  // startup). Default 1 so the single attached list always has a working
+  // handle and really filters. Tunable via sources.json.
+  std::size_t max_lists_ = 1;
   // Backstop: stop attaching more chunks if process RSS exceeds this (MB).
   long rss_limit_mb_ = 1400;
 
