@@ -37,17 +37,27 @@ double ms_between(Clock::time_point a, Clock::time_point b) {
   return std::chrono::duration<double, std::milli>(b - a).count();
 }
 
+// Every send and receive is non-blocking by itself (MSG_DONTWAIT): the
+// native PS5 title may not make a TCP socket non-blocking (console run 34:
+// fcntl EINVAL, SO_NBIO EPERM), and a blocking socket must not stall the
+// server thread on a slow or quiet client.
 int send_flags() {
 #ifdef MSG_NOSIGNAL
-  return MSG_NOSIGNAL;
+  return MSG_NOSIGNAL | MSG_DONTWAIT;
 #else
-  return 0;
+  return MSG_DONTWAIT;
 #endif
 }
 
-void set_nonblocking(int fd) {
+bool set_nonblocking(int fd) {
   const int flags = fcntl(fd, F_GETFL, 0);
-  fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  return flags != -1 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+}
+
+// Whether a read (or an accept) would not block now.
+bool readable_now(int fd) {
+  pollfd p{fd, POLLIN, 0};
+  return poll(&p, 1, 0) > 0 && (p.revents & (POLLIN | POLLHUP | POLLERR));
 }
 
 // Scaled frames larger than this are not drawn (a box far bigger than the
@@ -149,7 +159,7 @@ bool VideoServer::start() {
   socklen_t len = sizeof(addr);
   getsockname(listen_fd_, reinterpret_cast<sockaddr*>(&addr), &len);
   port_ = ntohs(addr.sin_port);
-  set_nonblocking(listen_fd_);
+  (void)set_nonblocking(listen_fd_);  // accept_clients() polls first either way
   ps5_log_printf("video overlay: listening on tcp 127.0.0.1:%d (%s scaling)", port_,
                  options_.filter == display::ScaleFilter::Bilinear ? "bilinear" : "nearest");
   stop_ = false;
@@ -258,12 +268,19 @@ void VideoServer::run() {
 }
 
 void VideoServer::accept_clients() {
-  while (true) {
+  // Accept only what is pending: the listening socket may be blocking.
+  while (readable_now(listen_fd_)) {
     const int fd = accept(listen_fd_, nullptr, nullptr);
     if (fd < 0) {
       return;
     }
-    set_nonblocking(fd);
+    const bool nonblocking = set_nonblocking(fd);
+    if (!logged_socket_mode_) {
+      logged_socket_mode_ = true;
+      ps5_log_printf("%s: client sockets %s", "video overlay",
+                     nonblocking ? "non-blocking"
+                                 : "blocking (refused here: reads and writes use MSG_DONTWAIT and poll)");
+    }
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 #ifdef SO_NOSIGPIPE
@@ -280,10 +297,15 @@ void VideoServer::accept_clients() {
 bool VideoServer::service(Connection& c) {
   // Read everything available; a frame message is received straight into
   // the parser's buffer.
+  bool first = true;
   while (true) {
+    if (!first && !readable_now(c.fd)) {
+      break;
+    }
+    first = false;
     const std::size_t want = std::max<std::size_t>(c.parser.missingBytes(), 64 * 1024);
     std::uint8_t* buffer = c.parser.writable(want);
-    const ssize_t got = recv(c.fd, buffer, want, 0);
+    const ssize_t got = recv(c.fd, buffer, want, MSG_DONTWAIT);
     if (got > 0) {
       c.parser.commit(static_cast<std::size_t>(got));
       if (static_cast<std::size_t>(got) < want) {

@@ -145,6 +145,7 @@ class VideoServer {
 
   ServerOptions options_;
   int listen_fd_ = -1;
+  bool logged_socket_mode_ = false;  // the client socket mode is logged once
   int port_ = 0;
   std::atomic<bool> stop_{false};
   std::thread thread_;

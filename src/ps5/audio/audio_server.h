@@ -60,6 +60,7 @@ class AudioServer {
   Mixer& mixer_;
   ServerOptions options_;
   int listen_fd_ = -1;
+  bool logged_socket_mode_ = false;  // the client socket mode is logged once
   int port_ = 0;
   std::atomic<bool> stop_{false};
   std::atomic<std::size_t> clients_{0};

@@ -26,17 +26,27 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+// Every send and receive is non-blocking by itself (MSG_DONTWAIT): the
+// native PS5 title may not make a TCP socket non-blocking (console run 34:
+// fcntl EINVAL, SO_NBIO EPERM), and a blocking socket must not stall the
+// server thread on a slow or quiet client.
 int send_flags() {
 #ifdef MSG_NOSIGNAL
-  return MSG_NOSIGNAL;
+  return MSG_NOSIGNAL | MSG_DONTWAIT;
 #else
-  return 0;
+  return MSG_DONTWAIT;
 #endif
 }
 
-void set_nonblocking(int fd) {
+bool set_nonblocking(int fd) {
   const int flags = fcntl(fd, F_GETFL, 0);
-  fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  return flags != -1 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+}
+
+// Whether a read (or an accept) would not block now.
+bool readable_now(int fd) {
+  pollfd p{fd, POLLIN, 0};
+  return poll(&p, 1, 0) > 0 && (p.revents & (POLLIN | POLLHUP | POLLERR));
 }
 
 }  // namespace
@@ -79,7 +89,7 @@ bool AudioServer::start() {
   socklen_t len = sizeof(addr);
   getsockname(listen_fd_, reinterpret_cast<sockaddr*>(&addr), &len);
   port_ = ntohs(addr.sin_port);
-  set_nonblocking(listen_fd_);
+  (void)set_nonblocking(listen_fd_);  // accept_clients() polls first either way
   ps5_log_printf("audio server: listening on tcp 127.0.0.1:%d", port_);
   stop_ = false;
   thread_ = std::thread([this] { run(); });
@@ -152,12 +162,19 @@ void AudioServer::run() {
 }
 
 void AudioServer::accept_clients() {
-  while (true) {
+  // Accept only what is pending: the listening socket may be blocking.
+  while (readable_now(listen_fd_)) {
     const int fd = accept(listen_fd_, nullptr, nullptr);
     if (fd < 0) {
       return;
     }
-    set_nonblocking(fd);
+    const bool nonblocking = set_nonblocking(fd);
+    if (!logged_socket_mode_) {
+      logged_socket_mode_ = true;
+      ps5_log_printf("%s: client sockets %s", "audio server",
+                     nonblocking ? "non-blocking"
+                                 : "blocking (refused here: reads and writes use MSG_DONTWAIT and poll)");
+    }
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 #ifdef SO_NOSIGPIPE
@@ -171,8 +188,13 @@ void AudioServer::accept_clients() {
 
 bool AudioServer::service(Connection& c) {
   std::uint8_t buffer[16384];
+  bool first = true;
   while (true) {
-    const ssize_t got = recv(c.fd, buffer, sizeof(buffer), 0);
+    if (!first && !readable_now(c.fd)) {
+      return true;
+    }
+    first = false;
+    const ssize_t got = recv(c.fd, buffer, sizeof(buffer), MSG_DONTWAIT);
     if (got > 0) {
       c.parser.append(buffer, static_cast<std::size_t>(got));
       // Parse as we go so the parser's buffer stays small.
