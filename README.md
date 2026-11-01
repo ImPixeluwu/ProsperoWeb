@@ -28,6 +28,7 @@ It is early software (version 0.1.0): expect rough edges, and launch it only the
 - JavaScript JIT (baseline + DFG; FTL off) and WebAssembly, ~1.7x faster than the interpreter on a micro-benchmark; `config.json` `"env"` can turn them off ([docs/ps5-runtime.md](docs/ps5-runtime.md#javascript-jit-and-webassembly)).
 - English and Russian UI.
 - DRM notice: known DRM-only sites and pages that request EME get a clear message instead of a broken player.
+- Add-ons: a built-in ad blocker (native WebKit content rule list from EasyList, EasyPrivacy, Peter Lowe and uBlock Origin lists, plus a YouTube page/pre-roll script) and SponsorBlock (skips YouTube sponsor segments), toggled from the menu. These are independent implementations using the public lists and API, not the uBlock Origin or SponsorBlock extensions.
 
 ## Known limitations
 
@@ -36,6 +37,7 @@ It is early software (version 0.1.0): expect rough edges, and launch it only the
 - **No DRM sites** (Netflix, Disney+, Kinopoisk, Okko, ...): there is no CDM, by design.
 - **No GPU acceleration**: software rendering only; no WebGL, no CSS 3D, no GPU compositing.
 - **No WebAudio.**
+- **Ad blocker is network-first and best-effort on YouTube video ads.** A console sandbox limit on shared-memory handles means one merged rule list is attached; on-device list updates fetch from EasyList's host, while the full uBlock/Peter Lowe/cookie coverage ships bundled.
 - **The ad blocker uses WebKit's content rule list, not uBlock Origin.** It blocks network requests and hides elements (css-display-none) from EasyList/EasyPrivacy/uBlock/Peter-Lowe, but has no scriptlets and no procedural/extended-CSS cosmetic filters (those rules are dropped and counted). The merged set is capped at WebKit's 150000-rule limit, network rules prioritised. YouTube client-scheduled pre/mid-roll is removed by a small JSON-prune user script; server-stitched ads are best-effort. On-device list refresh needs network and recompiles the rule list (CPU/memory), falling back to the cached/bundled baseline offline.
 - **Only firmware 13.42 is tested**; other versions are untested.
 

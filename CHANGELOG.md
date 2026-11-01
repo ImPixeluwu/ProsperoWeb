@@ -4,14 +4,28 @@ All notable changes to ProsperoWeb are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.2.0 - 2026-11-01
 
 ### Added
 
-- Add-ons section in Settings (with quick toggles in the menu), state persisted in `config.json` under `"addons"` and applied live without a restart:
-  - Ad blocker (on by default): WebKit content rule lists compiled from EasyList + EasyPrivacy, with an optional EasyList-Cookie "Block cookie banners" sub-toggle (off by default). The filter lists update over the network on the console (auto-update on by default, 24 h staleness threshold, daily cadence, "Update filter lists now" action and a last-updated readout); the bundled snapshot is the offline/first-run baseline. One converter (`core::adblock`) is shared by the build-time stager and the on-device updater.
-  - SponsorBlock (off by default): a bundled user script that queries the public SponsorBlock API and skips YouTube segments, with per-category toggles (only `sponsor` on by default).
-- These are independent implementations using the public filter lists / API, not uBlock Origin or the SponsorBlock extension.
+- Ad blocker (on by default): a native WebKit content rule list compiled from EasyList, EasyPrivacy, Peter Lowe and uBlock Origin filter lists (request blocking and element hiding). YouTube page ads are hidden with injected CSS; pre- and mid-roll video ads are removed by a bundled user script. An optional "Block cookie banners" sub-toggle is off by default.
+- SponsorBlock (off by default): a bundled user script that queries the public SponsorBlock API and skips YouTube sponsor segments, with per-category toggles (only `sponsor` on by default).
+- An "Add-ons" area in the menu with the Ad blocker and SponsorBlock toggles, applied live and persisted in `config.json`.
+- Filter-list updates: "Update filter lists now" and a daily auto-update fetch EasyList and EasyPrivacy over the network and apply on the next launch; the full snapshot (incl. uBlock Origin, Peter Lowe and the cookie list) ships with the app as the baseline.
+- Natural scrolling toggle (off by default; otherwise two-finger scroll follows the mouse-wheel direction).
+- These are independent implementations using the public filter lists and API, not uBlock Origin or the SponsorBlock extension.
+
+### Changed
+
+- The WebKit content-extensions engine is enabled in the build, so the ad blocker uses a native content rule list rather than page scripts for request blocking.
+- Removed the non-functional "Settings" and "Quit" menu items; the session is now saved continuously, so closing the app with the PS button keeps the open tabs, history and bookmarks.
+- The release CI builds the PS5 title again (fixed a configure-stage failure).
+
+### Known limitations
+
+- The ad blocker attaches a single merged, network-first rule list because of a console sandbox limit on shared-memory handles; YouTube video-ad removal is best-effort.
+- On-device filter updates fetch only from EasyList's host (the one reachable from the console); the broader lists ship in the app and are not re-fetched.
+- As in 0.1.0: a privileged ELF loader on `127.0.0.1:9021` is required, no DRM sites, no GPU acceleration, no WebAudio, and only firmware 13.42 is tested.
 
 ## v0.1.0 - 2026-11-01
 
