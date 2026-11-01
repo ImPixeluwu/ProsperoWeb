@@ -1,0 +1,36 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>features</title>
+<style>body{background:#121418;color:#eee;font:24px/1.35 monospace;margin:24px}b{color:#7af}.no{color:#f66}.yes{color:#6f6}</style></head>
+<body><div id="o">running...</div>
+<script>
+(async function(){
+ const r=[]; const add=(k,v)=>r.push([k,v]);
+ add('userAgent',navigator.userAgent);
+ add('platform',navigator.platform); add('vendor',navigator.vendor);
+ add('cookieEnabled',navigator.cookieEnabled);
+ try{document.cookie='t1=1; path=/'; add('document.cookie roundtrip',document.cookie.indexOf('t1=1')>=0);}catch(e){add('document.cookie roundtrip','ERR '+e)}
+ try{localStorage.setItem('k','v'); add('localStorage',localStorage.getItem('k')==='v');}catch(e){add('localStorage','ERR '+e)}
+ try{sessionStorage.setItem('k','v'); add('sessionStorage',sessionStorage.getItem('k')==='v');}catch(e){add('sessionStorage','ERR '+e)}
+ try{await new Promise((ok,bad)=>{const q=indexedDB.open('t',1);q.onupgradeneeded=()=>q.result.createObjectStore('s');q.onsuccess=()=>ok();q.onerror=()=>bad(q.error);setTimeout(()=>bad('timeout'),5000)}); add('indexedDB',true);}catch(e){add('indexedDB','ERR '+e)}
+ add('WebAssembly',typeof WebAssembly);
+ try{const m=new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0])); add('WebAssembly.Module',!!m);}catch(e){add('WebAssembly.Module','ERR '+e)}
+ add('crypto.subtle',!!(window.crypto&&crypto.subtle));
+ try{const d=await crypto.subtle.digest('SHA-256',new Uint8Array([1,2,3])); add('subtle.digest',d.byteLength===32);}catch(e){add('subtle.digest','ERR '+e)}
+ add('isSecureContext',window.isSecureContext);
+ add('serviceWorker','serviceWorker' in navigator);
+ add('MediaSource','MediaSource' in window); add('ManagedMediaSource','ManagedMediaSource' in window);
+ add('Worker',typeof Worker); add('SharedArrayBuffer',typeof SharedArrayBuffer);
+ add('fetch',typeof fetch); add('WebSocket',typeof WebSocket); add('RTCPeerConnection',typeof RTCPeerConnection);
+ add('Intl',typeof Intl); try{add('Intl tz',Intl.DateTimeFormat().resolvedOptions().timeZone)}catch(e){add('Intl tz','ERR '+e)}
+ add('languages',(navigator.languages||[]).join(','));
+ add('hardwareConcurrency',navigator.hardwareConcurrency); add('deviceMemory',navigator.deviceMemory);
+ add('webdriver',navigator.webdriver); add('plugins',navigator.plugins?navigator.plugins.length:'none');
+ add('screen',screen.width+'x'+screen.height+' dpr '+devicePixelRatio);
+ add('ApplePaySession',typeof window.ApplePaySession);
+ add('webkit.messageHandlers',!!(window.webkit&&window.webkit.messageHandlers));
+ add('Notification',typeof Notification); add('PaymentRequest',typeof PaymentRequest);
+ add('credentials',!!navigator.credentials); add('PublicKeyCredential',typeof PublicKeyCredential);
+ const t0=performance.now(); let s=0; for(let i=0;i<2e7;i++){s=(s+i)%1000003;} add('loop 2e7 ms',(performance.now()-t0).toFixed(0));
+ document.getElementById('o').innerHTML=r.map(([k,v])=>'<b>'+k+'</b>: <span class="'+(v===false||String(v).startsWith('ERR')||v==='undefined'?'no':'yes')+'">'+String(v)+'</span>').join('<br>');
+ console.log('features '+JSON.stringify(r));
+})();
+</script></body></html>
