@@ -88,6 +88,10 @@ while read -r kind name sum url; do
   fetch "${name}" "${sum}" "${url}"
   case "${kind}" in
     ads) ADS_INPUTS+=("${DL}/${name}"); ADS_SOURCES+=("${url}") ;;
+    # Bundled into the ads ruleset but NOT in the on-device update fetch set
+    # (e.g. raw.githubusercontent.com is unreachable from the console, where it
+    # hangs). Included in the shipped snapshot, built here where it downloads.
+    adsx) ADS_INPUTS+=("${DL}/${name}") ;;
     cookie) COOKIE_INPUTS+=("${DL}/${name}"); COOKIE_SOURCES+=("${url}") ;;
     *) die "unknown kind ${kind} for ${name}" ;;
   esac

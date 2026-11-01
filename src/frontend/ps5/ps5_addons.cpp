@@ -34,7 +34,7 @@ namespace {
 std::int64_t now_epoch() { return static_cast<std::int64_t>(std::time(nullptr)); }
 
 // Overall wall-clock budget for one background refresh (fetch all lists).
-constexpr std::int64_t kUpdateDeadlineSeconds = 90;
+constexpr std::int64_t kUpdateDeadlineSeconds = 45;
 
 void make_dirs(const std::string& path) {
   std::string acc;
@@ -596,7 +596,7 @@ void Ps5Addons::pump() {
         log_line("addons: filter-list refresh failed; keeping cached/bundled lists");
       }
       finish_update(ok);
-    } else if (update_started_at_ > 0 && now_epoch() - update_started_at_ > 150) {
+    } else if (update_started_at_ > 0 && now_epoch() - update_started_at_ > 60) {
       log_line("addons: filter-list update timed out; keeping cached/bundled lists");
       finish_update(/*ok=*/false);
     }
