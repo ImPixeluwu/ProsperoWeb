@@ -1,0 +1,44 @@
+Subject: WebKit: implement NetworkCache::Data::tryCreateSharedMemory for Curl
+
+The Curl backend only defined tryCreateSharedMemory() for OS(WINDOWS), so on
+the PlayStation port it was undefined and API::createExtension (content rule
+lists) failed to link. Add a portable fallback that copies the data into a
+fresh read-only WebCore::SharedMemory. Needed for the ad blocker's
+WKContentRuleList on the PS5 build.
+
+diff --git a/Source/WebKit/NetworkProcess/cache/NetworkCacheDataCurl.cpp b/Source/WebKit/NetworkProcess/cache/NetworkCacheDataCurl.cpp
+index b6dddae5d..40e42f496 100644
+--- a/Source/WebKit/NetworkProcess/cache/NetworkCacheDataCurl.cpp
++++ b/Source/WebKit/NetworkProcess/cache/NetworkCacheDataCurl.cpp
+@@ -26,6 +26,7 @@
+ #include "config.h"
+ #include "NetworkCacheData.h"
+ 
++#include <algorithm>
+ #include <WebCore/SharedMemory.h>
+ #include <wtf/StdLibExtras.h>
+ 
+@@ -125,6 +126,23 @@ RefPtr<WebCore::SharedMemory> Data::tryCreateSharedMemory() const
+ 
+     return WebCore::SharedMemory::map({ WTF::move(newHandle), size() }, WebCore::SharedMemory::Protection::ReadOnly);
+ }
++#else
++// Portable fallback for ports without a shareable-resource file mapping (the
++// PlayStation Curl backend): copy the bytes into a fresh read-only shared
++// memory region. Needed by API::createExtension (content rule lists).
++RefPtr<WebCore::SharedMemory> Data::tryCreateSharedMemory() const
++{
++    if (isNull())
++        return nullptr;
++
++    auto bytes = span();
++    RefPtr<WebCore::SharedMemory> sharedMemory = WebCore::SharedMemory::allocate(bytes.size());
++    if (!sharedMemory)
++        return nullptr;
++
++    std::copy(bytes.begin(), bytes.end(), sharedMemory->mutableSpan().begin());
++    return sharedMemory;
++}
+ #endif
+ 
+ } // namespace NetworkCache
