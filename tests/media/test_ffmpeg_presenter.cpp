@@ -100,6 +100,25 @@ TEST_SUITE("media_presenter") {
     CHECK(decision.lateness == 0);
   }
 
+  TEST_CASE("resume from hidden: holding the queue keeps decode near the clock") {
+    // A 2 s GOP. The page was hidden at pts 1930 with the clock there; it is
+    // shown 5 s later, so the audio clock is at 1935. Video buffered to 1979.
+    const double hold = 1930, bufferedEnd = 1979, clock = 1935, gop = 2;
+    // Old behaviour (drain while hidden): decode resumes at the buffered end,
+    // ~46 s ahead of the clock -> the player never reaches it, frozen.
+    double aheadOld = resumeDecodeAheadOfClock(true, hold, bufferedEnd, clock, gop);
+    CHECK(aheadOld > 40);
+    CHECK_FALSE(resumeConverges(aheadOld, /*reachSeconds*/ 2));
+    // The fix (hold the queue): decode resumes at the hold point, within a
+    // GOP of it, at or just past the clock that advanced while hidden.
+    double aheadNew = resumeDecodeAheadOfClock(false, hold, bufferedEnd, clock, gop);
+    CHECK(aheadNew <= gop);
+    CHECK(resumeConverges(aheadNew, gop));
+    // Hidden longer than a GOP: the clock passes the hold point, so decode
+    // resumes behind the clock and the drop-behind catches up.
+    CHECK(resumeDecodeAheadOfClock(false, 1930, 1979, 1960, gop) < 0);
+  }
+
   TEST_CASE("frame interval") {
     CHECK(presentationInterval(1.0, 0.0417, 1.1) == doctest::Approx(0.0417));
     CHECK(presentationInterval(1.0, 0, 1.02) == doctest::Approx(0.02));

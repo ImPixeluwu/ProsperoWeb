@@ -2866,10 +2866,10 @@ index 000000000..92ea7d596
 +} // namespace WebCore
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegPresenterPolicy.h b/Source/WebCore/platform/graphics/ffmpeg/FFmpegPresenterPolicy.h
 new file mode 100644
-index 000000000..d966fbf06
+index 000000000..ee4b0c64b
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegPresenterPolicy.h
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,173 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +//
 +// Frame presentation rules of the ffmpeg media engine's presenter thread
@@ -2943,6 +2943,35 @@ index 000000000..d966fbf06
 +    double interval = presentationInterval(framePts, frameDuration, nextPts);
 +    decision.action = decision.lateness > presenterLateIntervals * interval && nextPts ? PresentAction::Drop : PresentAction::Show;
 +    return decision;
++}
++
++// Resume from a hidden page (FFmpegVideoDecoder::runRemote). While hidden the
++// decoder holds its input queue rather than draining it: a drained queue lets
++// the source feed forward to the end of the buffered range, so decode resumes
++// far ahead of the audio clock and the player (which only reaches those pts
++// much later) shows nothing while the UI's slots fill with unshowable frames.
++//
++// resumeDecodeAheadOfClock models where decode resumes relative to the clock.
++// `drainWhileHidden` false (the fix) keeps the resume position at the hold
++// point, which the advancing clock has caught up to or passed, so the frame
++// is at or behind the clock and plays at once; true (the old behaviour)
++// resumes at the buffered end, ahead of the clock, which freezes. Returns the
++// seconds the first decoded frame is ahead of the clock (<= 0: behind, shown
++// at once and dropped-behind as needed).
++inline double resumeDecodeAheadOfClock(bool drainWhileHidden, double holdPts, double bufferedEndPts,
++    double clockAtResume, double gopSeconds)
++{
++    double resumePts = drainWhileHidden ? bufferedEndPts : holdPts;
++    // Decode restarts at the first keyframe at or after the resume position.
++    double keyframePts = resumePts + gopSeconds;
++    return keyframePts - clockAtResume;
++}
++
++// The player recovers after a resume only when the first decoded frame is
++// within reach of the clock (not stuck far ahead of it).
++inline bool resumeConverges(double aheadOfClockSeconds, double reachSeconds)
++{
++    return aheadOfClockSeconds <= reachSeconds;
 +}
 +
 +// Wall-clock seconds to sleep before the next decision. `untilDue` is media
@@ -4939,10 +4968,10 @@ index 000000000..4b6fe252f
 +#endif // ENABLE(VIDEO) && USE(FFMPEG)
 diff --git a/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp
 new file mode 100644
-index 000000000..b692255f4
+index 000000000..6ba69e6f0
 --- /dev/null
 +++ b/Source/WebCore/platform/graphics/ffmpeg/FFmpegVideoDecoder.cpp
-@@ -0,0 +1,766 @@
+@@ -0,0 +1,777 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "config.h"
@@ -5339,9 +5368,20 @@ index 000000000..b692255f4
 +        AVPacket* packet = pending->packet.get();
 +        if (m_suspended) {
 +            if (!std::exchange(suspended, true))
-+                ffmpegMediaLog("video decoder: stream %u suspended (page hidden) at clock %.3f", remote->id(), m_clockHint.load());
++                ffmpegMediaLog("video decoder: stream %u suspended (page hidden) at clock %.3f; holding its input queue", remote->id(), m_clockHint.load());
 +            m_waitingForKeyframe = true;
-+            pending.reset();
++            // Do NOT drain the queue while the page is hidden. Draining keeps
++            // pulling the source's enqueue cursor (MSE) or the demuxer's read
++            // position (progressive) forward to the end of the buffered
++            // range; decode would then resume far AHEAD of the audio clock,
++            // and the player, whose clock only reaches those pts seconds or
++            // minutes later, would show nothing while the UI's hardware
++            // decoder fills every picture slot with frames it never shows
++            // (the tab-switch freeze). Holding `pending` fills the input
++            // queue instead, so the source stops feeding and the cursor stays
++            // at the clock; on resume decode restarts there, behind the clock
++            // that advanced meanwhile, and the drop-behind below catches up.
++            remote->waitForEvent(remoteEventWaitSeconds);
 +            continue;
 +        }
 +        if (m_waitingForKeyframe) {

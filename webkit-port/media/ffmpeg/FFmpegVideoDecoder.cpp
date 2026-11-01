@@ -394,9 +394,20 @@ void FFmpegVideoDecoder::runRemote()
         AVPacket* packet = pending->packet.get();
         if (m_suspended) {
             if (!std::exchange(suspended, true))
-                ffmpegMediaLog("video decoder: stream %u suspended (page hidden) at clock %.3f", remote->id(), m_clockHint.load());
+                ffmpegMediaLog("video decoder: stream %u suspended (page hidden) at clock %.3f; holding its input queue", remote->id(), m_clockHint.load());
             m_waitingForKeyframe = true;
-            pending.reset();
+            // Do NOT drain the queue while the page is hidden. Draining keeps
+            // pulling the source's enqueue cursor (MSE) or the demuxer's read
+            // position (progressive) forward to the end of the buffered
+            // range; decode would then resume far AHEAD of the audio clock,
+            // and the player, whose clock only reaches those pts seconds or
+            // minutes later, would show nothing while the UI's hardware
+            // decoder fills every picture slot with frames it never shows
+            // (the tab-switch freeze). Holding `pending` fills the input
+            // queue instead, so the source stops feeding and the cursor stays
+            // at the clock; on resume decode restarts there, behind the clock
+            // that advanced meanwhile, and the drop-behind below catches up.
+            remote->waitForEvent(remoteEventWaitSeconds);
             continue;
         }
         if (m_waitingForKeyframe) {

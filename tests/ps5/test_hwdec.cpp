@@ -1194,6 +1194,55 @@ TEST_SUITE("hwdec_visibility") {
     REQUIRE(wait_until([&] { return h.last_grey.load() == expected_grey(500); }));
   }
 
+  TEST_CASE("resume fed ahead of the clock: a from-clock flush realigns and presents") {
+    Harness h(avcc_record());
+    // Playing at clock ~105: decode a run and show up to 105.
+    for (int i = 0; i < 8; ++i) {
+      h.send(100 + i, i == 0);
+    }
+    REQUIRE(wait_until([&] { return h.decoded() >= 6; }));
+    for (int pts = 100; pts <= 105; ++pts) {
+      h.stream->show(0, pts);
+    }
+    REQUIRE(wait_until([&] { return h.last_grey.load() == expected_grey(105); }));
+
+    // Tab hidden then shown: the held pictures are released.
+    h.stream->set_visible(false);
+    h.stream->set_visible(true);
+    CHECK(h.stream->held_pictures() == 0);
+
+    // Model the pre-fix hazard: frames far AHEAD of the clock are fed (pts
+    // 160+) and the player, whose clock is ~105, shows none of them. They
+    // must not pin the stream: the bounded wait keeps the decoder moving.
+    for (int i = 0; i < 16; ++i) {
+      h.send(160 + i, i == 0);
+    }
+    REQUIRE(wait_until([&] {
+      std::lock_guard<std::mutex> guard(h.lock);
+      return std::any_of(h.notices.begin(), h.notices.end(),
+                         [](const wire::Decoded& d) { return d.pts == 160; });
+    }));
+    const int delivered_before = h.delivered.load();
+
+    // The fixed WebProcess realigns on resume: it flushes the stream (a real
+    // discontinuity) and feeds video from the clock again.
+    h.stream->flush(1);
+    CHECK(h.stream->held_pictures() == 0);
+    const Bytes key = length_prefixed({kIdr});
+    const Bytes delta = length_prefixed({kSlice});
+    h.stream->packet(1, 106, true, key.data(), key.size());
+    h.stream->packet(1, 107, false, delta.data(), delta.size());
+    REQUIRE(wait_until([&] {
+      std::lock_guard<std::mutex> guard(h.lock);
+      return std::any_of(h.notices.begin(), h.notices.end(),
+                         [](const wire::Decoded& d) { return d.serial == 1 && d.pts == 106; });
+    }));
+    // The player shows the from-clock frame: the picture comes back.
+    h.stream->show(1, 106);
+    REQUIRE(wait_until([&] { return h.last_grey.load() == expected_grey(106); }));
+    CHECK(h.delivered.load() > delivered_before);
+  }
+
   TEST_CASE("pictures are cropped to the parameter sets' visible size, not the container's") {
     // The fake decoder outputs 16x16 pictures; the SPS says 16x10 visible.
     std::string error;

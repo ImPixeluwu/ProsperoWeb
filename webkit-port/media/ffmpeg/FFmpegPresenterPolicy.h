@@ -73,6 +73,35 @@ inline PresentDecision decidePresentation(double framePts, double frameDuration,
     return decision;
 }
 
+// Resume from a hidden page (FFmpegVideoDecoder::runRemote). While hidden the
+// decoder holds its input queue rather than draining it: a drained queue lets
+// the source feed forward to the end of the buffered range, so decode resumes
+// far ahead of the audio clock and the player (which only reaches those pts
+// much later) shows nothing while the UI's slots fill with unshowable frames.
+//
+// resumeDecodeAheadOfClock models where decode resumes relative to the clock.
+// `drainWhileHidden` false (the fix) keeps the resume position at the hold
+// point, which the advancing clock has caught up to or passed, so the frame
+// is at or behind the clock and plays at once; true (the old behaviour)
+// resumes at the buffered end, ahead of the clock, which freezes. Returns the
+// seconds the first decoded frame is ahead of the clock (<= 0: behind, shown
+// at once and dropped-behind as needed).
+inline double resumeDecodeAheadOfClock(bool drainWhileHidden, double holdPts, double bufferedEndPts,
+    double clockAtResume, double gopSeconds)
+{
+    double resumePts = drainWhileHidden ? bufferedEndPts : holdPts;
+    // Decode restarts at the first keyframe at or after the resume position.
+    double keyframePts = resumePts + gopSeconds;
+    return keyframePts - clockAtResume;
+}
+
+// The player recovers after a resume only when the first decoded frame is
+// within reach of the clock (not stuck far ahead of it).
+inline bool resumeConverges(double aheadOfClockSeconds, double reachSeconds)
+{
+    return aheadOfClockSeconds <= reachSeconds;
+}
+
 // Wall-clock seconds to sleep before the next decision. `untilDue` is media
 // time; at playback rate r it passes r times faster.
 inline double presenterWaitSeconds(std::optional<double> untilDue, double rate, bool running)
