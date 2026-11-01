@@ -249,7 +249,9 @@ if(PROSPEROWEB_NATIVE_TITLE_TARGET)
     # native/native_trace.c: access() past EPERM, the IPC calls logged.
     access socketpair sendmsg recvmsg select
     # fcntl on sockets and dup() are refused in a title (native_trace.c).
-    fcntl dup)
+    fcntl dup
+    # poll() falls back to select() if it misses data in the title.
+    poll)
   list(TRANSFORM _native_wraps PREPEND "-Wl,--wrap=")
   target_link_options(prosperoweb_native PRIVATE
     -nostartfiles -nodefaultlibs

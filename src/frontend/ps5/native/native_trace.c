@@ -22,7 +22,13 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <poll.h>
+#include <arpa/inet.h>
+#include <pthread.h>
 #include <sys/select.h>
+#include <sys/time.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -44,6 +50,7 @@ ssize_t __real_recvmsg(int fd, struct msghdr* msg, int flags);
 int __real_select(int n, fd_set* r, fd_set* w, fd_set* e, struct timeval* t);
 int __real_fcntl(int fd, int command, ...);
 int __real_dup(int fd);
+int __real_poll(struct pollfd* fds, nfds_t nfds, int timeout);
 int sceKernelRdup(int pid, int fd);
 
 // ---- access() ------------------------------------------------------------------
@@ -189,6 +196,143 @@ int __wrap_dup(int fd) {
     errno = EPERM;
   }
   return result;
+}
+
+// ---- poll() ----------------------------------------------------------------------
+//
+// The UI's audio and video servers wait with poll(); in the title a TCP
+// client got "no answer from the server" (console run 33) while WebKit's
+// select()-based IPC works. native_socket_selftest() checks poll on a
+// loopback connection at start-up; if it does not report data that is
+// there, poll() is carried out with select() for the rest of the session.
+
+static atomic_int g_poll_via_select;
+
+static int poll_with_select(struct pollfd* fds, nfds_t nfds, int timeout) {
+  fd_set readable, writable, failed;
+  FD_ZERO(&readable);
+  FD_ZERO(&writable);
+  FD_ZERO(&failed);
+  int max_fd = -1;
+  for (nfds_t i = 0; i < nfds; i++) {
+    fds[i].revents = 0;
+    const int fd = fds[i].fd;
+    if (fd < 0 || fd >= FD_SETSIZE) {
+      continue;
+    }
+    if (fds[i].events & (POLLIN | POLLRDNORM)) {
+      FD_SET(fd, &readable);
+    }
+    if (fds[i].events & (POLLOUT | POLLWRNORM)) {
+      FD_SET(fd, &writable);
+    }
+    FD_SET(fd, &failed);
+    if (fd > max_fd) {
+      max_fd = fd;
+    }
+  }
+  struct timeval tv;
+  struct timeval* tvp = NULL;
+  if (timeout >= 0) {
+    tv.tv_sec = timeout / 1000;
+    tv.tv_usec = (timeout % 1000) * 1000;
+    tvp = &tv;
+  }
+  const int rc = __real_select(max_fd + 1, &readable, &writable, &failed, tvp);
+  if (rc <= 0) {
+    return rc;
+  }
+  int ready = 0;
+  for (nfds_t i = 0; i < nfds; i++) {
+    const int fd = fds[i].fd;
+    if (fd < 0 || fd >= FD_SETSIZE) {
+      continue;
+    }
+    if (FD_ISSET(fd, &readable)) {
+      fds[i].revents |= fds[i].events & (POLLIN | POLLRDNORM);
+    }
+    if (FD_ISSET(fd, &writable)) {
+      fds[i].revents |= fds[i].events & (POLLOUT | POLLWRNORM);
+    }
+    if (FD_ISSET(fd, &failed)) {
+      fds[i].revents |= POLLERR;
+    }
+    if (fds[i].revents) {
+      ready++;
+    }
+  }
+  return ready;
+}
+
+int __wrap_poll(struct pollfd* fds, nfds_t nfds, int timeout) {
+  return atomic_load(&g_poll_via_select) ? poll_with_select(fds, nfds, timeout)
+                                         : __real_poll(fds, nfds, timeout);
+}
+
+// A loopback TCP connection with this process's own sockets, as the audio
+// and video servers use it: listen, non-blocking, connect, poll and accept,
+// data, poll and receive. Every step is logged; a poll that misses data
+// switches poll() to the select() emulation.
+void native_socket_selftest(void) {
+  char line[640];
+  size_t used = 0;
+#define STEP(...)                                                                     \
+  do {                                                                                \
+    int n_ = snprintf(line + used, sizeof(line) - used, __VA_ARGS__);                 \
+    used += n_ > 0 && (size_t)n_ < sizeof(line) - used ? (size_t)n_ : 0;              \
+  } while (0)
+  const int listener = socket(AF_INET, SOCK_STREAM, 0);
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  socklen_t len = sizeof(addr);
+  const int one = 1;
+  setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+  if (listener < 0 || bind(listener, (struct sockaddr*)&addr, sizeof(addr)) != 0 ||
+      listen(listener, 4) != 0 || getsockname(listener, (struct sockaddr*)&addr, &len) != 0) {
+    ps5_log_printf("socket selftest: listen on loopback failed: %s", strerror(errno));
+    if (listener >= 0) {
+      close(listener);
+    }
+    return;
+  }
+  const int flags = fcntl(listener, F_GETFL, 0);
+  STEP("listen ok; non-blocking %s", fcntl(listener, F_SETFL, flags | O_NONBLOCK) == 0 ? "ok" : strerror(errno));
+  const int client = socket(AF_INET, SOCK_STREAM, 0);
+  const int connected = connect(client, (struct sockaddr*)&addr, sizeof(addr));
+  STEP("; connect %s", connected == 0 ? "ok" : strerror(errno));
+  struct pollfd p = {listener, POLLIN, 0};
+  const int polled = __real_poll(&p, 1, 1000);
+  STEP("; poll(listener) %d revents %#x", polled, (unsigned)p.revents);
+  int accepted = accept(listener, NULL, NULL);
+  STEP("; accept %s", accepted >= 0 ? "ok" : strerror(errno));
+  int poll_ok = polled == 1 && (p.revents & POLLIN);
+  if (accepted >= 0) {
+    setsockopt(accepted, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    const char hello[] = "PRWB";
+    STEP("; send %s", send(client, hello, 4, 0) == 4 ? "ok" : strerror(errno));
+    struct pollfd q = {accepted, POLLIN, 0};
+    const int polled_data = __real_poll(&q, 1, 1000);
+    STEP("; poll(data) %d revents %#x", polled_data, (unsigned)q.revents);
+    poll_ok = poll_ok && polled_data == 1 && (q.revents & POLLIN);
+    fd_set set;
+    FD_ZERO(&set);
+    FD_SET(accepted, &set);
+    struct timeval tv = {1, 0};
+    STEP("; select(data) %d", __real_select(accepted + 1, &set, NULL, NULL, &tv));
+    char buf[8] = {0};
+    STEP("; recv %zd", recv(accepted, buf, sizeof(buf), 0));
+    close(accepted);
+  }
+  close(client);
+  close(listener);
+  if (!poll_ok) {
+    atomic_store(&g_poll_via_select, 1);
+  }
+  ps5_log_printf("socket selftest: %s -> poll() %s", line,
+                 poll_ok ? "works" : "MISSES DATA: emulated with select() from now on");
+#undef STEP
 }
 
 // ---- IPC tracing ----------------------------------------------------------------

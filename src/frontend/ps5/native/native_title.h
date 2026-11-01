@@ -37,6 +37,10 @@ void native_trace_io_summary(char* out, size_t len);
 // Logs whether the UI can create files in the profile's directories.
 void native_profile_probe(const char* base);
 
+// A loopback TCP round trip with this process's own sockets (as the audio
+// and video servers use them); switches poll() to select() if it misses data.
+void native_socket_selftest(void);
+
 // The direct-memory heap (native_memory.c): its size, 0 when the system
 // heap is in use, and how much of it is in use.
 size_t native_heap_size(void);
