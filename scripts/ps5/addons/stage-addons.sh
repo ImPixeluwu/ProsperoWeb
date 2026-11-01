@@ -96,13 +96,20 @@ done < "${LOCK}"
 [[ ${#ADS_INPUTS[@]} -gt 0 ]] || die "no ads lists in addons.lock"
 
 # Compile the lists to WebKit content-rule-list JSON (network block +
-# css-display-none cosmetic) for the native content blocker. Network rules are
-# prioritised under the 150000-rule cap; cosmetic overflow is dropped.
-log "building ads ruleset (EasyList/EasyPrivacy/uBlock/Peter-Lowe) -> adblock-ads.json"
-"${CONVERT}" --max-rules "${MAX_RULES}" "${ADDONS}/adblock-ads.json" "${ADS_INPUTS[@]}"
+# css-display-none cosmetic) for the native content blocker, SPLIT into
+# several small lists: WebKit's on-device compiler traps/OOMs on one huge
+# list, so each chunk is kept small (<= PER_CHUNK rules). Network rules come
+# first; cosmetic overflow past MAX_TOTAL is dropped.
+PER_CHUNK="${ADDONS_PER_CHUNK:-20000}"
+MAX_TOTAL="${ADDONS_MAX_TOTAL:-100000}"
+log "building ads ruleset -> adblock-ads-*.json (per-chunk ${PER_CHUNK}, total ${MAX_TOTAL})"
+ADS_CHUNKS="$("${CONVERT}" --chunked --per-chunk "${PER_CHUNK}" --max-total "${MAX_TOTAL}" \
+    "${ADDONS}/adblock-ads.json" "${ADS_INPUTS[@]}")"
+COOKIE_CHUNKS=0
 if [[ ${#COOKIE_INPUTS[@]} -gt 0 ]]; then
-  log "building cookie ruleset -> adblock-cookie.json"
-  "${CONVERT}" --max-rules "${MAX_RULES}" "${ADDONS}/adblock-cookie.json" "${COOKIE_INPUTS[@]}"
+  log "building cookie ruleset -> adblock-cookie-*.json"
+  COOKIE_CHUNKS="$("${CONVERT}" --chunked --per-chunk "${PER_CHUNK}" --max-total "${MAX_TOTAL}" \
+      "${ADDONS}/adblock-cookie.json" "${COOKIE_INPUTS[@]}")"
 fi
 
 # --- User scripts. ----------------------------------------------------------
@@ -122,9 +129,12 @@ join_json() {
 {
   printf '{\n'
   printf '  "install_dir": "%s",\n' "${INSTALL_DIR}"
-  printf '  "max_rules": %s,\n' "${MAX_RULES}"
-  printf '  "ads": { "output": "adblock-ads.json", "sources": [%s] },\n' "$(join_json "${ADS_SOURCES[@]}")"
-  printf '  "cookie": { "output": "adblock-cookie.json", "sources": [%s] }\n' "$(join_json "${COOKIE_SOURCES[@]}")"
+  printf '  "per_chunk": %s,\n' "${PER_CHUNK}"
+  printf '  "max_total": %s,\n' "${MAX_TOTAL}"
+  printf '  "ads": { "prefix": "adblock-ads", "chunks": %s, "sources": [%s] },\n' \
+      "${ADS_CHUNKS}" "$(join_json "${ADS_SOURCES[@]}")"
+  printf '  "cookie": { "prefix": "adblock-cookie", "chunks": %s, "sources": [%s] }\n' \
+      "${COOKIE_CHUNKS}" "$(join_json "${COOKIE_SOURCES[@]}")"
   printf '}\n'
 } > "${ADDONS}/sources.json"
 

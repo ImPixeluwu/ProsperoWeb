@@ -80,6 +80,30 @@
     } catch (e) { return false; }
   }
 
+  // Hide YouTube page ads (promoted/masthead/sidebar/in-feed). The content
+  // blocker also carries css-display-none rules, but the merged list is capped,
+  // so this small, targeted stylesheet guarantees the common containers are
+  // hidden. Top frame only; fail-open.
+  var ytStyle = null;
+  function applyYouTubeCss() {
+    try {
+      if (window.top !== window.self || !isYouTube()) { return; }
+      if (!enabled()) { if (ytStyle) { ytStyle.textContent = ''; } return; }
+      if (!ytStyle) {
+        ytStyle = document.createElement('style');
+        ytStyle.setAttribute('data-prosperoweb-adblock-yt', '1');
+      }
+      ytStyle.textContent =
+          'ytd-ad-slot-renderer,ytd-promoted-sparkles-web-renderer,' +
+          'ytd-promoted-video-renderer,ytd-display-ad-renderer,' +
+          'ytd-in-feed-ad-layout-renderer,ytd-ad-inline-playback-meta-block,' +
+          'ytd-compact-promoted-video-renderer,#player-ads,#masthead-ad,' +
+          '.ytp-ad-module,.ytd-companion-slot-renderer{display:none!important}';
+      var root = document.head || document.documentElement;
+      if (root && ytStyle.parentNode !== root) { root.appendChild(ytStyle); }
+    } catch (e) {}
+  }
+
   // Best-effort for anything the prune misses (server-stitched ads): click the
   // skip button, close overlays, and fast-forward + mute an ad that is showing.
   function tick() {
@@ -101,7 +125,15 @@
     } catch (e) {}
   }
 
+  // Re-applied on live toggle by the UI process (window.__PROSPEROWEB_AB.apply).
+  window.__PROSPEROWEB_AB.apply = applyYouTubeCss;
+
   try {
+    applyYouTubeCss();
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', applyYouTubeCss, true);
+    }
+    document.addEventListener('yt-navigate-finish', applyYouTubeCss, true);
     setInterval(tick, 500);
     setInterval(function () {
       if (pruneFired) { log('pruned YouTube ad placements on ' + location.host); pruneFired = false; }

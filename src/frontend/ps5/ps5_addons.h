@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The PS5 add-ons backend. The ad blocker is the native WebKit content rule
-// list (WKUserContentExtensionStore / WKContentRuleList, now that
-// ENABLE(CONTENT_EXTENSIONS) is on): network `block` + `css-display-none`
-// cosmetic rules compiled from EasyList/EasyPrivacy/uBlock/Peter-Lowe and
-// attached to every content view - robust and never touching page JS. A small
-// fail-open userscript handles only YouTube pre/mid-roll (json-prune), and
+// The PS5 add-ons backend. The ad blocker is WebKit's native content rule
+// list (ENABLE(CONTENT_EXTENSIONS) is on), but split into SEVERAL small
+// compiled lists: the on-device content-extension compiler traps/OOMs on one
+// huge list, so each chunk is kept small and compiled independently (like
+// wBlock's several content blockers). A compile that fails is skipped, never
+// fatal. A small fail-open userscript handles YouTube pre/mid-roll, and
 // SponsorBlock is a second userscript.
 #pragma once
 
@@ -28,10 +28,6 @@ class WkWebView;
 
 class Ps5Addons final : public shell::AddonsBackend {
  public:
-  // addons_dir: bundled baseline (adblock-ads.json, adblock-cookie.json,
-  //   adblock.js, sponsorblock.js, sources.json), read-only on the console.
-  // cache_dir:  writable profile dir for the content-extension store and the
-  //   freshly downloaded/recompiled rulesets.
   Ps5Addons(std::string addons_dir, std::string cache_dir, core::AddonsConfig initial);
   ~Ps5Addons() override;
 
@@ -54,20 +50,35 @@ class Ps5Addons final : public shell::AddonsBackend {
   bool filters_updating() const override;
 
  private:
-  struct CompileCtx;
+  // One ruleset (ads or cookie), compiled as several small content rule lists.
+  struct RuleSet {
+    bool is_cookie = false;
+    std::string prefix;                           // e.g. "adblock-ads"
+    int chunks = 0;                               // number of chunk files
+    std::vector<WKUserContentFilterRef> filters;  // compiled, by chunk index (may hold nullptr)
+    std::vector<std::string> sources;             // refetch URLs
+  };
+  struct CompileCtx {
+    Ps5Addons* self;
+    bool is_cookie;
+    int index;
+    bool from_update;
+  };
 
-  void ensure_filter(bool is_cookie);
-  void compile_from_file(const std::string& json_path, bool is_cookie, bool from_update);
-  void compile_json(const std::string& json, bool is_cookie, bool from_update);
-  void adopt_filter(bool is_cookie, WKUserContentFilterRef filter);
+  RuleSet& set_for(bool is_cookie) { return is_cookie ? cookie_ : ads_; }
+  void ensure_filters(bool is_cookie);
+  void compile_from_file(bool is_cookie, int index, const std::string& json_path, bool from_update);
+  void compile_json(bool is_cookie, int index, const std::string& json, bool from_update);
+  void adopt_filter(bool is_cookie, int index, WKUserContentFilterRef filter);
   static void on_lookup(WKUserContentFilterRef filter, std::uint32_t result, void* ctx);
   static void on_compile(WKUserContentFilterRef filter, std::uint32_t result, void* ctx);
+  std::string identifier(bool is_cookie, int index) const;
+  std::string chunk_path(const RuleSet& set, int index) const;  // cache if present else bundled
+  void collect_filters(std::vector<WKUserContentFilterRef>& out) const;
   void apply_filters();
   void apply_user_scripts();
   std::vector<std::string> build_user_scripts() const;
-  std::string best_json_path(const char* cache_name, const char* bundled_name) const;
   void finish_update(bool ok);
-
   void start_update();
   void worker_run();
 
@@ -78,21 +89,20 @@ class Ps5Addons final : public shell::AddonsBackend {
   std::string sponsorblock_js_;
 
   WKUserContentExtensionStoreRef store_ = nullptr;
-  WKUserContentFilterRef ads_filter_ = nullptr;     // retained
-  WKUserContentFilterRef cookie_filter_ = nullptr;  // retained
-
-  std::vector<std::string> ads_sources_;
-  std::vector<std::string> cookie_sources_;
+  RuleSet ads_;
+  RuleSet cookie_;
+  std::size_t per_chunk_ = 20000;
+  std::size_t max_total_ = 100000;
 
   std::function<void(std::int64_t)> on_filters_updated_;
 
   std::thread worker_;
   std::mutex mutex_;
   std::atomic<bool> updating_{false};
-  bool result_ready_ = false;        // guarded by mutex_
-  bool result_ok_ = false;           // guarded by mutex_
-  std::string fetched_ads_json_;     // guarded by mutex_ (WebKit rule-list JSON)
-  std::string fetched_cookie_json_;  // guarded by mutex_
+  bool result_ready_ = false;               // guarded by mutex_
+  bool result_ok_ = false;                  // guarded by mutex_
+  std::vector<std::string> fetched_ads_chunks_;     // guarded by mutex_
+  std::vector<std::string> fetched_cookie_chunks_;  // guarded by mutex_
   std::int64_t last_updated_ = 0;
   std::int64_t last_check_ = 0;
   std::int64_t update_started_at_ = 0;

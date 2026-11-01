@@ -122,32 +122,34 @@ bool https_get(const std::string& url, std::string& out) {
 
 }  // namespace
 
-struct Ps5Addons::CompileCtx {
-  Ps5Addons* self;
-  bool is_cookie;
-  bool from_update;
-};
-
 Ps5Addons::Ps5Addons(std::string addons_dir, std::string cache_dir, core::AddonsConfig initial)
     : addons_dir_(std::move(addons_dir)), cache_dir_(std::move(cache_dir)), cfg_(std::move(initial)) {
   last_updated_ = cfg_.adblock.last_updated;
+  ads_.is_cookie = false;
+  ads_.prefix = "adblock-ads";
+  cookie_.is_cookie = true;
+  cookie_.prefix = "adblock-cookie";
   make_dirs(cache_dir_);
   curl_global_init(CURL_GLOBAL_DEFAULT);
   auto path = make_wk_string(cache_dir_);
   store_ = WKUserContentExtensionStoreCreate(path.get());
   log_printf("addons: content-extension store at %s: %s", cache_dir_.c_str(),
-             store_ ? "ok" : "FAILED (null; is ENABLE(CONTENT_EXTENSIONS) on?)");
+             store_ ? "ok" : "FAILED (null)");
 }
 
 Ps5Addons::~Ps5Addons() {
   if (worker_.joinable()) {
     worker_.join();
   }
-  if (ads_filter_) {
-    WKRelease(ads_filter_);
+  for (auto* f : ads_.filters) {
+    if (f) {
+      WKRelease(f);
+    }
   }
-  if (cookie_filter_) {
-    WKRelease(cookie_filter_);
+  for (auto* f : cookie_.filters) {
+    if (f) {
+      WKRelease(f);
+    }
   }
   if (store_) {
     WKRelease(store_);
@@ -155,12 +157,17 @@ Ps5Addons::~Ps5Addons() {
   curl_global_cleanup();
 }
 
-std::string Ps5Addons::best_json_path(const char* cache_name, const char* bundled_name) const {
-  const std::string cached = cache_dir_ + "/" + cache_name;
+std::string Ps5Addons::identifier(bool is_cookie, int index) const {
+  return std::string(is_cookie ? "cookie" : "ads") + std::to_string(index);
+}
+
+std::string Ps5Addons::chunk_path(const RuleSet& set, int index) const {
+  const std::string name = set.prefix + "-" + std::to_string(index) + ".json";
+  const std::string cached = cache_dir_ + "/" + name;
   if (file_exists(cached)) {
     return cached;
   }
-  return addons_dir_ + "/" + bundled_name;
+  return addons_dir_ + "/" + name;
 }
 
 void Ps5Addons::start() {
@@ -169,31 +176,49 @@ void Ps5Addons::start() {
 
   nlohmann::json manifest = nlohmann::json::parse(read_file(addons_dir_ + "/sources.json"), nullptr,
                                                   /*allow_exceptions=*/false);
-  auto load_sources = [&](const char* key, std::vector<std::string>& out) {
+  auto load_set = [&](const char* key, RuleSet& set) {
     if (manifest.is_object()) {
       if (auto it = manifest.find(key); it != manifest.end() && it->is_object()) {
+        if (auto p = it->find("prefix"); p != it->end() && p->is_string()) {
+          set.prefix = p->get<std::string>();
+        }
+        if (auto c = it->find("chunks"); c != it->end() && c->is_number_integer()) {
+          set.chunks = c->get<int>();
+        }
         if (auto s = it->find("sources"); s != it->end() && s->is_array()) {
           for (const auto& u : *s) {
             if (u.is_string()) {
-              out.push_back(u.get<std::string>());
+              set.sources.push_back(u.get<std::string>());
             }
           }
         }
       }
     }
   };
-  load_sources("ads", ads_sources_);
-  load_sources("cookie", cookie_sources_);
+  load_set("ads", ads_);
+  load_set("cookie", cookie_);
+  if (manifest.is_object()) {
+    if (auto v = manifest.find("per_chunk"); v != manifest.end() && v->is_number_integer()) {
+      per_chunk_ = v->get<std::size_t>();
+    }
+    if (auto v = manifest.find("max_total"); v != manifest.end() && v->is_number_integer()) {
+      max_total_ = v->get<std::size_t>();
+    }
+  }
+  ads_.filters.assign(static_cast<std::size_t>(ads_.chunks), nullptr);
+  cookie_.filters.assign(static_cast<std::size_t>(cookie_.chunks), nullptr);
 
   log_printf("addons: adblock=%s cookie_banners=%s auto_update=%s sponsorblock=%s (%zu categories)",
              cfg_.adblock.enabled ? "on" : "off", cfg_.adblock.cookie_banners ? "on" : "off",
              cfg_.adblock.auto_update ? "on" : "off", cfg_.sponsorblock.enabled ? "on" : "off",
              cfg_.sponsorblock.categories.size());
+  log_printf("addons: ads=%d chunk(s), cookie=%d chunk(s), per_chunk=%zu, max_total=%zu",
+             ads_.chunks, cookie_.chunks, per_chunk_, max_total_);
 
   if (cfg_.adblock.enabled) {
-    ensure_filter(/*is_cookie=*/false);
+    ensure_filters(/*is_cookie=*/false);
     if (cfg_.adblock.cookie_banners) {
-      ensure_filter(/*is_cookie=*/true);
+      ensure_filters(/*is_cookie=*/true);
     }
   }
   apply_user_scripts();
@@ -206,54 +231,61 @@ void Ps5Addons::start() {
   }
 }
 
-void Ps5Addons::ensure_filter(bool is_cookie) {
+void Ps5Addons::ensure_filters(bool is_cookie) {
   if (!store_) {
     return;
   }
-  auto* ctx = new CompileCtx{this, is_cookie, /*from_update=*/false};
-  auto id = make_wk_string(is_cookie ? "cookie" : "ads");
-  WKUserContentExtensionStoreLookup(store_, id.get(), ctx, &Ps5Addons::on_lookup);
+  RuleSet& set = set_for(is_cookie);
+  for (int i = 0; i < set.chunks; ++i) {
+    if (set.filters[static_cast<std::size_t>(i)]) {
+      continue;  // already compiled/loaded
+    }
+    auto* ctx = new CompileCtx{this, is_cookie, i, /*from_update=*/false};
+    auto id = make_wk_string(identifier(is_cookie, i));
+    WKUserContentExtensionStoreLookup(store_, id.get(), ctx, &Ps5Addons::on_lookup);
+  }
 }
 
 void Ps5Addons::on_lookup(WKUserContentFilterRef filter, std::uint32_t result, void* ctx_raw) {
   auto* ctx = static_cast<CompileCtx*>(ctx_raw);
   Ps5Addons* self = ctx->self;
   const bool is_cookie = ctx->is_cookie;
+  const int index = ctx->index;
   delete ctx;
   if (result == kWKUserContentExtensionStoreSuccess && filter) {
-    log_printf("addons: loaded cached %s ruleset", is_cookie ? "cookie" : "ads");
-    self->adopt_filter(is_cookie, filter);
+    log_printf("addons: loaded cached %s chunk %d", is_cookie ? "cookie" : "ads", index);
+    self->adopt_filter(is_cookie, index, filter);
     return;
   }
-  const std::string path =
-      is_cookie ? self->best_json_path("adblock-cookie.json", "adblock-cookie.json")
-                : self->best_json_path("adblock-ads.json", "adblock-ads.json");
-  self->compile_from_file(path, is_cookie, /*from_update=*/false);
+  const RuleSet& set = is_cookie ? self->cookie_ : self->ads_;
+  self->compile_from_file(is_cookie, index, self->chunk_path(set, index), /*from_update=*/false);
 }
 
-void Ps5Addons::compile_from_file(const std::string& json_path, bool is_cookie, bool from_update) {
+void Ps5Addons::compile_from_file(bool is_cookie, int index, const std::string& json_path,
+                                  bool from_update) {
   const std::string json = read_file(json_path);
   if (json.empty()) {
-    log_printf("addons: %s ruleset missing at %s", is_cookie ? "cookie" : "ads", json_path.c_str());
+    log_printf("addons: %s chunk %d missing at %s", is_cookie ? "cookie" : "ads", index,
+               json_path.c_str());
     if (from_update && update_pending_ > 0 && --update_pending_ == 0) {
       finish_update(update_ads_ok_);
     }
     return;
   }
-  compile_json(json, is_cookie, from_update);
+  compile_json(is_cookie, index, json, from_update);
 }
 
-void Ps5Addons::compile_json(const std::string& json, bool is_cookie, bool from_update) {
+void Ps5Addons::compile_json(bool is_cookie, int index, const std::string& json, bool from_update) {
   if (!store_) {
     if (from_update && update_pending_ > 0 && --update_pending_ == 0) {
       finish_update(update_ads_ok_);
     }
     return;
   }
-  log_printf("addons: compiling %s ruleset (%zu rules, %zu bytes)%s", is_cookie ? "cookie" : "ads",
-             count_rules(json), json.size(), from_update ? " from update" : "");
-  auto* ctx = new CompileCtx{this, is_cookie, from_update};
-  auto id = make_wk_string(is_cookie ? "cookie" : "ads");
+  log_printf("addons: compiling %s chunk %d (%zu rules, %zu bytes)%s", is_cookie ? "cookie" : "ads",
+             index, count_rules(json), json.size(), from_update ? " from update" : "");
+  auto* ctx = new CompileCtx{this, is_cookie, index, from_update};
+  auto id = make_wk_string(identifier(is_cookie, index));
   auto src = make_wk_string(json);
   WKUserContentExtensionStoreCompile(store_, id.get(), src.get(), ctx, &Ps5Addons::on_compile);
 }
@@ -262,15 +294,17 @@ void Ps5Addons::on_compile(WKUserContentFilterRef filter, std::uint32_t result, 
   auto* ctx = static_cast<CompileCtx*>(ctx_raw);
   Ps5Addons* self = ctx->self;
   const bool is_cookie = ctx->is_cookie;
+  const int index = ctx->index;
   const bool from_update = ctx->from_update;
   delete ctx;
   const bool ok = (result == kWKUserContentExtensionStoreSuccess && filter);
   if (ok) {
-    log_printf("addons: %s ruleset compiled ok", is_cookie ? "cookie" : "ads");
-    self->adopt_filter(is_cookie, filter);
+    log_printf("addons: %s chunk %d compiled ok", is_cookie ? "cookie" : "ads", index);
+    self->adopt_filter(is_cookie, index, filter);
   } else {
-    log_printf("addons: %s ruleset compile FAILED (result %u); keeping previous",
-               is_cookie ? "cookie" : "ads", result);
+    // A chunk that will not compile is skipped, never fatal.
+    log_printf("addons: %s chunk %d compile FAILED (result %u); skipping",
+               is_cookie ? "cookie" : "ads", index, result);
   }
   if (from_update) {
     if (ok && !is_cookie) {
@@ -282,9 +316,13 @@ void Ps5Addons::on_compile(WKUserContentFilterRef filter, std::uint32_t result, 
   }
 }
 
-void Ps5Addons::adopt_filter(bool is_cookie, WKUserContentFilterRef filter) {
+void Ps5Addons::adopt_filter(bool is_cookie, int index, WKUserContentFilterRef filter) {
+  RuleSet& set = set_for(is_cookie);
+  if (index < 0 || index >= static_cast<int>(set.filters.size())) {
+    return;
+  }
   WKRetain(filter);
-  WKUserContentFilterRef& slot = is_cookie ? cookie_filter_ : ads_filter_;
+  WKUserContentFilterRef& slot = set.filters[static_cast<std::size_t>(index)];
   if (slot) {
     WKRelease(slot);
   }
@@ -292,14 +330,26 @@ void Ps5Addons::adopt_filter(bool is_cookie, WKUserContentFilterRef filter) {
   apply_filters();
 }
 
+void Ps5Addons::collect_filters(std::vector<WKUserContentFilterRef>& out) const {
+  if (cfg_.adblock.enabled) {
+    for (auto* f : ads_.filters) {
+      if (f) {
+        out.push_back(f);
+      }
+    }
+    if (cfg_.adblock.cookie_banners) {
+      for (auto* f : cookie_.filters) {
+        if (f) {
+          out.push_back(f);
+        }
+      }
+    }
+  }
+}
+
 void Ps5Addons::apply_filters() {
   std::vector<WKUserContentFilterRef> filters;
-  if (cfg_.adblock.enabled && ads_filter_) {
-    filters.push_back(ads_filter_);
-  }
-  if (cfg_.adblock.enabled && cfg_.adblock.cookie_banners && cookie_filter_) {
-    filters.push_back(cookie_filter_);
-  }
+  collect_filters(filters);
   int views = 0;
   for (WkWebView* v : WkWebView::content_views()) {
     v->set_content_filters(filters);
@@ -311,8 +361,6 @@ void Ps5Addons::apply_filters() {
 
 std::vector<std::string> Ps5Addons::build_user_scripts() const {
   std::vector<std::string> scripts;
-  // The YouTube json-prune script is injected whenever we have it, gated at
-  // runtime by window.__PROSPEROWEB_AB.enabled, so a live toggle takes effect.
   if (!adblock_js_.empty()) {
     nlohmann::json ab = {{"enabled", cfg_.adblock.enabled}};
     scripts.push_back("window.__PROSPEROWEB_AB = " + ab.dump() + ";\n" + adblock_js_);
@@ -344,12 +392,7 @@ void Ps5Addons::apply_user_scripts() {
 
 void Ps5Addons::apply_to_view(WkWebView& view) {
   std::vector<WKUserContentFilterRef> filters;
-  if (cfg_.adblock.enabled && ads_filter_) {
-    filters.push_back(ads_filter_);
-  }
-  if (cfg_.adblock.enabled && cfg_.adblock.cookie_banners && cookie_filter_) {
-    filters.push_back(cookie_filter_);
-  }
+  collect_filters(filters);
   view.set_content_filters(filters);
   view.set_addon_user_scripts(build_user_scripts());
 }
@@ -357,11 +400,11 @@ void Ps5Addons::apply_to_view(WkWebView& view) {
 void Ps5Addons::set_adblock(bool enabled, bool cookie_banners) {
   cfg_.adblock.enabled = enabled;
   cfg_.adblock.cookie_banners = cookie_banners;
-  if (enabled && !ads_filter_) {
-    ensure_filter(/*is_cookie=*/false);
-  }
-  if (enabled && cookie_banners && !cookie_filter_) {
-    ensure_filter(/*is_cookie=*/true);
+  if (enabled) {
+    ensure_filters(/*is_cookie=*/false);
+    if (cookie_banners) {
+      ensure_filters(/*is_cookie=*/true);
+    }
   }
   apply_filters();
   apply_user_scripts();
@@ -395,8 +438,8 @@ void Ps5Addons::start_update() {
     std::lock_guard<std::mutex> lock(mutex_);
     result_ready_ = false;
     result_ok_ = false;
-    fetched_ads_json_.clear();
-    fetched_cookie_json_.clear();
+    fetched_ads_chunks_.clear();
+    fetched_cookie_chunks_.clear();
   }
   update_started_at_ = now_epoch();
   log_line("addons: downloading filter lists in the background");
@@ -404,41 +447,31 @@ void Ps5Addons::start_update() {
 }
 
 void Ps5Addons::worker_run() {
-  std::vector<std::string> ads_urls = ads_sources_;
-  if (ads_urls.empty()) {
-    ads_urls = {"https://easylist.to/easylist/easylist.txt",
-                "https://easylist.to/easylist/easyprivacy.txt"};
-  }
-  std::vector<std::string> cookie_urls = cookie_sources_;
+  // Download + chunk off the main thread (no WebKit calls here).
+  auto fetch_all = [](const std::vector<std::string>& urls, bool& ok) {
+    std::vector<std::string> texts;
+    for (const auto& u : urls) {
+      std::string body;
+      if (!https_get(u, body)) {
+        ok = false;
+        return texts;
+      }
+      texts.push_back(std::move(body));
+    }
+    return texts;
+  };
 
   bool ok = true;
-  std::vector<std::string> ads_texts;
-  for (const auto& u : ads_urls) {
-    std::string body;
-    if (!https_get(u, body)) {
-      ok = false;
-      break;
-    }
-    ads_texts.push_back(std::move(body));
+  std::vector<std::string> ads_chunks;
+  std::vector<std::string> cookie_chunks;
+  std::vector<std::string> ads_texts = fetch_all(ads_.sources, ok);
+  if (ok && !ads_texts.empty()) {
+    ads_chunks = core::adblock::convert_chunked(ads_texts, per_chunk_, max_total_).chunks;
   }
-
-  std::string ads_json;
-  std::string cookie_json;
-  if (ok) {
-    ads_json = core::adblock::convert(ads_texts).json;
-    if (cfg_.adblock.cookie_banners && !cookie_urls.empty()) {
-      std::vector<std::string> cookie_texts;
-      for (const auto& u : cookie_urls) {
-        std::string body;
-        if (!https_get(u, body)) {
-          ok = false;
-          break;
-        }
-        cookie_texts.push_back(std::move(body));
-      }
-      if (ok) {
-        cookie_json = core::adblock::convert(cookie_texts).json;
-      }
+  if (ok && cfg_.adblock.cookie_banners && !cookie_.sources.empty()) {
+    std::vector<std::string> cookie_texts = fetch_all(cookie_.sources, ok);
+    if (ok && !cookie_texts.empty()) {
+      cookie_chunks = core::adblock::convert_chunked(cookie_texts, per_chunk_, max_total_).chunks;
     }
   }
 
@@ -446,15 +479,15 @@ void Ps5Addons::worker_run() {
   result_ready_ = true;
   result_ok_ = ok;
   if (ok) {
-    fetched_ads_json_ = std::move(ads_json);
-    fetched_cookie_json_ = std::move(cookie_json);
+    fetched_ads_chunks_ = std::move(ads_chunks);
+    fetched_cookie_chunks_ = std::move(cookie_chunks);
   }
 }
 
 void Ps5Addons::pump() {
   if (updating_.load()) {
-    std::string ads_json;
-    std::string cookie_json;
+    std::vector<std::string> ads_chunks;
+    std::vector<std::string> cookie_chunks;
     bool ready = false;
     bool ok = false;
     {
@@ -462,8 +495,8 @@ void Ps5Addons::pump() {
       if (result_ready_) {
         ready = true;
         ok = result_ok_;
-        ads_json = std::move(fetched_ads_json_);
-        cookie_json = std::move(fetched_cookie_json_);
+        ads_chunks = std::move(fetched_ads_chunks_);
+        cookie_chunks = std::move(fetched_cookie_chunks_);
         result_ready_ = false;
       }
     }
@@ -471,16 +504,30 @@ void Ps5Addons::pump() {
       if (worker_.joinable()) {
         worker_.join();
       }
-      if (ok && !ads_json.empty() && store_) {
-        log_line("addons: fetched filter lists, recompiling");
+      if (ok && !ads_chunks.empty() && store_) {
+        log_printf("addons: fetched filter lists, recompiling (%zu ads + %zu cookie chunks)",
+                   ads_chunks.size(), cookie_chunks.size());
         update_ads_ok_ = false;
-        update_pending_ = 1;
-        write_file(cache_dir_ + "/adblock-ads.json", ads_json);
-        compile_json(ads_json, /*is_cookie=*/false, /*from_update=*/true);
-        if (!cookie_json.empty()) {
-          ++update_pending_;
-          write_file(cache_dir_ + "/adblock-cookie.json", cookie_json);
-          compile_json(cookie_json, /*is_cookie=*/true, /*from_update=*/true);
+        update_pending_ = static_cast<int>(ads_chunks.size() + cookie_chunks.size());
+        // New chunk counts: resize the filter vectors.
+        ads_.chunks = static_cast<int>(ads_chunks.size());
+        ads_.filters.resize(ads_chunks.size(), nullptr);
+        cookie_.chunks = static_cast<int>(cookie_chunks.size());
+        cookie_.filters.resize(cookie_chunks.size(), nullptr);
+        for (std::size_t i = 0; i < ads_chunks.size(); ++i) {
+          write_file(cache_dir_ + "/" + ads_.prefix + "-" + std::to_string(i) + ".json",
+                     ads_chunks[i]);
+          compile_json(/*is_cookie=*/false, static_cast<int>(i), ads_chunks[i],
+                       /*from_update=*/true);
+        }
+        for (std::size_t i = 0; i < cookie_chunks.size(); ++i) {
+          write_file(cache_dir_ + "/" + cookie_.prefix + "-" + std::to_string(i) + ".json",
+                     cookie_chunks[i]);
+          compile_json(/*is_cookie=*/true, static_cast<int>(i), cookie_chunks[i],
+                       /*from_update=*/true);
+        }
+        if (update_pending_ == 0) {
+          finish_update(false);  // nothing to compile
         }
       } else {
         log_line("addons: filter-list refresh failed; keeping cached/bundled lists");
