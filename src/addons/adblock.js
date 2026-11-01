@@ -52,32 +52,42 @@
     } catch (e) {}
   }
 
-  // Proxy JSON.parse (covers the player response fetched on SPA navigation).
-  try {
-    var _parse = JSON.parse;
-    JSON.parse = function () {
-      var out = _parse.apply(this, arguments);  // native first; untouched on error
-      if (enabled()) { prunePlayer(out); }
-      return out;
-    };
-  } catch (e) {}
-
-  // The initial watch page assigns ytInitialPlayerResponse directly (not via
-  // JSON.parse); prune it on set. Always stores the value, pruned or not.
-  try {
-    var _ypr;
-    Object.defineProperty(window, 'ytInitialPlayerResponse', {
-      configurable: true,
-      get: function () { return _ypr; },
-      set: function (v) { if (enabled()) { prunePlayer(v); } _ypr = v; }
-    });
-  } catch (e) {}
-
   function isYouTube() {
     try {
       var h = location.hostname.replace(/^www\./, '').replace(/^m\./, '');
       return h === 'youtube.com' || h === 'youtube-nocookie.com' || h === 'youtubekids.com';
     } catch (e) { return false; }
+  }
+
+  // The JSON.parse / ytInitialPlayerResponse hooks are installed ONLY on
+  // YouTube - a global proxy would tax every parse on every site. Even on
+  // YouTube, the parse hook does a cheap substring check first and only touches
+  // the object when an ad field is actually present (no walk, no clone).
+  if (isYouTube()) {
+    try {
+      var _parse = JSON.parse;
+      JSON.parse = function (text) {
+        var out = _parse.apply(this, arguments);  // native first; untouched on error
+        // Fast path: only inspect strings that mention an ad field.
+        if (enabled() && typeof text === 'string' &&
+            (text.indexOf('adPlacements') !== -1 || text.indexOf('playerAds') !== -1 ||
+             text.indexOf('adSlots') !== -1)) {
+          prunePlayer(out);
+        }
+        return out;
+      };
+    } catch (e) {}
+
+    // The initial watch page assigns ytInitialPlayerResponse directly (not via
+    // JSON.parse); prune it on set. Always stores the value, pruned or not.
+    try {
+      var _ypr;
+      Object.defineProperty(window, 'ytInitialPlayerResponse', {
+        configurable: true,
+        get: function () { return _ypr; },
+        set: function (v) { if (enabled()) { prunePlayer(v); } _ypr = v; }
+      });
+    } catch (e) {}
   }
 
   // Hide YouTube page ads (promoted/masthead/sidebar/in-feed). The content

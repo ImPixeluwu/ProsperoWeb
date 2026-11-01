@@ -21,7 +21,8 @@ class Ps5EngineView final : public shell::EngineView {
   Ps5EngineView(shell::EngineViewClient& client, WKContextRef context,
                 WKWebsiteDataStoreRef data_store,
                 const std::vector<std::string>& user_scripts,
-                const std::string& user_agent);
+                const std::string& user_agent,
+                WKUserContentControllerRef shared_controller);
   ~Ps5EngineView() override = default;
 
   // shell::EngineView
@@ -69,18 +70,20 @@ class Ps5EngineFactory final : public shell::EngineFactory {
   WKContextRef context() const { return context_; }
   WKWebsiteDataStoreRef data_store() const { return data_store_; }
 
-  // Invoked for every content view created, so the add-ons manager can apply
-  // the current content filters / user scripts to it.
-  void set_on_view_created(std::function<void(WkWebView&)> cb) {
-    on_view_created_ = std::move(cb);
+  // The shared user content controller the add-ons manager attaches to, and
+  // the base scripts it must re-add when rebuilding the controller's scripts.
+  WKUserContentControllerRef shared_content_controller() const {
+    return shared_content_controller_;
   }
+  const std::vector<std::string>& base_scripts() const { return base_scripts_; }
 
  private:
   WKContextRef context_ = nullptr;
   WKWebsiteDataStoreRef data_store_ = nullptr;
   std::vector<std::string> user_scripts_;
   std::string user_agent_;
-  std::function<void(WkWebView&)> on_view_created_;
+  WKUserContentControllerRef shared_content_controller_ = nullptr;
+  std::vector<std::string> base_scripts_;
 };
 
 }  // namespace prosperoweb::frontend

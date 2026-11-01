@@ -105,7 +105,8 @@ std::string js_escape(const std::string& s) {
 Ps5EngineView::Ps5EngineView(shell::EngineViewClient& client, WKContextRef context,
                              WKWebsiteDataStoreRef data_store,
                              const std::vector<std::string>& user_scripts,
-                             const std::string& user_agent)
+                             const std::string& user_agent,
+                             WKUserContentControllerRef shared_controller)
     : client_(client) {
   WkWebView::Callbacks cb;
   cb.load_started = [this]() { client_.load_started(); };
@@ -151,7 +152,8 @@ Ps5EngineView::Ps5EngineView(shell::EngineViewClient& client, WKContextRef conte
   };
 
   web_ = std::make_unique<WkWebView>(context, data_store, "prosperoweb", user_scripts,
-                                     /*fullscreen_enabled=*/true, std::move(cb));
+                                     /*fullscreen_enabled=*/true, std::move(cb),
+                                     shared_controller);
   web_->set_size(1920, 1080);
   if (!user_agent.empty()) {
     web_->set_user_agent(user_agent);
@@ -257,9 +259,20 @@ Ps5EngineFactory::Ps5EngineFactory(const std::string& base_dir,
   }
   data_store_ = WKWebsiteDataStoreCreateWithConfiguration(ds_config);
   WKRelease(ds_config);
+
+  // One user content controller shared by every content view: the base
+  // scripts + a page-routed message handler live on it once, and the add-ons
+  // manager attaches the content rule list(s) a single time (a rule-list
+  // SharedMemory handle can be handed over only once, so per-view controllers
+  // cannot share it).
+  shared_content_controller_ = WkWebView::create_shared_controller("prosperoweb", user_scripts_);
+  base_scripts_ = WkWebView::base_scripts("prosperoweb", user_scripts_);
 }
 
 Ps5EngineFactory::~Ps5EngineFactory() {
+  if (shared_content_controller_) {
+    WKRelease(shared_content_controller_);
+  }
   if (data_store_) {
     WKRelease(data_store_);
   }
@@ -270,14 +283,10 @@ Ps5EngineFactory::~Ps5EngineFactory() {
 
 std::unique_ptr<shell::EngineView> Ps5EngineFactory::create(
     shell::EngineViewClient& client) {
-  auto view = std::make_unique<Ps5EngineView>(client, context_, data_store_, user_scripts_,
-                                              user_agent_);
-  // Apply the current add-ons (content filters, SponsorBlock) to the new view
-  // so a tab opened after startup or a toggle is covered too.
-  if (on_view_created_) {
-    on_view_created_(view->web());
-  }
-  return view;
+  // The shared controller already carries the add-ons, so new views are
+  // covered without any per-view attach.
+  return std::make_unique<Ps5EngineView>(client, context_, data_store_, user_scripts_, user_agent_,
+                                         shared_content_controller_);
 }
 
 }  // namespace prosperoweb::frontend

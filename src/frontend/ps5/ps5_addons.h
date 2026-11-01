@@ -35,7 +35,14 @@ class Ps5Addons final : public shell::AddonsBackend {
   Ps5Addons& operator=(const Ps5Addons&) = delete;
 
   void start();
-  void apply_to_view(WkWebView& view);
+  // The shared user content controller every content view uses; the add-ons
+  // attach to it once. base_scripts are re-added before the add-on scripts
+  // when rebuilding the controller's scripts. Call before start().
+  void attach_controller(WKUserContentControllerRef controller,
+                         std::vector<std::string> base_scripts) {
+    controller_ = controller;
+    base_scripts_ = std::move(base_scripts);
+  }
   void pump();
 
   void set_on_filters_updated(std::function<void(std::int64_t)> cb) {
@@ -103,6 +110,8 @@ class Ps5Addons final : public shell::AddonsBackend {
   std::string sponsorblock_js_;
 
   WKUserContentExtensionStoreRef store_ = nullptr;
+  WKUserContentControllerRef controller_ = nullptr;  // shared, owned by the factory
+  std::vector<std::string> base_scripts_;            // re-added before add-on scripts
   RuleSet ads_;
   RuleSet cookie_;
   std::size_t per_chunk_ = 20000;

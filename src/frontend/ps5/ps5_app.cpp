@@ -322,7 +322,10 @@ int Ps5App::run() {
     const std::string addons_cache = std::string(kBaseDir) + "/addons/cache";
     log_printf("addons: baseline %s, cache %s", addons_dir.c_str(), addons_cache.c_str());
     addons_ = std::make_unique<Ps5Addons>(addons_dir, addons_cache, config_.addons);
-    factory_->set_on_view_created([this](WkWebView& w) { addons_->apply_to_view(w); });
+    // All content views share one user content controller; the add-ons attach
+    // to it once (a content rule list's SharedMemory handle can be handed over
+    // only once, so per-view controllers cannot share it).
+    addons_->attach_controller(factory_->shared_content_controller(), factory_->base_scripts());
   }
 
   shell::ShellController::Config cfg;

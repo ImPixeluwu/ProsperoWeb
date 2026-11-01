@@ -61,10 +61,19 @@ class WkWebView {
   // message_handler_name is the script-message handler to register (e.g.
   // "prosperoweb" or "chrome"). user_scripts are injected at document start in
   // all frames. fullscreen_enabled toggles the HTML5 Fullscreen API.
+  //
+  // shared_controller (optional): when non-null the view USES this externally
+  // owned user content controller instead of creating its own, and does NOT
+  // add the bridge/base scripts or the message handler (the shared controller
+  // already carries them, with a page-routed handler). This lets all content
+  // views share one controller so an ad-block content rule list - whose
+  // SharedMemory handle can be handed over only once - is attached a single
+  // time and covers every page.
   WkWebView(WKContextRef context, WKWebsiteDataStoreRef data_store,
             const std::string& message_handler_name,
             const std::vector<std::string>& user_scripts,
-            bool fullscreen_enabled, Callbacks callbacks);
+            bool fullscreen_enabled, Callbacks callbacks,
+            WKUserContentControllerRef shared_controller = nullptr);
   ~WkWebView();
 
   WkWebView(const WkWebView&) = delete;
@@ -74,21 +83,23 @@ class WkWebView {
   WKPageRef page() const { return page_; }
   const std::string& name() const { return name_; }
 
-  // Add-ons: dynamically replace the content rule list(s) and extra user
-  // scripts on this view's user content controller (the ad blocker and
-  // SponsorBlock). Take effect on the next navigation.
-  //
-  // set_content_filters removes all previously applied filters and adds the
-  // given compiled WKUserContentFilterRef(s) (owned by the caller).
-  void set_content_filters(const std::vector<WKUserContentFilterRef>& filters);
-  // set_addon_user_scripts re-installs the base user scripts (the bridge and
-  // the ones passed at construction) followed by these extra sources, so a
-  // toggle never drops the EME detector / focus reporter / gamepad bridge.
-  void set_addon_user_scripts(const std::vector<std::string>& sources);
-
-  // Every live content view (all views except the HTML chrome), for the
-  // add-ons manager to apply toggles across tabs.
-  static std::vector<WkWebView*> content_views();
+  // The full base user-script set (bridge shim + the given user_scripts) a
+  // shared controller is seeded with; the add-ons manager re-adds these before
+  // its extra scripts when it rebuilds the controller's scripts.
+  static std::vector<std::string> base_scripts(const std::string& message_handler_name,
+                                               const std::vector<std::string>& user_scripts);
+  // Creates a user content controller seeded with base_scripts() and a
+  // page-routed script-message handler. Owned (released) by the caller.
+  static WKUserContentControllerRef create_shared_controller(
+      const std::string& message_handler_name, const std::vector<std::string>& user_scripts);
+  // Replace all content filters on a controller (RemoveAll + Add each).
+  static void set_controller_filters(WKUserContentControllerRef controller,
+                                     const std::vector<WKUserContentFilterRef>& filters);
+  // Replace all user scripts on a controller with base then extra (RemoveAll
+  // + re-add), so toggling an add-on never drops the base scripts.
+  static void set_controller_scripts(WKUserContentControllerRef controller,
+                                     const std::vector<std::string>& base,
+                                     const std::vector<std::string>& extra);
 
   // Accessor for the C-API trampolines (which receive this as clientInfo).
   Callbacks& callbacks() { return cb_; }
@@ -170,10 +181,8 @@ class WkWebView {
   void deliver_bridged(const std::string& batch);
 
   Callbacks cb_;
-  // The bridge shim + the user scripts passed at construction, re-added when
-  // set_addon_user_scripts() rebuilds the script list.
-  std::vector<std::string> base_scripts_;
   WKViewRef view_ = nullptr;
+  bool owns_controller_ = true;  // false when using a shared controller
   WKPageRef page_ = nullptr;
   WKUserContentControllerRef content_controller_ = nullptr;
   WKPreferencesRef preferences_ = nullptr;

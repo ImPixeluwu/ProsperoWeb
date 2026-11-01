@@ -467,15 +467,17 @@ void Ps5Addons::collect_filters(std::vector<WKUserContentFilterRef>& out) const 
 }
 
 void Ps5Addons::apply_filters() {
+  if (!controller_) {
+    return;
+  }
   std::vector<WKUserContentFilterRef> filters;
   collect_filters(filters);
-  int views = 0;
-  for (WkWebView* v : WkWebView::content_views()) {
-    v->set_content_filters(filters);
-    ++views;
-  }
-  log_printf("addons: adblock %s -> %zu content filter(s) on %d view(s)",
-             cfg_.adblock.enabled ? "ON" : "OFF", filters.size(), views);
+  // One shared controller: attach once, covering every content view. A
+  // rule-list SharedMemory handle can be handed over only once, so this is
+  // also the only way more than one page sees the filters.
+  WkWebView::set_controller_filters(controller_, filters);
+  log_printf("addons: adblock %s -> %zu content filter(s) on the shared controller",
+             cfg_.adblock.enabled ? "ON" : "OFF", filters.size());
 }
 
 std::vector<std::string> Ps5Addons::build_user_scripts() const {
@@ -493,27 +495,12 @@ std::vector<std::string> Ps5Addons::build_user_scripts() const {
 }
 
 void Ps5Addons::apply_user_scripts() {
-  auto scripts = build_user_scripts();
-  nlohmann::json sb_cats = cfg_.sponsorblock.categories;
-  const std::string ab_live =
-      "if(window.__PROSPEROWEB_AB)window.__PROSPEROWEB_AB.enabled=" +
-      std::string(cfg_.adblock.enabled ? "true" : "false") + ";";
-  const std::string sb_live =
-      "if(window.__PROSPEROWEB_SB){window.__PROSPEROWEB_SB.enabled=" +
-      std::string(cfg_.sponsorblock.enabled ? "true" : "false") +
-      ";if(window.__PROSPEROWEB_SB.apply)window.__PROSPEROWEB_SB.apply(" + sb_cats.dump() + ");}";
-  for (WkWebView* v : WkWebView::content_views()) {
-    v->set_addon_user_scripts(scripts);
-    v->run_javascript(ab_live);
-    v->run_javascript(sb_live);
+  if (!controller_) {
+    return;
   }
-}
-
-void Ps5Addons::apply_to_view(WkWebView& view) {
-  std::vector<WKUserContentFilterRef> filters;
-  collect_filters(filters);
-  view.set_content_filters(filters);
-  view.set_addon_user_scripts(build_user_scripts());
+  // Rebuild the shared controller's user scripts: base (bridge + page scripts)
+  // then our add-on extras. Takes effect on the next navigation.
+  WkWebView::set_controller_scripts(controller_, base_scripts_, build_user_scripts());
 }
 
 void Ps5Addons::set_adblock(bool enabled, bool cookie_banners) {

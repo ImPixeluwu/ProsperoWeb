@@ -19,6 +19,7 @@
 #include <WebKit/WKPreferencesRef.h>
 #include <WebKit/WKPreferencesRefPrivate.h>
 #include <WebKit/WKScriptMessageRef.h>
+#include <WebKit/WKFrameInfoRef.h>
 #include <WebKit/WKString.h>
 #include <WebKit/WKType.h>
 #include <WebKit/WKURL.h>
@@ -280,10 +281,38 @@ WKPageRef ui_create_new_page(WKPageRef, WKPageConfigurationRef,
 
 // --- script message handler ------------------------------------------------
 
+// Resolve the WkWebView that owns the message's page (for the shared,
+// page-routed handler where clientInfo is null).
+WkWebView* view_for_message(WKScriptMessageRef message) {
+  if (!message) {
+    return nullptr;
+  }
+  WKFrameInfoRef frame = WKScriptMessageGetFrameInfo(message);
+  if (!frame) {
+    return nullptr;
+  }
+  WKPageRef page = WKFrameInfoGetPage(frame);
+  for (WkWebView* v : all_views()) {
+    if (v->page() == page) {
+      return v;
+    }
+  }
+  return nullptr;
+}
+
 void script_message(WKScriptMessageRef message, WKCompletionListenerRef reply,
                      const void* ci) {
-  self_of(ci)->note_native_message("message received");
-  auto& cb = self_of(ci)->callbacks();
+  // Per-view handler: clientInfo is the WkWebView. Shared handler: clientInfo
+  // is null, route by the message's page.
+  WkWebView* self = ci ? self_of(ci) : view_for_message(message);
+  if (!self) {
+    if (reply) {
+      WKCompletionListenerComplete(reply, nullptr);
+    }
+    return;
+  }
+  self->note_native_message("message received");
+  auto& cb = self->callbacks();
   if (cb.script_message && message) {
     // A string body is passed through as is (it is expected to hold JSON
     // already); any other value is serialised once. Re-encoding a string
@@ -405,20 +434,24 @@ void WkWebView::s_began_exit_fullscreen(WKViewRef, WKRect, WKRect, const void* c
 WkWebView::WkWebView(WKContextRef context, WKWebsiteDataStoreRef data_store,
                      const std::string& message_handler_name,
                      const std::vector<std::string>& user_scripts,
-                     bool fullscreen_enabled, Callbacks callbacks)
+                     bool fullscreen_enabled, Callbacks callbacks,
+                     WKUserContentControllerRef shared_controller)
     : cb_(std::move(callbacks)), name_(message_handler_name) {
-  content_controller_ = WKUserContentControllerCreate();
-  base_scripts_.reserve(user_scripts.size() + 1);
-  base_scripts_.push_back(bridge_script(message_handler_name));  // before any user of it
-  base_scripts_.insert(base_scripts_.end(), user_scripts.begin(), user_scripts.end());
-  for (const auto& src : base_scripts_) {
-    auto s = make_wk_string(src);
-    WKUserScriptRef script = WKUserScriptCreateWithSource(
-        s.get(), kWKInjectAtDocumentStart, /*forMainFrameOnly=*/false);
-    WKUserContentControllerAddUserScript(content_controller_, script);
-    WKRelease(script);
-  }
-  {
+  if (shared_controller) {
+    // Use the shared controller (already seeded with base scripts and a
+    // page-routed handler); do not add scripts/handler or own it.
+    content_controller_ = shared_controller;
+    owns_controller_ = false;
+  } else {
+    content_controller_ = WKUserContentControllerCreate();
+    owns_controller_ = true;
+    for (const auto& src : base_scripts(message_handler_name, user_scripts)) {
+      auto s = make_wk_string(src);
+      WKUserScriptRef script = WKUserScriptCreateWithSource(
+          s.get(), kWKInjectAtDocumentStart, /*forMainFrameOnly=*/false);
+      WKUserContentControllerAddUserScript(content_controller_, script);
+      WKRelease(script);
+    }
     auto name = make_wk_string(message_handler_name);
     WKUserContentControllerAddScriptMessageHandler(content_controller_, name.get(),
                                                    &script_message, this);
@@ -517,53 +550,69 @@ WkWebView::~WkWebView() {
   if (preferences_) {
     WKRelease(preferences_);
   }
-  if (content_controller_) {
+  if (content_controller_ && owns_controller_) {
     WKRelease(content_controller_);
   }
 }
 
 // --- add-ons: content filters and extra user scripts ------------------------
 
-std::vector<WkWebView*> WkWebView::content_views() {
-  std::vector<WkWebView*> out;
-  for (WkWebView* v : all_views()) {
-    if (v->name_ != "chrome") {
-      out.push_back(v);
-    }
-  }
-  return out;
+std::vector<std::string> WkWebView::base_scripts(const std::string& message_handler_name,
+                                                 const std::vector<std::string>& user_scripts) {
+  std::vector<std::string> scripts;
+  scripts.reserve(user_scripts.size() + 1);
+  scripts.push_back(bridge_script(message_handler_name));  // before any user of it
+  scripts.insert(scripts.end(), user_scripts.begin(), user_scripts.end());
+  return scripts;
 }
 
-void WkWebView::set_content_filters(const std::vector<WKUserContentFilterRef>& filters) {
-  if (!content_controller_) {
+WKUserContentControllerRef WkWebView::create_shared_controller(
+    const std::string& message_handler_name, const std::vector<std::string>& user_scripts) {
+  WKUserContentControllerRef controller = WKUserContentControllerCreate();
+  for (const auto& src : base_scripts(message_handler_name, user_scripts)) {
+    auto s = make_wk_string(src);
+    WKUserScriptRef script = WKUserScriptCreateWithSource(
+        s.get(), kWKInjectAtDocumentStart, /*forMainFrameOnly=*/false);
+    WKUserContentControllerAddUserScript(controller, script);
+    WKRelease(script);
+  }
+  // Page-routed handler (clientInfo == nullptr -> route by the message's page).
+  auto name = make_wk_string(message_handler_name);
+  WKUserContentControllerAddScriptMessageHandler(controller, name.get(), &script_message, nullptr);
+  return controller;
+}
+
+void WkWebView::set_controller_filters(WKUserContentControllerRef controller,
+                                       const std::vector<WKUserContentFilterRef>& filters) {
+  if (!controller) {
     return;
   }
-  WKUserContentControllerRemoveAllUserContentFilters(content_controller_);
+  WKUserContentControllerRemoveAllUserContentFilters(controller);
   for (WKUserContentFilterRef f : filters) {
     if (f) {
-      WKUserContentControllerAddUserContentFilter(content_controller_, f);
+      WKUserContentControllerAddUserContentFilter(controller, f);
     }
   }
-  log_printf("view %s: applied %zu content filter(s)", name_.c_str(), filters.size());
 }
 
-void WkWebView::set_addon_user_scripts(const std::vector<std::string>& sources) {
-  if (!content_controller_) {
+void WkWebView::set_controller_scripts(WKUserContentControllerRef controller,
+                                       const std::vector<std::string>& base,
+                                       const std::vector<std::string>& extra) {
+  if (!controller) {
     return;
   }
-  // RemoveAllUserScripts drops everything, so re-add the base scripts first.
-  WKUserContentControllerRemoveAllUserScripts(content_controller_);
+  WKUserContentControllerRemoveAllUserScripts(controller);
   auto add = [&](const std::string& src) {
     auto s = make_wk_string(src);
     WKUserScriptRef script = WKUserScriptCreateWithSource(
         s.get(), kWKInjectAtDocumentStart, /*forMainFrameOnly=*/false);
-    WKUserContentControllerAddUserScript(content_controller_, script);
+    WKUserContentControllerAddUserScript(controller, script);
     WKRelease(script);
   };
-  for (const auto& src : base_scripts_) {
+  for (const auto& src : base) {
     add(src);
   }
-  for (const auto& src : sources) {
+  for (const auto& src : extra) {
     add(src);
   }
 }
