@@ -6,6 +6,8 @@
   "contentVersion": "01.001.000",
   "masterVersion": "01.00",
   "kind": "app",
+  "applicationCategoryType": 65536,
+  "contentBadgeType": 2,
   "category": "Utilities/Web Browser",
   "storeCategory": "utilities",
   "description": "A WebKit web browser for the PS5, driven by the controller, with tabs, bookmarks and video playback.",
