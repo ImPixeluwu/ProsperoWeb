@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "FFmpegMediaControl.h"
 #include "FFmpegVideoOverlayWire.h"
 
 extern "C" void ps5_log_printf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -154,18 +155,23 @@ bool VideoServer::start() {
   addr.sin_port = htons(static_cast<std::uint16_t>(options_.port));
   if (bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
       listen(listen_fd_, 8) != 0) {
-    ps5_log_printf("video overlay: cannot listen on tcp 127.0.0.1:%d: %s", options_.port,
-                   std::strerror(errno));
+    ps5_log_printf("video overlay: cannot listen on tcp 127.0.0.1:%d: %s%s", options_.port,
+                   std::strerror(errno),
+                   options_.listen_optional ? " (serving control-socket players only)" : "");
     close(listen_fd_);
     listen_fd_ = -1;
-    return false;
+    if (!options_.listen_optional) {
+      return false;
+    }
+  } else {
+    socklen_t len = sizeof(addr);
+    getsockname(listen_fd_, reinterpret_cast<sockaddr*>(&addr), &len);
+    port_ = ntohs(addr.sin_port);
+    (void)set_nonblocking(listen_fd_);  // accept_clients() polls first either way
+    listening_ = true;
+    ps5_log_printf("video overlay: listening on tcp 127.0.0.1:%d (%s scaling)", port_,
+                   options_.filter == display::ScaleFilter::Bilinear ? "bilinear" : "nearest");
   }
-  socklen_t len = sizeof(addr);
-  getsockname(listen_fd_, reinterpret_cast<sockaddr*>(&addr), &len);
-  port_ = ntohs(addr.sin_port);
-  (void)set_nonblocking(listen_fd_);  // accept_clients() polls first either way
-  ps5_log_printf("video overlay: listening on tcp 127.0.0.1:%d (%s scaling)", port_,
-                 options_.filter == display::ScaleFilter::Bilinear ? "bilinear" : "nearest");
   stop_ = false;
   stats_start_ms_ = now_ms();
   thread_ = std::thread([this] { run(); });
@@ -181,10 +187,29 @@ void VideoServer::stop() {
     close_connection(*c, "server stopped");
   }
   connections_.clear();
+  for (int fd : control_fds_) {
+    close(fd);
+  }
+  control_fds_.clear();
+  {
+    std::lock_guard<std::mutex> lock(control_mu_);
+    for (int fd : pending_control_fds_) {
+      close(fd);
+    }
+    pending_control_fds_.clear();
+  }
   if (listen_fd_ >= 0) {
     close(listen_fd_);
     listen_fd_ = -1;
   }
+}
+
+void VideoServer::add_control_fd(int fd) {
+  if (fd < 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(control_mu_);
+  pending_control_fds_.push_back(fd);
 }
 
 VideoServer::Frames VideoServer::acquire(const PageKey& page) {
@@ -234,10 +259,25 @@ void VideoServer::add_damage_locked(const Player& p) {
 void VideoServer::run() {
   std::vector<pollfd> fds;
   while (!stop_) {
+    {
+      std::lock_guard<std::mutex> lock(control_mu_);
+      for (int fd : pending_control_fds_) {
+        control_fds_.push_back(fd);
+      }
+      pending_control_fds_.clear();
+    }
     fds.clear();
-    fds.push_back({listen_fd_, POLLIN, 0});
+    // Connections first (serviced by index), then the listen socket (when
+    // listening), then the control sockets; poll wakes on any of them.
     for (auto& c : connections_) {
       fds.push_back({c->fd, POLLIN, 0});
+    }
+    const std::size_t listen_index = fds.size();
+    if (listen_fd_ >= 0) {
+      fds.push_back({listen_fd_, POLLIN, 0});
+    }
+    for (int fd : control_fds_) {
+      fds.push_back({fd, POLLIN, 0});
     }
     const int ready = poll(fds.data(), fds.size(), 50);
     if (ready < 0 && errno != EINTR) {
@@ -245,17 +285,18 @@ void VideoServer::run() {
       return;
     }
     if (ready > 0) {
-      for (std::size_t i = 1; i < fds.size(); ++i) {
+      for (std::size_t i = 0; i < listen_index; ++i) {
         if (fds[i].revents) {
-          Connection& c = *connections_[i - 1];
+          Connection& c = *connections_[i];
           if (!service(c)) {
             close_connection(c, nullptr);
           }
         }
       }
-      if (fds[0].revents & POLLIN) {
+      if (listen_fd_ >= 0 && (fds[listen_index].revents & POLLIN)) {
         accept_clients();
       }
+      service_control_fds();
     }
     for (auto& c : connections_) {
       if (c->stream && c->stream->failed()) {
@@ -278,23 +319,61 @@ void VideoServer::accept_clients() {
     if (fd < 0) {
       return;
     }
-    const bool nonblocking = set_nonblocking(fd);
-    if (!logged_socket_mode_) {
-      logged_socket_mode_ = true;
-      ps5_log_printf("%s: client sockets %s", "video overlay",
-                     nonblocking ? "non-blocking"
-                                 : "blocking (refused here: reads and writes use MSG_DONTWAIT and poll)");
-    }
-    int one = 1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    adopt_fd(fd);
+  }
+}
+
+void VideoServer::adopt_fd(int fd) {
+  const bool nonblocking = set_nonblocking(fd);
+  if (!logged_socket_mode_) {
+    logged_socket_mode_ = true;
+    ps5_log_printf("%s: client sockets %s", "video overlay",
+                   nonblocking ? "non-blocking"
+                               : "blocking (refused here: reads and writes use MSG_DONTWAIT and poll)");
+  }
+  int one = 1;
+  setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));  // ignored on AF_UNIX
 #ifdef SO_NOSIGPIPE
-    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+  setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
 #endif
-    int receive_buffer = 4 << 20;
-    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &receive_buffer, sizeof(receive_buffer));
-    auto c = std::make_unique<Connection>();
-    c->fd = fd;
-    connections_.push_back(std::move(c));
+  int receive_buffer = 4 << 20;
+  setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &receive_buffer, sizeof(receive_buffer));
+  auto c = std::make_unique<Connection>();
+  c->fd = fd;
+  connections_.push_back(std::move(c));
+}
+
+void VideoServer::service_control_fds() {
+  namespace mc = WebCore::FFmpegMedia::MediaControl;
+  for (std::size_t i = 0; i < control_fds_.size();) {
+    const int fd = control_fds_[i];
+    bool drop = false;
+    while (readable_now(fd)) {
+      int stream_fd = -1;
+      const mc::Receive r = mc::receiveDescriptor(fd, stream_fd);
+      if (r == mc::Receive::Received) {
+        ps5_log_printf("video overlay: adopted a player socket over the control channel (fd %d)",
+                       stream_fd);
+        adopt_fd(stream_fd);
+        continue;
+      }
+      if (r == mc::Receive::Closed) {
+        drop = true;
+        break;
+      }
+      if (r == mc::Receive::WouldBlock) {
+        break;
+      }
+      // Error: a malformed handoff was skipped; keep reading.
+    }
+    if (drop) {
+      ps5_log_printf("video overlay: control socket closed (a WebProcess exited)");
+      close(fd);
+      control_fds_[i] = control_fds_.back();
+      control_fds_.pop_back();
+    } else {
+      ++i;
+    }
   }
 }
 

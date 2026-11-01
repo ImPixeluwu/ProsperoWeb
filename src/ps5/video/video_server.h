@@ -49,6 +49,10 @@ struct ServerOptions {
   DecoderFactory decoder_factory;
   // Streams decoded at the same time; more are refused.
   int max_decode_streams = 2;
+  // When true, start() keeps running even if listen() is refused (the Media
+  // application-category sandbox forbids it, console run 34): the server then
+  // serves only players adopted through add_control_fd().
+  bool listen_optional = false;
 };
 
 // The identity of a page: its WebProcess and the page's WebCore identifier.
@@ -65,10 +69,20 @@ class VideoServer {
   VideoServer(const VideoServer&) = delete;
   VideoServer& operator=(const VideoServer&) = delete;
 
-  // Binds 127.0.0.1:port and starts the thread. False if it cannot listen.
+  // Binds 127.0.0.1:port and starts the thread. False if it cannot listen,
+  // unless ServerOptions::listen_optional is set (then the thread still
+  // starts and serves only control-socket players).
   bool start();
   void stop();
   int port() const { return port_; }
+  // Whether listen() succeeded (false under the media-category sandbox).
+  bool listening() const { return listening_; }
+
+  // Adopts an inherited AF_UNIX control socket (one per WebProcess): the
+  // server polls it and, for every stream descriptor a player passes over it
+  // (FFmpegMediaControl.h), takes on a new player exactly as an accept()
+  // would. Thread-safe; takes ownership of `fd`.
+  void add_control_fd(int fd);
 
   struct Layer {
     display::Rect view_rect;  // the video box in the page's view coordinates
@@ -121,6 +135,10 @@ class VideoServer {
 
   void run();
   void accept_clients();
+  void service_control_fds();
+  // Sets up `fd` as a new player connection (non-blocking, NODELAY, 4 MiB
+  // receive buffer) and adds it to connections_. Server thread only.
+  void adopt_fd(int fd);
   bool service(Connection& c);
   bool handle_message(Connection& c);
   bool map_segment(Connection& c, const std::string& name, bool named, std::uint32_t slots,
@@ -145,11 +163,15 @@ class VideoServer {
 
   ServerOptions options_;
   int listen_fd_ = -1;
+  bool listening_ = false;
   bool logged_socket_mode_ = false;  // the client socket mode is logged once
   int port_ = 0;
   std::atomic<bool> stop_{false};
   std::thread thread_;
   std::vector<std::unique_ptr<Connection>> connections_;  // server thread only
+  std::vector<int> control_fds_;  // server thread only: active control sockets
+  std::mutex control_mu_;
+  std::vector<int> pending_control_fds_;  // control_mu_: handed in by add_control_fd
   std::uint32_t next_key_ = 1;
   std::atomic<int> decode_streams_{0};
 

@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include "FFmpegAudioWire.h"
+#include "FFmpegMediaControl.h"
 
 extern "C" void ps5_log_printf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
@@ -80,17 +81,22 @@ bool AudioServer::start() {
   addr.sin_port = htons(static_cast<std::uint16_t>(options_.port));
   if (bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
       listen(listen_fd_, 8) != 0) {
-    ps5_log_printf("audio server: cannot listen on tcp 127.0.0.1:%d: %s", options_.port,
-                   std::strerror(errno));
+    ps5_log_printf("audio server: cannot listen on tcp 127.0.0.1:%d: %s%s", options_.port,
+                   std::strerror(errno),
+                   options_.listen_optional ? " (serving control-socket clients only)" : "");
     close(listen_fd_);
     listen_fd_ = -1;
-    return false;
+    if (!options_.listen_optional) {
+      return false;
+    }
+  } else {
+    socklen_t len = sizeof(addr);
+    getsockname(listen_fd_, reinterpret_cast<sockaddr*>(&addr), &len);
+    port_ = ntohs(addr.sin_port);
+    (void)set_nonblocking(listen_fd_);  // accept_clients() polls first either way
+    listening_ = true;
+    ps5_log_printf("audio server: listening on tcp 127.0.0.1:%d", port_);
   }
-  socklen_t len = sizeof(addr);
-  getsockname(listen_fd_, reinterpret_cast<sockaddr*>(&addr), &len);
-  port_ = ntohs(addr.sin_port);
-  (void)set_nonblocking(listen_fd_);  // accept_clients() polls first either way
-  ps5_log_printf("audio server: listening on tcp 127.0.0.1:%d", port_);
   stop_ = false;
   thread_ = std::thread([this] { run(); });
   return true;
@@ -105,10 +111,29 @@ void AudioServer::stop() {
     close_connection(*c, "server stopped");
   }
   connections_.clear();
+  for (int fd : control_fds_) {
+    close(fd);
+  }
+  control_fds_.clear();
+  {
+    std::lock_guard<std::mutex> lock(control_mu_);
+    for (int fd : pending_control_fds_) {
+      close(fd);
+    }
+    pending_control_fds_.clear();
+  }
   if (listen_fd_ >= 0) {
     close(listen_fd_);
     listen_fd_ = -1;
   }
+}
+
+void AudioServer::add_control_fd(int fd) {
+  if (fd < 0) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(control_mu_);
+  pending_control_fds_.push_back(fd);
 }
 
 void AudioServer::play_local(const std::vector<float>& samples, std::string done_message) {
@@ -123,10 +148,25 @@ void AudioServer::run() {
   auto next_report = Clock::now() + interval;
   std::vector<pollfd> fds;
   while (!stop_) {
+    {
+      std::lock_guard<std::mutex> lock(control_mu_);
+      for (int fd : pending_control_fds_) {
+        control_fds_.push_back(fd);
+      }
+      pending_control_fds_.clear();
+    }
     fds.clear();
-    fds.push_back({listen_fd_, POLLIN, 0});
+    // Connections first (serviced by index), then the listen socket (when
+    // listening), then the control sockets; poll wakes on any of them.
     for (auto& c : connections_) {
       fds.push_back({c->fd, POLLIN, 0});
+    }
+    const std::size_t listen_index = fds.size();
+    if (listen_fd_ >= 0) {
+      fds.push_back({listen_fd_, POLLIN, 0});
+    }
+    for (int fd : control_fds_) {
+      fds.push_back({fd, POLLIN, 0});
     }
     const auto wait = std::chrono::duration_cast<std::chrono::milliseconds>(next_report - Clock::now());
     const int timeout = static_cast<int>(std::clamp<std::int64_t>(wait.count(), 0, 20));
@@ -136,18 +176,20 @@ void AudioServer::run() {
       return;
     }
     if (ready > 0) {
-      // connections_ may grow in accept_clients(); fds covers the old ones.
-      for (std::size_t i = 1; i < fds.size(); ++i) {
+      // connections_ may grow in accept_clients()/service_control_fds(); the
+      // first listen_index entries cover the connections polled above.
+      for (std::size_t i = 0; i < listen_index; ++i) {
         if (fds[i].revents) {
-          Connection& c = *connections_[i - 1];
+          Connection& c = *connections_[i];
           if (!service(c)) {
             close_connection(c, nullptr);
           }
         }
       }
-      if (fds[0].revents & POLLIN) {
+      if (listen_fd_ >= 0 && (fds[listen_index].revents & POLLIN)) {
         accept_clients();
       }
+      service_control_fds();
       connections_.erase(std::remove_if(connections_.begin(), connections_.end(),
                                         [](const auto& c) { return c->closed; }),
                          connections_.end());
@@ -168,21 +210,59 @@ void AudioServer::accept_clients() {
     if (fd < 0) {
       return;
     }
-    const bool nonblocking = set_nonblocking(fd);
-    if (!logged_socket_mode_) {
-      logged_socket_mode_ = true;
-      ps5_log_printf("%s: client sockets %s", "audio server",
-                     nonblocking ? "non-blocking"
-                                 : "blocking (refused here: reads and writes use MSG_DONTWAIT and poll)");
-    }
-    int one = 1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+    adopt_fd(fd);
+  }
+}
+
+void AudioServer::adopt_fd(int fd) {
+  const bool nonblocking = set_nonblocking(fd);
+  if (!logged_socket_mode_) {
+    logged_socket_mode_ = true;
+    ps5_log_printf("%s: client sockets %s", "audio server",
+                   nonblocking ? "non-blocking"
+                               : "blocking (refused here: reads and writes use MSG_DONTWAIT and poll)");
+  }
+  int one = 1;
+  setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));  // ignored on AF_UNIX
 #ifdef SO_NOSIGPIPE
-    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+  setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
 #endif
-    auto c = std::make_unique<Connection>();
-    c->fd = fd;
-    connections_.push_back(std::move(c));
+  auto c = std::make_unique<Connection>();
+  c->fd = fd;
+  connections_.push_back(std::move(c));
+}
+
+void AudioServer::service_control_fds() {
+  namespace mc = WebCore::FFmpegMedia::MediaControl;
+  for (std::size_t i = 0; i < control_fds_.size();) {
+    const int fd = control_fds_[i];
+    bool drop = false;
+    while (readable_now(fd)) {
+      int stream_fd = -1;
+      const mc::Receive r = mc::receiveDescriptor(fd, stream_fd);
+      if (r == mc::Receive::Received) {
+        ps5_log_printf("audio server: adopted a stream socket over the control channel (fd %d)",
+                       stream_fd);
+        adopt_fd(stream_fd);
+        continue;
+      }
+      if (r == mc::Receive::Closed) {
+        drop = true;
+        break;
+      }
+      if (r == mc::Receive::WouldBlock) {
+        break;
+      }
+      // Error: a malformed handoff was skipped; keep reading.
+    }
+    if (drop) {
+      ps5_log_printf("audio server: control socket closed (a WebProcess exited)");
+      close(fd);
+      control_fds_[i] = control_fds_.back();
+      control_fds_.pop_back();
+    } else {
+      ++i;
+    }
   }
 }
 
