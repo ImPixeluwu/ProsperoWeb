@@ -1,0 +1,28 @@
+Subject: WebKit: compile the Curl NetworkCache::Data backend on PlayStation
+
+NetworkCacheDataCurl.cpp defines the CURL NetworkCache::Data methods
+(constructors, span, size, apply, subrange, concatenate, adoptMap,
+tryCreateSharedMemory). The PlayStation port never listed it, because
+NetworkCache::Data was unreferenced until ENABLE_CONTENT_EXTENSIONS pulled in
+the content-rule-list store (API::createExtension calls
+Data::tryCreateSharedMemory). Add it to WebKit_SOURCES, mirroring how GTK/WPE
+compile NetworkCacheDataGLib.cpp. No symbol overlap with the common
+NetworkCacheData.cpp (which only defines mapToFile/mapFile). Needed for the
+ad blocker's WKContentRuleList on the PS5 build.
+
+diff --git a/Source/WebKit/PlatformPlayStation.cmake b/Source/WebKit/PlatformPlayStation.cmake
+--- a/Source/WebKit/PlatformPlayStation.cmake
++++ b/Source/WebKit/PlatformPlayStation.cmake
+@@ -52,6 +52,12 @@ list(APPEND WebKit_SOURCES
+ 
+     NetworkProcess/NetworkDataTaskDataURL.cpp
+ 
++    # Curl backend of NetworkCache::Data (ctors, span, tryCreateSharedMemory,
++    # ...). Unreferenced until ENABLE_CONTENT_EXTENSIONS pulled in the content
++    # rule list store (APIContentRuleListStore createExtension), so the port
++    # never compiled it; GTK/WPE compile the GLib variant the same way.
++    NetworkProcess/cache/NetworkCacheDataCurl.cpp
++
+     NetworkProcess/Classifier/WebResourceLoadStatisticsStore.cpp
+ 
+     Platform/IPC/unix/ArgumentCodersUnix.cpp
