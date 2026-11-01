@@ -132,6 +132,18 @@ TEST_SUITE("adblock") {
     CHECK(doc["domainRules"][0][0] == "youtube.com");
   }
 
+  TEST_CASE("filter set: first-party YouTube/Google media is never blocked") {
+    std::string list =
+        "||doubleclick.net^\n"
+        "||youtube.com^\n"                       // must NOT be blocked
+        "||r5---sn-abc.googlevideo.com^\n"        // media host, must NOT be blocked
+        "||i.ytimg.com^\n"                        // thumbnails, must NOT be blocked
+        "||ads.youtube.com^\n"                    // subdomain of youtube.com, excluded too
+        "||googlesyndication.com^\n";
+    auto fs = prosperoweb::core::adblock::build_filter_set({list});
+    CHECK(fs.hosts == std::vector<std::string>{"doubleclick.net", "googlesyndication.com"});
+  }
+
   TEST_CASE("filter set: caps bound the payload") {
     std::string list;
     for (int i = 0; i < 100; ++i) {

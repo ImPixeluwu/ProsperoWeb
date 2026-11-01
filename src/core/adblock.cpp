@@ -397,6 +397,23 @@ bool options_host_safe(const std::string& options) {
   return true;
 }
 
+// First-party / essential hosts we never put on the block list, so a stray
+// list entry cannot break YouTube playback/navigation. (The userscript also
+// allowlists these at runtime as defense in depth.)
+bool is_first_party_essential(const std::string& host) {
+  static const char* kEssential[] = {"youtube.com", "youtube-nocookie.com", "youtubekids.com",
+                                      "googlevideo.com", "ytimg.com", "ggpht.com"};
+  for (const char* d : kEssential) {
+    const std::string dom = d;
+    if (host == dom ||
+        (host.size() > dom.size() + 1 && host.compare(host.size() - dom.size() - 1,
+                                                       dom.size() + 1, "." + dom) == 0)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool is_host_char(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' ||
          c == '-';
@@ -513,6 +530,10 @@ FilterSet build_filter_set(const std::vector<std::string>& lists, const FilterSe
       }
       if (!whole_host || host.find('.') == std::string::npos || !options_host_safe(options)) {
         ++fs.stats.skipped;
+        continue;
+      }
+      if (is_first_party_essential(lower(host))) {
+        ++fs.stats.skipped;  // never block YouTube/Google media/thumbnails
         continue;
       }
       if (fs.hosts.size() >= opts.max_hosts) {
