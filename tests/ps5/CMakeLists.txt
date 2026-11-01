@@ -3,6 +3,7 @@ add_executable(prosperoweb_ps5_tests
   test_spawn_util.cpp
   test_spawn_broker.cpp
   test_audio_server.cpp
+  test_media_control.cpp
   test_display.cpp
   test_video_overlay.cpp
   test_hwdec.cpp
@@ -22,6 +23,9 @@ add_test(NAME ps5.spawn_broker
 add_test(NAME ps5.audio_server
          COMMAND prosperoweb_ps5_tests
                  --test-suite=audio_wire,audio_clock,audio_mixer,audio_ring,audio_e2e --no-version)
+add_test(NAME ps5.media_control
+         COMMAND prosperoweb_ps5_tests
+                 --test-suite=media_control,media_audio_control,media_video_control --no-version)
 add_test(NAME ps5.display
          COMMAND prosperoweb_ps5_tests
                  --test-suite=display_region,display_pixels,display_stats,display_splash,display_pointer --no-version)
