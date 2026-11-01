@@ -87,18 +87,24 @@ index e869451aa..5a031de66 100644
      return languages;
  }
 diff --git a/Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp b/Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp
-index 2f8fdd858..c50cf60c3 100644
+index 2f8fdd858..1f8fa5f08 100644
 --- a/Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp
 +++ b/Source/WTF/wtf/playstation/UniStdExtrasPlayStation.cpp
-@@ -26,6 +26,7 @@
+@@ -26,8 +26,13 @@
  #include "config.h"
  #include <wtf/UniStdExtras.h>
  
 +#include <fcntl.h>
  #include <sys/socket.h>
  
++#if defined(PS5_HOMEBREW)
++extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
++#endif
++
  namespace WTF {
-@@ -45,6 +46,13 @@ int dupCloseOnExec(int fileDescriptor)
+ 
+ bool setCloseOnExec(int)
+@@ -45,6 +50,17 @@ int dupCloseOnExec(int fileDescriptor)
      int duplicatedFileDescriptor = -1;
  
      while ((duplicatedFileDescriptor = dup(fileDescriptor)) == -1 && errno == EINTR) { }
@@ -108,11 +114,15 @@ index 2f8fdd858..c50cf60c3 100644
 +    if (duplicatedFileDescriptor == -1) {
 +        while ((duplicatedFileDescriptor = fcntl(fileDescriptor, F_DUPFD, 0)) == -1 && errno == EINTR) { }
 +    }
++    if (duplicatedFileDescriptor == -1 && ps5_log_printf) {
++        // The caller, for symbolizing (the native title refuses dup(), console run 29).
++        ps5_log_printf("webkit: dupCloseOnExec(%d) failed: errno %d; caller %p", fileDescriptor, errno, __builtin_return_address(0));
++    }
 +#endif
      if (duplicatedFileDescriptor == -1)
          return -1;
  
-@@ -53,8 +61,21 @@ int dupCloseOnExec(int fileDescriptor)
+@@ -53,8 +69,21 @@ int dupCloseOnExec(int fileDescriptor)
  
  bool setNonBlock(int fileDescriptor)
  {

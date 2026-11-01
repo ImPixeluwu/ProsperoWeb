@@ -37,6 +37,11 @@ The out-of-line body is made with its own anonymous shm object whose only
 descriptor goes into the message (console run 28: the title may not dup()
 a descriptor, which SharedMemory::createHandle does).
 
+Also traced (console run 29: "cookies are disabled" in the native title):
+the NetworkProcess's cookie decisions (first party or page not allowed,
+site not hosted, no storage session, the cookiesEnabled answer) and the
+network session's kind and cookie database file.
+
 Also: Connection::platformPrepareForOpen() opens the connection even when
 the socket cannot be made non-blocking (logged). The PlayStation
 SocketMonitor waits with select() before it reads, so a blocking socket
@@ -155,6 +160,96 @@ index 16eb9a0de..78d100069 100644
  
      RefPtr<SharedMemory> instance = adoptRef(new SharedMemory());
      instance->m_data = data;
+diff --git a/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp b/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp
+index 3f62dc763..4f4617033 100644
+--- a/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp
++++ b/Source/WebKit/NetworkProcess/NetworkConnectionToWebProcess.cpp
+@@ -26,6 +26,15 @@
+ #include "config.h"
+ #include "NetworkConnectionToWebProcess.h"
+ 
++#if defined(PS5_HOMEBREW) && !defined(PS5_TRACE)
++// ProsperoWeb diagnostics (console run 29: "cookies are disabled" in the
++// native title): the shell's logger, when linked.
++extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
++#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++#elif !defined(PS5_TRACE)
++#define PS5_TRACE(...) do { } while (0)
++#endif
++
+ #include "BlobDataFileReferenceWithSandboxExtension.h"
+ #include "LogInitialization.h"
+ #include "Logging.h"
+@@ -932,6 +941,8 @@ bool NetworkConnectionToWebProcess::hostsDomain(const RegistrableDomain& domain)
+ auto NetworkConnectionToWebProcess::validateCookieAccess(ASCIILiteral messageName, const URL& firstParty, const URL& url, const SameSiteInfo* sameSiteInfo, std::optional<WebPageProxyIdentifier> webPageProxyID, AllowUnhostedURL allowUnhostedURL) -> CookieAccess
+ {
+     auto allowCookieAccess = NetworkProcess::singleton().allowsFirstPartyForCookies(m_webProcessIdentifier, firstParty);
++    if (allowCookieAccess != NetworkProcess::AllowCookieAccess::Allow)
++        PS5_TRACE("webkit: cookies: %s: first party %s not allowed for process %llu (%s)", messageName.characters(), firstParty.host().utf8().data(), static_cast<unsigned long long>(m_webProcessIdentifier.toUInt64()), allowCookieAccess == NetworkProcess::AllowCookieAccess::Terminate ? "terminate" : "disallow");
+     if (allowCookieAccess == NetworkProcess::AllowCookieAccess::Terminate)
+         return CookieAccess::Terminate;
+ 
+@@ -939,6 +950,7 @@ auto NetworkConnectionToWebProcess::validateCookieAccess(ASCIILiteral messageNam
+     // teardown, and terminating it for that would be a regression.
+     if (!NetworkProcess::singleton().allowsWebPageProxyIdentifier(m_webProcessIdentifier, webPageProxyID)) {
+         CONNECTION_RELEASE_LOG_ERROR(IPC, "%" PUBLIC_LOG_STRING ": dropping request from process %" PRIu64 " for pageID not in allow-list", messageName.characters(), m_webProcessIdentifier.toUInt64());
++        PS5_TRACE("webkit: cookies: %s: page not in the allow-list for process %llu", messageName.characters(), static_cast<unsigned long long>(m_webProcessIdentifier.toUInt64()));
+         return CookieAccess::Disallow;
+     }
+ 
+@@ -949,6 +961,7 @@ auto NetworkConnectionToWebProcess::validateCookieAccess(ASCIILiteral messageNam
+     // first party, so it could otherwise name the embedder's URL and get the embedder's own cookies.
+     if (allowUnhostedURL == AllowUnhostedURL::No && !hostsDomain(RegistrableDomain { url })) {
+         CONNECTION_RELEASE_LOG_ERROR(IPC, "%" PUBLIC_LOG_STRING ": Rejecting cookie access for a site this process does not host", messageName.characters());
++        PS5_TRACE("webkit: cookies: %s: process does not host %s", messageName.characters(), url.host().utf8().data());
+         return CookieAccess::Disallow;
+     }
+ 
+@@ -1014,12 +1027,15 @@ void NetworkConnectionToWebProcess::cookiesEnabled(const URL& firstParty, const
+ 
+     CheckedPtr networkStorageSession = storageSession();
+     if (!networkStorageSession) {
++        PS5_TRACE("webkit: cookies: cookiesEnabled: NO storage session");
+         completionHandler(false);
+         return;
+     }
+ 
+     networkStorageSession->addCookiesEnabledStateObserver(*this);
+-    completionHandler(networkStorageSession->cookiesEnabled(firstParty, url, frameID, webPageProxyID, NetworkProcess::singleton().shouldRelaxThirdPartyCookieBlockingForPage(webPageProxyID), NetworkSession::isResourceFromKnownCrossSiteTracker(firstParty, url)));
++    const bool enabled = networkStorageSession->cookiesEnabled(firstParty, url, frameID, webPageProxyID, NetworkProcess::singleton().shouldRelaxThirdPartyCookieBlockingForPage(webPageProxyID), NetworkSession::isResourceFromKnownCrossSiteTracker(firstParty, url));
++    PS5_TRACE("webkit: cookies: cookiesEnabled %s for %s -> %s", url.host().utf8().data(), firstParty.host().utf8().data(), enabled ? "yes" : "NO");
++    completionHandler(enabled);
+ }
+ 
+ // The only caller never passed frame, page or web page proxy identifiers, so relaxed third-party cookie blocking never applied here.
+diff --git a/Source/WebKit/NetworkProcess/curl/NetworkSessionCurl.cpp b/Source/WebKit/NetworkProcess/curl/NetworkSessionCurl.cpp
+index b3b800c4a..9cb0c24de 100644
+--- a/Source/WebKit/NetworkProcess/curl/NetworkSessionCurl.cpp
++++ b/Source/WebKit/NetworkProcess/curl/NetworkSessionCurl.cpp
+@@ -26,6 +26,15 @@
+ #include "config.h"
+ #include "NetworkSessionCurl.h"
+ 
++#if defined(PS5_HOMEBREW) && !defined(PS5_TRACE)
++// ProsperoWeb diagnostics (console run 29: "cookies are disabled" in the
++// native title): the shell's logger, when linked.
++extern "C" void ps5_log_printf(const char*, ...) __attribute__((weak, format(printf, 1, 2)));
++#define PS5_TRACE(...) do { if (ps5_log_printf) ps5_log_printf(__VA_ARGS__); } while (0)
++#elif !defined(PS5_TRACE)
++#define PS5_TRACE(...) do { } while (0)
++#endif
++
+ #include "AuthenticationManager.h"
+ #include "NetworkProcess.h"
+ #include "NetworkSessionCreationParameters.h"
+@@ -43,6 +52,7 @@ NetworkSessionCurl::NetworkSessionCurl(NetworkProcess& networkProcess, const Net
+     : NetworkSession(networkProcess, parameters)
+ {
+     if (auto* storageSession = networkStorageSession()) {
++        PS5_TRACE("webkit: cookies: network session %s, cookie file '%s'", parameters.sessionID.isEphemeral() ? "EPHEMERAL" : "persistent", parameters.cookiePersistentStorageFile.utf8().data());
+         if (!parameters.cookiePersistentStorageFile.isEmpty())
+             storageSession->setCookieDatabase(makeUniqueRef<CookieJarDB>(parameters.cookiePersistentStorageFile));
+         storageSession->setProxySettings(parameters.proxySettings);
 diff --git a/Source/WebKit/Platform/IPC/Connection.cpp b/Source/WebKit/Platform/IPC/Connection.cpp
 index 88ca5b968..e02360944 100644
 --- a/Source/WebKit/Platform/IPC/Connection.cpp
