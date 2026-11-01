@@ -22,6 +22,10 @@ void log_close();
 // Writes one line (a trailing newline is added).
 void log_line(const std::string& message);
 
+// PROSPEROWEB_TRACE=1: per-message and per-call diagnostics are logged and
+// every line is mirrored to klog and stderr (read once per process).
+bool trace_enabled();
+
 // printf-style helper.
 void log_printf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 

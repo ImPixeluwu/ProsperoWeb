@@ -362,6 +362,7 @@ endless relaunches hammer websrv.
 | `PROSPEROWEB_HWDEC_AGC` | on | `0`: the probe does not load `libSceAgcDriver`/`libSceAgc` before the decoder |
 | `PROSPEROWEB_HWDEC_HEVC` | on | `0`: the UI refuses HEVC streams (H.264 only) |
 | `PROSPEROWEB_CPU_MONITOR` | on | `0`: no `cpu:` lines |
+| `PROSPEROWEB_TRACE` | off | `1`: per-message diagnostics (WebKit IPC hop timings for `scripts/ps5/native/ipc-latency.py`, drawing-area updates, cookie decisions, the native title's syscall traces), every log line mirrored to klog and stderr, and in the native title the children's stderr and the pages' console messages kept in `stderr-<role>.txt`. Off, only start-up lines and failures go to klog and are synced. |
 | `PROSPEROWEB_CPU_WIDEN` | on | `0`: never try to widen a restricted CPU affinity |
 
 Any variable can also be set from `config.json` as `"env": {"NAME": "value"}`

@@ -213,10 +213,12 @@ void setup_native_title_env() {
   setenv("JSC_useJIT", "false", 1);
   setenv("JSC_useWasm", "false", 1);
   setenv("PROSPEROWEB_UI_ONLY_ENV", "JSC_useJIT JSC_useWasm", 1);
-  // While the native title is being brought up: the children keep their
-  // stderr in the profile and log the pages' console messages there.
-  setenv("PROSPEROWEB_CHILD_STDERR", "1", 0);
-  setenv("PROSPEROWEB_CONSOLE_LOG", "1", 0);
+  // With PROSPEROWEB_TRACE=1: the children keep their stderr in the profile
+  // and log the pages' console messages there.
+  if (prosperoweb::frontend::trace_enabled()) {
+    setenv("PROSPEROWEB_CHILD_STDERR", "1", 0);
+    setenv("PROSPEROWEB_CONSOLE_LOG", "1", 0);
+  }
   log_printf("env JSC_useJIT=false JSC_useWasm=false (UI only; the children keep theirs)");
 }
 
@@ -287,7 +289,7 @@ void start_main_loop_watchdog() {
         prosperoweb::frontend::log_printf(
             "main loop: heartbeat posted %lld ms ago has not run: the main run loop is blocked",
             now_ms() - posted);
-      } else if (posted) {
+      } else if (posted && prosperoweb::frontend::trace_enabled()) {
         const int where = g_heartbeat_where.load();
         prosperoweb::frontend::log_printf(
             "main loop: heartbeat (posted from the watchdog thread) ran %lld ms after posting, "
@@ -297,9 +299,12 @@ void start_main_loop_watchdog() {
             : where == 2 ? "the POSTING thread (inline: isMainThread is wrong there)"
                          : "ANOTHER thread");
       }
-      char io[1024];
-      native_trace_io_summary(io, sizeof(io));
-      prosperoweb::frontend::log_printf("trace: io (sendmsg/recvmsg per fd): %s", io[0] ? io : "none");
+      if (prosperoweb::frontend::trace_enabled()) {
+        char io[1024];
+        native_trace_io_summary(io, sizeof(io));
+        prosperoweb::frontend::log_printf("trace: io (sendmsg/recvmsg per fd): %s",
+                                          io[0] ? io : "none");
+      }
       if (!posted || ran >= posted) {
         g_heartbeat_posted.store(now_ms());
         static thread_local int poster_marker = 0;

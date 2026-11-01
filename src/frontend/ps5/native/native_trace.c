@@ -30,6 +30,7 @@
 #include "native_title.h"
 
 void ps5_log_printf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+_Bool ps5_trace_enabled(void);
 
 int sceKernelOpen(const char* path, int flags, int mode);
 long sceKernelRead(int fd, void* buffer, size_t length);
@@ -138,7 +139,7 @@ int __wrap_fcntl(int fd, int command, ...) {
       errno = EINVAL;
       return -1;
   }
-  if (atomic_fetch_add(&g_fcntl_logged, 1) < 16) {
+  if (atomic_fetch_add(&g_fcntl_logged, 1) < (ps5_trace_enabled() ? 16 : 2)) {
     ps5_log_printf("trace: fcntl(fd %d, cmd %d) refused (EINVAL); emulated -> %d", fd, command,
                    result);
   }
@@ -177,7 +178,7 @@ int __wrap_dup(int fd) {
       how = "sceKernelRdup";
     }
   }
-  if (atomic_fetch_add(&g_dup_logged, 1) < 16) {
+  if (atomic_fetch_add(&g_dup_logged, 1) < (ps5_trace_enabled() ? 16 : 2)) {
     // The callers, as image offsets for prosperoweb-native.unstripped.elf.
     extern char __prwb_image_base[];
     const uintptr_t base = (uintptr_t)__prwb_image_base;
@@ -229,6 +230,9 @@ static size_t iov_bytes(const struct msghdr* msg) {
 int __wrap_socketpair(int domain, int type, int protocol, int fds[2]) {
   const int rc = __real_socketpair(domain, type, protocol, fds);
   const int saved = errno;
+  if (rc == 0 && !ps5_trace_enabled()) {
+    return rc;
+  }
   ps5_log_printf("trace: socketpair(%d, %d) -> %d [%d, %d]%s%s", domain, type, rc,
                  rc == 0 ? fds[0] : -1, rc == 0 ? fds[1] : -1, rc ? ": " : "",
                  rc ? strerror(saved) : "");
@@ -243,7 +247,7 @@ ssize_t __wrap_sendmsg(int fd, const struct msghdr* msg, int flags) {
     atomic_fetch_add(&g_fd_sent[fd], 1);
     atomic_fetch_add(&g_fd_fds_out[fd], (unsigned)attached_fds(msg));
   }
-  if (rc < 0 || atomic_fetch_add(&g_send_logged, 1) < kTraceFirst) {
+  if (rc < 0 || (ps5_trace_enabled() && atomic_fetch_add(&g_send_logged, 1) < kTraceFirst)) {
     ps5_log_printf("trace: sendmsg(fd %d, %zu bytes, %d fds) -> %zd%s%s", fd, iov_bytes(msg),
                    attached_fds(msg), rc, rc < 0 ? ": " : "", rc < 0 ? strerror(saved) : "");
   }
@@ -259,7 +263,7 @@ ssize_t __wrap_recvmsg(int fd, struct msghdr* msg, int flags) {
     atomic_fetch_add(&g_fd_fds_in[fd], (unsigned)attached_fds(msg));
   }
   if ((rc < 0 && saved != EAGAIN && saved != EINTR) ||
-      atomic_fetch_add(&g_recv_logged, 1) < kTraceFirst) {
+      (ps5_trace_enabled() && atomic_fetch_add(&g_recv_logged, 1) < kTraceFirst)) {
     ps5_log_printf("trace: recvmsg(fd %d) -> %zd, %d fds%s%s%s", fd, rc,
                    rc > 0 ? attached_fds(msg) : 0,
                    rc >= 0 && (msg->msg_flags & MSG_CTRUNC) ? " CTRUNC" : "", rc < 0 ? ": " : "",
@@ -272,7 +276,8 @@ ssize_t __wrap_recvmsg(int fd, struct msghdr* msg, int flags) {
 int __wrap_select(int n, fd_set* r, fd_set* w, fd_set* e, struct timeval* t) {
   const int rc = __real_select(n, r, w, e, t);
   const int saved = errno;
-  if ((rc < 0 && saved != EINTR) || atomic_fetch_add(&g_select_logged, 1) < kTraceFirst) {
+  if ((rc < 0 && saved != EINTR) ||
+      (ps5_trace_enabled() && atomic_fetch_add(&g_select_logged, 1) < kTraceFirst)) {
     ps5_log_printf("trace: select(nfds %d) -> %d%s%s", n, rc, rc < 0 ? ": " : "",
                    rc < 0 ? strerror(saved) : "");
   }
