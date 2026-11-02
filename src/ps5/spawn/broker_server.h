@@ -59,7 +59,9 @@ struct BrokerServerOptions {
   // killing the children. Generous so it comfortably outlives the UI's
   // poll-connect window (spawn_glue): the UI must not abandon a broker that
   // is still coming up, and the broker must not exit before the UI's retries.
-  int idle_ms = 20000;
+  // The UI now fires the loader asynchronously and polls 17771 concurrently,
+  // so it connects within ~1-2s; this wide margin just covers a slow console.
+  int idle_ms = 30000;
   // How often the reaper polls the children.
   int reap_interval_ms = 500;
   // Called once, right after the sockets bind and listen but before the first

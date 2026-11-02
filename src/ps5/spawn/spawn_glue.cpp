@@ -245,42 +245,62 @@ bool ask_etahen_launch_elfldr(const std::string& elfldr) {
   return false;
 }
 
+// Sends the elfldr load request on a detached thread and never blocks the
+// caller on it. Why: the URI already asks for pipe=0 (stdio detached), and
+// ps5-payload-dev's standalone elfldr honours that and returns in ~1s. But
+// etaHEN's *bundled* elfldr ignores pipe=0 and hands the broker the request
+// socket as its stdio, so the HTTP call stays open until the broker process
+// exits (~20s on its no-client timeout). Blocking on that reply means the UI
+// would only start polling 17771 after the broker had already died (run63).
+// So we fire-and-forget: the broker appearing on 17771 is the success signal,
+// not this reply. The thread captures everything by value, touches no shared
+// state, and ends when elfldr closes or the recv times out.
+void fire_elfldr_async(const std::string& elfldr, const std::string& line) {
+  std::thread([elfldr, line] {
+    const auto t0 = Clock::now();
+    std::string reply;
+    std::string error;
+    const int rc = elfldr_send(elfldr, line, kElfldrTimeoutMs, &reply, &error);
+    if (rc < 0) {
+      ps5_log_printf("elfldr(async): %s <- %s -> failed: %s", elfldr.c_str(), line.c_str(),
+                     error.c_str());
+    } else {
+      ps5_log_printf("elfldr(async): %s <- %s -> %s in %lldms (reply ignored; 17771 is the signal)",
+                     elfldr.c_str(), line.c_str(),
+                     rc == 0 ? (reply.empty() ? "accepted" : reply.c_str()) : reply.c_str(),
+                     ms_since(t0));
+    }
+  }).detach();
+}
+
 // Asks elfldr to load "<self_path>" from the console's file system as a
-// payload in the broker role. elfldr passes no environment, so the
-// settings travel as --env= arguments (main() exports them).
+// payload in the broker role. elfldr passes no environment, so the settings
+// travel as --env= arguments (main() exports them). The request is issued
+// asynchronously (see fire_elfldr_async): success is decided by the broker
+// coming up on 17771 (ensure_broker's poll-connect), not by this call. We
+// return true as soon as 9021 is reachable and the request is fired.
 bool start_broker_via_elfldr(const std::string& self_path, std::string* reason) {
   const std::string elfldr = env_or("PROSPEROWEB_ELFLDR", kDefaultElfldr);
-  // If 9021 is refused, give etaHEN a chance to bring up its bundled elfldr
-  // before we send the payload. When 9021 already answers (the common case,
-  // and the whole happy path) this probe succeeds at once and nothing else
-  // runs, so that path is unchanged.
-  if (env_or("PROSPEROWEB_ETAHEN_ASK", "1") != "0") {
-    std::string probe_err;
-    if (!tcp_port_open(elfldr, kElfldrProbeMs, &probe_err)) {
-      ask_etahen_launch_elfldr(elfldr);
-    }
+  // Is 9021 up? If refused, give etaHEN a chance to bring up its bundled
+  // elfldr first (bounded; a no-op on the happy path, which answers at once).
+  std::string probe_err;
+  bool up = tcp_port_open(elfldr, kElfldrProbeMs, &probe_err);
+  if (!up && env_or("PROSPEROWEB_ETAHEN_ASK", "1") != "0") {
+    up = ask_etahen_launch_elfldr(elfldr);
   }
-  const std::string line =
-      elfldr_payload_line(broker_elf(self_path), elfldr_broker_args(broker_env(self_path)));
-  const auto t0 = Clock::now();
-  std::string reply;
-  std::string error;
-  const int rc = elfldr_send(elfldr, line, kElfldrTimeoutMs, &reply, &error);
-  if (rc < 0) {
-    ps5_log_printf("elfldr: %s <- %s -> failed: %s", elfldr.c_str(), line.c_str(),
-                   error.c_str());
+  if (!up) {
+    ps5_log_printf("elfldr: %s not reachable: %s", elfldr.c_str(), probe_err.c_str());
     if (reason) {
-      *reason = "elfldr " + elfldr + ": " + error;
+      *reason = "elfldr " + elfldr + ": " + probe_err;
     }
     return false;
   }
-  ps5_log_printf("elfldr: %s <- %s -> %s in %lldms", elfldr.c_str(), line.c_str(),
-                 rc == 0 ? (reply.empty() ? "accepted" : reply.c_str()) : reply.c_str(),
-                 ms_since(t0));
-  if (rc != 0 && reason) {
-    *reason = "elfldr " + elfldr + ": " + (reply.empty() ? "rejected" : reply);
-  }
-  return rc == 0;
+  const std::string line =
+      elfldr_payload_line(broker_elf(self_path), elfldr_broker_args(broker_env(self_path)));
+  ps5_log_printf("elfldr: %s issuing load (async, not waiting for the reply) <- %s", elfldr.c_str(),
+                 line.c_str());
+  fire_elfldr_async(elfldr, line);
+  return true;
 }
 
 // Starts the broker with the loaders PROSPEROWEB_BROKER_LOADER allows.

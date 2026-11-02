@@ -974,3 +974,57 @@ TEST_SUITE("spawn_tcp_probe") {
     CHECK(!error.empty());
   }
 }
+
+TEST_SUITE("broker_async_launch") {
+  // Models etaHEN's bundled elfldr: the loader call blocks until the spawned
+  // payload (the broker) exits. The UI must not wait for that call; it polls
+  // 127.0.0.1:17771 concurrently and connects during the broker's listen
+  // window. This is the run63 bug in miniature.
+  TEST_CASE("polling connects while the blocking loader call is still open") {
+    const int lfd = socket(AF_INET, SOCK_STREAM, 0);
+    REQUIRE(lfd >= 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE(bind(lfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+    REQUIRE(listen(lfd, 16) == 0);
+    socklen_t len = sizeof(addr);
+    REQUIRE(getsockname(lfd, reinterpret_cast<sockaddr*>(&addr), &len) == 0);
+    const std::string host_port = "127.0.0.1:" + std::to_string(ntohs(addr.sin_port));
+
+    // The broker self-exits after its no-client timeout (modelled short).
+    std::atomic<bool> listener_up{true};
+    std::thread broker([&] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(600));
+      listener_up.store(false);
+      close(lfd);  // port closed -> connect refused afterwards
+    });
+    // The loader call returns only after the broker (payload) exits.
+    std::atomic<bool> loader_returned{false};
+    std::thread loader([&] {
+      while (listener_up.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+      loader_returned.store(true);
+    });
+
+    // The UI does NOT wait for the loader; it polls connect concurrently.
+    const long long up = poll_until_true(
+        [&] {
+          std::string e;
+          return tcp_port_open(host_port, 200, &e);
+        },
+        2000, 50);
+    CHECK(up >= 0);                       // connected
+    CHECK(up < 500);                      // before the 600ms broker self-exit
+    CHECK_FALSE(loader_returned.load());  // the loader call was still blocked
+
+    broker.join();
+    loader.join();
+
+    // Had the UI waited for the loader call to return, the broker would be
+    // gone and the connect refused -- exactly the bug this guards against.
+    std::string e;
+    CHECK_FALSE(tcp_port_open(host_port, 200, &e));
+  }
+}
