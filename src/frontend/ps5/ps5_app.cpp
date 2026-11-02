@@ -27,6 +27,13 @@
 #include "ps5_splash_text.h"
 #include "title_paths.h"
 
+#if PROSPEROWEB_NATIVE_TITLE
+#include "native/native_title.h"  // native_boot_say: durable boot.txt breadcrumbs
+#define PRWB_BOOT_CRUMB(s) native_boot_say("[prosperoweb] " s "\n")
+#else
+#define PRWB_BOOT_CRUMB(s) ((void)0)
+#endif
+
 namespace prosperoweb::frontend {
 
 namespace {
@@ -171,7 +178,11 @@ Ps5App::~Ps5App() {
 }
 
 int Ps5App::run() {
+  // Durable breadcrumbs to boot.txt (independent of log.txt): if log.txt stays
+  // empty, these localize whether run() was entered and the logger opened.
+  PRWB_BOOT_CRUMB("run: entered");
   log_open(std::string(kBaseDir) + "/log.txt");  // no-op: main() opened it
+  PRWB_BOOT_CRUMB("run: log opened");
   log_line("ProsperoWeb UI starting");
   main_thread_ = std::this_thread::get_id();
 
@@ -242,6 +253,7 @@ int Ps5App::run() {
   // Before any WebKit work: proves the display path independently of
   // WebKit painting (a WKPagePaint without a WebProcess leaves zeros).
   draw_splash();
+  PRWB_BOOT_CRUMB("run: splash drawn");
   mark_splash_stage(kSplashWindow);
   // The broker and the WebKit processes report from WebKit's launcher.
   ps5_spawn_set_progress(&Ps5App::splash_spawn_progress, this);
@@ -574,11 +586,12 @@ void Ps5App::render_loader_missing(SDL_Surface* surface) {
 }
 
 void Ps5App::start_loader_retry() {
-  bool expected = false;
-  if (!loader_retry_running_.compare_exchange_strong(expected, true)) {
-    return;  // already running
-  }
-  loader_retry_thread_ = std::thread(&Ps5App::loader_retry_main, this);
+  // Exactly once for the life of the app: std::call_once guarantees the
+  // std::thread is assigned a single time and never move-assigned while
+  // joinable (which would std::terminate). Re-reporting a startup problem just
+  // no-ops here.
+  std::call_once(loader_retry_once_,
+                 [this] { loader_retry_thread_ = std::thread(&Ps5App::loader_retry_main, this); });
 }
 
 // Polls the broker periodically off the UI thread so a loader or broker that
@@ -604,7 +617,6 @@ void Ps5App::loader_retry_main() {
       break;  // the connection is held; WebKit's next launch spawns
     }
   }
-  loader_retry_running_.store(false, std::memory_order_release);
 }
 
 void Ps5App::audio_control_fd(int fd, void* data) {

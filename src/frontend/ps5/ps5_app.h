@@ -196,9 +196,12 @@ class Ps5App {
   std::string loader_detail_;  // loader_detail_mu_
   bool loader_message_drawn_ = false;  // main thread
   int loader_drawn_state_ = -1;        // which state the message shows (main thread)
-  // Background broker-retry thread (see start_loader_retry).
+  // Background broker-retry thread (see start_loader_retry). Created exactly
+  // once through loader_retry_once_ and never reassigned, so the std::thread is
+  // never move-assigned while joinable (which would std::terminate). Joined in
+  // the destructor.
   std::thread loader_retry_thread_;
-  std::atomic<bool> loader_retry_running_{false};
+  std::once_flag loader_retry_once_;
   std::atomic<bool> loader_retry_stop_{false};
   std::atomic<unsigned> splash_stages_{0};  // set from the spawning thread too
   unsigned splash_shown_stages_ = 0;

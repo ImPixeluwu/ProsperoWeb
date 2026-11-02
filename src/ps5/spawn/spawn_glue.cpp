@@ -63,8 +63,9 @@ constexpr int kSpawnTimeoutMs = 60000;
 constexpr int kTerminateTimeoutMs = 5000;
 // The first request after connecting waits out the broker's on_listening work
 // (open_profile), which runs before it accepts: generous so a large profile
-// tree does not look like an unreachable broker.
-constexpr int kPingTimeoutMs = 25000;
+// tree does not look like an unreachable broker, but bounded so a wedged
+// broker never holds the spawn thread (and g_mu) for too long.
+constexpr int kPingTimeoutMs = 12000;
 constexpr const char* kDefaultWebsrv = "127.0.0.1:8080";
 constexpr const char* kDefaultElfldr = "127.0.0.1:9021";
 constexpr int kElfldrTimeoutMs = 30000;  // elfldr reads the ELF before it answers
