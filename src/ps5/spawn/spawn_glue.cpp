@@ -48,7 +48,11 @@ using namespace prosperoweb::spawn;
 using nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
-constexpr int kBrokerStartTimeoutMs = 5000;
+// After a loader starts the broker, the broker can take a second or more to
+// bind 17771 (it then opens its profile tree). A single connect races that, so
+// poll the connect for this whole window before giving up on a launched broker.
+constexpr int kBrokerConnectWindowMs = 10000;
+constexpr int kBrokerConnectIntervalMs = 200;
 // After this many consecutive spawns without a broker, wait kBackoffMs before
 // the next attempt: WebKit relaunches a failed process right away, forever,
 // and every attempt asks websrv to start another broker.
@@ -57,10 +61,19 @@ constexpr int kBackoffMs = 30000;
 constexpr int kWebsrvTimeoutMs = 30000;  // websrv reads the ELF before it answers
 constexpr int kSpawnTimeoutMs = 60000;
 constexpr int kTerminateTimeoutMs = 5000;
-constexpr int kPingTimeoutMs = 5000;
+// The first request after connecting waits out the broker's on_listening work
+// (open_profile), which runs before it accepts: generous so a large profile
+// tree does not look like an unreachable broker.
+constexpr int kPingTimeoutMs = 25000;
 constexpr const char* kDefaultWebsrv = "127.0.0.1:8080";
 constexpr const char* kDefaultElfldr = "127.0.0.1:9021";
 constexpr int kElfldrTimeoutMs = 30000;  // elfldr reads the ELF before it answers
+// etaHEN's bundled elfldr: when 9021 is refused, ask etaHEN's utility daemon to
+// launch it (BREW_UTIL_LAUNCH_ELFLDR), then re-poll 9021. See docs/no-elfldr.md.
+constexpr int kElfldrProbeMs = 1500;        // is 9021 already up? (keeps the happy path)
+constexpr int kEtahenAskTimeoutMs = 2000;   // bounded: the util socket may be absent
+constexpr int kElfldrRepollTotalMs = 5000;  // wait for elfldr to come up after the ask
+constexpr int kElfldrRepollIntervalMs = 250;
 
 long long ms_since(Clock::time_point t) {
   return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t).count();
@@ -122,6 +135,14 @@ std::unique_ptr<BrokerClient> g_client;
 std::set<int> g_direct_pids;  // children of a PROSPEROWEB_SPAWN_FALLBACK=direct spawn
 int g_broker_failures = 0;    // consecutive spawns that found no broker
 Clock::time_point g_backoff_until{};
+// Guards the connect race / respawn loop (g_mu): launch a broker only when none
+// is already coming up, keep polling the one in flight, and cap relaunches.
+BrokerLaunchPolicy g_launch_policy;
+
+long long steady_ms() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch())
+      .count();
+}
 
 std::string dir_of(const std::string& path) {
   const size_t slash = path.rfind('/');
@@ -180,11 +201,64 @@ bool start_broker_via_websrv(const std::string& self_path, std::string* reason) 
   return code == 200;
 }
 
+// When 9021 is refused, asks etaHEN's utility daemon to launch its bundled
+// elfldr (BREW_UTIL_LAUNCH_ELFLDR) and re-polls 9021. Best-effort and bounded:
+// the command socket is AF_UNIX under /system_tmp, which a uid-1 sandboxed
+// title usually cannot see (ENOENT) — on such a console this logs and falls
+// through, it never fakes success. See docs/no-elfldr.md. Returns true only if
+// 9021 actually came up. The happy path (9021 already answering) never gets
+// here: the caller probes the port first.
+bool ask_etahen_launch_elfldr(const std::string& elfldr) {
+  const std::string sock = env_or("PROSPEROWEB_ETAHEN_UTIL_SOCK", kEtahenUtilSocketPath);
+  ps5_log_printf("spawn: 9021 refused; asking etaHEN to start elfldr via util socket %s",
+                 sock.c_str());
+  std::string detail;
+  std::string error;
+  const int rc =
+      etahen_send(sock, etahen_launch_elfldr_request(), kEtahenAskTimeoutMs, &detail, &error);
+  if (rc < 0) {
+    ps5_log_printf("spawn: etaHEN util socket %s unreachable (%s); cannot ask it to start elfldr",
+                   sock.c_str(), error.c_str());
+    return false;
+  }
+  if (rc != 0) {
+    ps5_log_printf("spawn: etaHEN declined to start elfldr%s%s", detail.empty() ? "" : ": ",
+                   detail.c_str());
+    // It still may have launched; re-poll regardless.
+  } else {
+    ps5_log_line("spawn: etaHEN accepted the launch-elfldr request");
+  }
+  const std::string elfldr_copy = elfldr;
+  const long long up = poll_until_true(
+      [&elfldr_copy] {
+        std::string e;
+        return tcp_port_open(elfldr_copy, kElfldrProbeMs, &e);
+      },
+      kElfldrRepollTotalMs, kElfldrRepollIntervalMs);
+  if (up >= 0) {
+    ps5_log_printf("spawn: elfldr up on 9021 after %lldms", up);
+    return true;
+  }
+  ps5_log_printf("spawn: elfldr did not come up on 9021 within %dms after asking etaHEN",
+                 kElfldrRepollTotalMs);
+  return false;
+}
+
 // Asks elfldr to load "<self_path>" from the console's file system as a
 // payload in the broker role. elfldr passes no environment, so the
 // settings travel as --env= arguments (main() exports them).
 bool start_broker_via_elfldr(const std::string& self_path, std::string* reason) {
   const std::string elfldr = env_or("PROSPEROWEB_ELFLDR", kDefaultElfldr);
+  // If 9021 is refused, give etaHEN a chance to bring up its bundled elfldr
+  // before we send the payload. When 9021 already answers (the common case,
+  // and the whole happy path) this probe succeeds at once and nothing else
+  // runs, so that path is unchanged.
+  if (env_or("PROSPEROWEB_ETAHEN_ASK", "1") != "0") {
+    std::string probe_err;
+    if (!tcp_port_open(elfldr, kElfldrProbeMs, &probe_err)) {
+      ask_etahen_launch_elfldr(elfldr);
+    }
+  }
   const std::string line =
       elfldr_payload_line(broker_elf(self_path), elfldr_broker_args(broker_env(self_path)));
   const auto t0 = Clock::now();
@@ -275,7 +349,21 @@ void report_loader_missing(const std::string& reason) {
   report_progress(("no-loader:" + reason).c_str());
 }
 
+// Tells the UI a loader did start the broker but the UI could not connect to
+// it on 17771. Distinct from "no-loader": the console does have a working
+// loader, so the UI keeps retrying rather than blaming a missing one.
+void report_broker_unreachable(const std::string& reason) {
+  report_progress(("broker-unreachable:" + reason).c_str());
+}
+
 // Caller holds g_mu. Connects to the broker, starting it if needed.
+//
+// The hard part is the connect race: a loader starts the broker, but the broker
+// takes a second or more to bind 17771. A single connect attempt loses that
+// race and returns "Connection refused"; relaunching the broker on every such
+// failure spawns an endless series of brokers that each self-exit with "no
+// client". So: launch a broker only when none is already in flight (the launch
+// policy), then poll-connect for a bounded window, and cap relaunches.
 bool ensure_broker(const std::string& self_path, bool may_start) {
   if (g_client && g_client->connected()) {
     return true;
@@ -293,19 +381,38 @@ bool ensure_broker(const std::string& self_path, bool may_start) {
       return false;
     }
     ps5_log_printf("spawn: broker not running (%s)", failures.c_str());
-    std::string reason;
-    if (!start_broker(self_path, &reason)) {
-      report_loader_missing(reason.empty() ? failures : reason);
+    const BrokerLaunchPolicy::Action action = g_launch_policy.decide(steady_ms());
+    if (action == BrokerLaunchPolicy::kGiveUp) {
+      ps5_log_printf("spawn: launched %d brokers, none reachable on 17771; giving up for now",
+                     g_launch_policy.launches_done);
+      report_broker_unreachable("started the loader " +
+                                std::to_string(g_launch_policy.launches_done) +
+                                "x but could not connect on 127.0.0.1:17771");
       return false;
     }
-    if (!g_client->connect_wait(kBrokerStartTimeoutMs, 100, &failures)) {
-      ps5_log_printf("spawn: broker did not come up within %dms (%s)", kBrokerStartTimeoutMs,
-                     failures.c_str());
-      report_loader_missing("broker did not come up within " +
-                            std::to_string(kBrokerStartTimeoutMs / 1000) + " s (" + failures + ")");
+    if (action == BrokerLaunchPolicy::kLaunch) {
+      std::string reason;
+      if (!start_broker(self_path, &reason)) {
+        report_loader_missing(reason.empty() ? failures : reason);
+        return false;
+      }
+      g_launch_policy.on_launched(steady_ms());
+      ps5_log_printf("spawn: broker launch #%d accepted; polling 127.0.0.1:17771 up to %dms",
+                     g_launch_policy.launches_done, kBrokerConnectWindowMs);
+    } else {
+      ps5_log_printf("spawn: a broker is already coming up (launch #%d); polling 127.0.0.1:17771 "
+                     "up to %dms without relaunching",
+                     g_launch_policy.launches_done, kBrokerConnectWindowMs);
+    }
+    if (!g_client->connect_wait(kBrokerConnectWindowMs, kBrokerConnectIntervalMs, &failures)) {
+      ps5_log_printf("spawn: broker launched but 127.0.0.1:17771 connect failed after %dms (%s)",
+                     kBrokerConnectWindowMs, failures.c_str());
+      // Not a missing loader: keep the splash and let the next attempt (or the
+      // background retry) poll again; it stops only once relaunches run out.
       return false;
     }
   }
+  g_launch_policy.on_connected();
   const BrokerEndpoint ep = g_client->endpoint();
   ps5_log_printf("spawn: broker connected via %s%s", ep.describe().c_str(),
                  ep.tcp ? " (descriptors passed by rdup from this pid)" : "");
@@ -671,10 +778,22 @@ extern "C" int ps5_terminate_process(int pid) {
   return direct_mode() ? ps5_terminate_direct(pid) : terminate_via_broker(pid);
 }
 
+extern "C" int ps5_spawn_try_bring_up_broker(void) {
+  if (direct_mode()) {
+    return 1;  // no broker needed; nothing to bring up
+  }
+  char path[1024];
+  if (ps5_spawn_resolve_self_path(nullptr, getenv_const, path, sizeof(path)) != 0) {
+    ps5_log_line("spawn: retry: cannot resolve the self ELF path");
+    return 0;
+  }
+  std::lock_guard<std::mutex> lock(g_mu);
+  return ensure_broker(path, /*may_start=*/true) ? 1 : 0;
+}
+
 extern "C" int ps5_spawn_broker_main(void) {
   // Files the broker and its children create stay usable by the UI.
   umask(0);
-  open_profile("/data/prosperoweb");
   // websrv hands the daemon the write end of a pipe as stdout/stderr and
   // closes the read end when the request does not ask for pipe=1: point
   // stdio at /dev/null (log.txt and klog carry the log), then restore
@@ -704,6 +823,9 @@ extern "C" int ps5_spawn_broker_main(void) {
     mkdir(dir_of(path).c_str(), 0777);  // best-effort; bind reports the real error
   }
   options.tcp_port = broker_tcp_port(std::getenv("PROSPEROWEB_SPAWN_PORT"));
+  // Open the profile only after the sockets listen, so the UI's connect()
+  // lands in the backlog immediately instead of racing a not-yet-bound socket.
+  options.on_listening = [] { open_profile("/data/prosperoweb"); };
   broker_set_spawn_hook(elfldr_hook);
   broker_set_selftest_hook(ipc_selftest_broker);
   return broker_serve(options, &g_stop);

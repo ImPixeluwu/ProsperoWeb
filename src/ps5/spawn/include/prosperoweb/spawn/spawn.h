@@ -28,6 +28,15 @@ int ps5_spawn_self(const char* const* argv, const int* fds, int nfds);
 // Returns 0 on success, -1 on failure. Safe for an already-dead pid.
 int ps5_terminate_process(int pid);
 
+// Tries once to connect to the spawn broker, starting one through a loader if
+// none is up (the same path a spawn takes), and returns non-zero if the broker
+// is now connected. Safe to call repeatedly from a background thread: it holds
+// the broker alive so WebKit's next process launch succeeds. The UI's startup
+// error screen calls this so a loader or broker that appears late is picked up
+// without relaunching the app. Returns 0 (and never blocks beyond the
+// bounded connect window) when still unreachable.
+int ps5_spawn_try_bring_up_broker(void);
+
 // Runs the spawn broker role: the plain-payload process that performs the
 // spawns for the UI (see src/ps5/spawn/README.md, "Spawn broker"). main()
 // dispatches the "spawn-broker" role here. Returns the exit code.
