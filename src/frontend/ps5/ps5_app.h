@@ -82,10 +82,20 @@ class Ps5App {
   // the surface as it is (the splash).
   void dump_screen(SDL_Surface* surface, const std::vector<display::Rect>* chrome_rects = nullptr,
                    int top = 0, const video::PageKey& video_page = {});
-  // The full-screen "no ELF loader" message (main thread).
+  // The full-screen startup-error message (main thread). Text depends on
+  // loader_state_: no loader at all, or a loader that the UI could not reach.
   void render_loader_missing(SDL_Surface* surface);
-  // Stores the reason and flags the message (any thread).
+  // Stores the reason and flags the message (any thread). note_loader_missing
+  // is "no loader could start the broker"; note_broker_unreachable is "a loader
+  // started one but 17771 did not connect". Both start the background retry.
   void note_loader_missing(const std::string& detail);
+  void note_broker_unreachable(const std::string& detail);
+  void note_startup_problem(int state, const std::string& detail);
+  // Background thread: keeps trying to bring up / connect the broker so a
+  // loader or broker that appears after the error screen is picked up without
+  // relaunching the app. Started once; joined in the destructor.
+  void start_loader_retry();
+  void loader_retry_main();
   void run_form_probe();
 
   static void frame_trampoline(void* self);
@@ -180,9 +190,16 @@ class Ps5App {
   // No ELF loader could be reached at startup: the progress bar is replaced
   // by a message (render_loader_missing). Set from the spawning thread.
   std::atomic<bool> loader_missing_{false};
+  // 0 = ok, 1 = no loader, 2 = loader up but broker unreachable (loader_detail_mu_).
+  int loader_state_ = 0;
   std::mutex loader_detail_mu_;
   std::string loader_detail_;  // loader_detail_mu_
   bool loader_message_drawn_ = false;  // main thread
+  int loader_drawn_state_ = -1;        // which state the message shows (main thread)
+  // Background broker-retry thread (see start_loader_retry).
+  std::thread loader_retry_thread_;
+  std::atomic<bool> loader_retry_running_{false};
+  std::atomic<bool> loader_retry_stop_{false};
   std::atomic<unsigned> splash_stages_{0};  // set from the spawning thread too
   unsigned splash_shown_stages_ = 0;
   std::atomic<bool> frame_loop_ready_{false};

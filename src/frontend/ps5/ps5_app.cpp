@@ -4,9 +4,11 @@
 #include <algorithm>
 #include <bit>
 #include <cerrno>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <optional>
+#include <thread>
 
 #include <sys/resource.h>
 #include <unistd.h>
@@ -149,6 +151,10 @@ std::uint32_t dom_modifiers(SDL_Keymod m) {
 Ps5App::Ps5App() = default;
 
 Ps5App::~Ps5App() {
+  loader_retry_stop_.store(true, std::memory_order_release);
+  if (loader_retry_thread_.joinable()) {
+    loader_retry_thread_.join();
+  }
   ps5_spawn_set_progress(nullptr, nullptr);
   ps5_spawn_set_media_control(nullptr, nullptr, nullptr);
   WkWebView::set_damage_hook(nullptr, nullptr);
@@ -448,8 +454,13 @@ void Ps5App::splash_spawn_progress(const char* event, void* data) {
   auto* self = static_cast<Ps5App*>(data);
   const std::string name = event ? event : "";
   static constexpr char kNoLoader[] = "no-loader:";
+  static constexpr char kUnreachable[] = "broker-unreachable:";
   if (name.rfind(kNoLoader, 0) == 0) {
     self->note_loader_missing(name.substr(sizeof(kNoLoader) - 1));
+    return;
+  }
+  if (name.rfind(kUnreachable, 0) == 0) {
+    self->note_broker_unreachable(name.substr(sizeof(kUnreachable) - 1));
     return;
   }
   unsigned stage = 0;
@@ -466,14 +477,31 @@ void Ps5App::splash_spawn_progress(const char* event, void* data) {
 }
 
 void Ps5App::note_loader_missing(const std::string& detail) {
+  note_startup_problem(1, detail);
+}
+
+void Ps5App::note_broker_unreachable(const std::string& detail) {
+  note_startup_problem(2, detail);
+}
+
+void Ps5App::note_startup_problem(int state, const std::string& detail) {
   {
     std::lock_guard<std::mutex> lock(loader_detail_mu_);
     loader_detail_ = detail;
+    loader_state_ = state;
   }
+  start_loader_retry();  // keep trying in the background whatever the cause
   if (loader_missing_.exchange(true)) {
-    return;  // already flagged; the first reason stays
+    // Already flagged. The frame loop will repaint if the state changed
+    // (render_loader_missing checks loader_drawn_state_).
+    if (frame_loop_ready_.load(std::memory_order_acquire)) {
+      request_frame();
+    }
+    return;
   }
-  ps5_log_printf("startup: no ELF loader reachable: %s", detail.c_str());
+  ps5_log_printf("startup: %s: %s",
+                 state == 2 ? "loader up but broker unreachable" : "no ELF loader reachable",
+                 detail.c_str());
   if (frame_loop_ready_.load(std::memory_order_acquire)) {
     request_frame();
   } else if (std::this_thread::get_id() == main_thread_) {
@@ -483,19 +511,22 @@ void Ps5App::note_loader_missing(const std::string& detail) {
   }
 }
 
-// Replaces the splash with a clear message: the title cannot reach an ELF
-// loader, so it cannot start its web engine. Drawn once (the content is
-// static) until WebKit paints, if a loader comes up on a later attempt.
+// Replaces the splash with a clear message about why the web engine has not
+// started. Repainted only when the state changes (the content is otherwise
+// static) and left in place until WebKit paints, if a loader/broker comes up.
 void Ps5App::render_loader_missing(SDL_Surface* surface) {
-  if (loader_message_drawn_ || !surface) {
-    return;
-  }
-  loader_message_drawn_ = true;
+  int state;
   std::string detail;
   {
     std::lock_guard<std::mutex> lock(loader_detail_mu_);
+    state = loader_state_;
     detail = loader_detail_;
   }
+  if (!surface || (loader_message_drawn_ && loader_drawn_state_ == state)) {
+    return;
+  }
+  loader_message_drawn_ = true;
+  loader_drawn_state_ = state;
   if (detail.size() > 110) {
     detail = detail.substr(0, 107) + "...";
   }
@@ -505,11 +536,20 @@ void Ps5App::render_loader_missing(SDL_Surface* surface) {
   const int small_px = std::max(11, surface->h * 22 / 1080);
   std::string error;
   display::GrayImage l1, l2, l3, l4;
-  render_splash_text(font, "ProsperoWeb could not reach an ELF loader.", head_px, l1, error);
-  render_splash_text(font, "It needs a loader on 127.0.0.1:9021 to start its web engine.",
-                     body_px, l2, error);
-  render_splash_text(font, "Start etaHEN or elfldr, then launch ProsperoWeb again.", body_px, l3,
-                     error);
+  if (state == 2) {
+    render_splash_text(font, "ProsperoWeb started its loader but could not connect.", head_px, l1,
+                       error);
+    render_splash_text(font, "Waiting for the spawn broker on 127.0.0.1:17771 to answer.",
+                       body_px, l2, error);
+    render_splash_text(font, "Still trying — it should start on its own in a moment.", body_px, l3,
+                       error);
+  } else {
+    render_splash_text(font, "ProsperoWeb could not reach an ELF loader.", head_px, l1, error);
+    render_splash_text(font, "It needs a loader on 127.0.0.1:9021 to start its web engine.",
+                       body_px, l2, error);
+    render_splash_text(font, "Start etaHEN or elfldr — it will continue on its own, no relaunch.",
+                       body_px, l3, error);
+  }
   if (!detail.empty()) {
     render_splash_text(font, detail, small_px, l4, error);
   }
@@ -529,7 +569,42 @@ void Ps5App::render_loader_missing(SDL_Surface* surface) {
   } else {
     SDL_UpdateWindowSurfaceRects(window_, &rect, 1);
   }
-  log_printf("startup: showing the no-ELF-loader message (%s)", detail.c_str());
+  log_printf("startup: showing the startup-error message (state %d: %s)", loader_drawn_state_,
+             detail.c_str());
+}
+
+void Ps5App::start_loader_retry() {
+  bool expected = false;
+  if (!loader_retry_running_.compare_exchange_strong(expected, true)) {
+    return;  // already running
+  }
+  loader_retry_thread_ = std::thread(&Ps5App::loader_retry_main, this);
+}
+
+// Polls the broker periodically off the UI thread so a loader or broker that
+// the user brings up after the error screen is picked up without relaunching
+// the app. Bounded, non-blocking for the UI loop; it just holds a broker up so
+// WebKit's next process launch connects. Stops on success or at shutdown.
+void Ps5App::loader_retry_main() {
+  constexpr int kRetryMs = 3000;
+  log_line("startup: background broker-retry started");
+  while (!loader_retry_stop_.load(std::memory_order_acquire)) {
+    for (int slept = 0; slept < kRetryMs && !loader_retry_stop_.load(std::memory_order_acquire);
+         slept += 100) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (loader_retry_stop_.load(std::memory_order_acquire)) {
+      break;
+    }
+    if (ps5_spawn_try_bring_up_broker()) {
+      log_line("startup: broker is up now; the web engine will start");
+      if (frame_loop_ready_.load(std::memory_order_acquire)) {
+        request_frame();
+      }
+      break;  // the connection is held; WebKit's next launch spawns
+    }
+  }
+  loader_retry_running_.store(false, std::memory_order_release);
 }
 
 void Ps5App::audio_control_fd(int fd, void* data) {
