@@ -18,6 +18,7 @@
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -786,5 +787,190 @@ TEST_SUITE("title_paths") {
     CHECK(env == std::vector<std::string>{"FONTCONFIG_FILE=/s/app0/data/fonts/fonts.conf",
                                           "A=file:///s/app0/c", "HOME=/data/prosperoweb",
                                           "NOVALUE"});
+  }
+}
+
+TEST_SUITE("broker_loader_order") {
+  TEST_CASE("auto tries elfldr first in the native title, websrv first elsewhere") {
+    CHECK(broker_loader_order("auto", true) == std::vector<std::string>{"elfldr", "websrv"});
+    CHECK(broker_loader_order("auto", false) == std::vector<std::string>{"websrv", "elfldr"});
+    // Anything unrecognised is treated as auto by the caller; order falls back.
+    CHECK(broker_loader_order("nonsense", true) == std::vector<std::string>{"elfldr", "websrv"});
+  }
+
+  TEST_CASE("a named loader is the only one tried") {
+    CHECK(broker_loader_order("elfldr", false) == std::vector<std::string>{"elfldr"});
+    CHECK(broker_loader_order("websrv", true) == std::vector<std::string>{"websrv"});
+  }
+}
+
+TEST_SUITE("spawn_poll") {
+  TEST_CASE("poll_until_true returns elapsed on success and -1 on timeout") {
+    long long clock = 0;
+    const auto now = [&clock] { return clock; };
+    const auto sleep = [&clock](long long ms) { clock += ms; };
+
+    // Goes true after 350ms of virtual time (interval 100ms).
+    int calls = 0;
+    const long long up = poll_until_true([&] { return ++calls >= 4; }, 5000, 100, now, sleep);
+    CHECK(up >= 300);
+    CHECK(up <= 400);
+
+    // Never true: times out exactly at the budget, probe called at least once.
+    clock = 0;
+    int probes = 0;
+    const long long none = poll_until_true([&] { probes++; return false; }, 1000, 250, now, sleep);
+    CHECK(none == -1);
+    CHECK(probes >= 1);
+    CHECK(clock >= 1000);
+  }
+
+  TEST_CASE("poll_until_true never oversleeps past the deadline") {
+    long long clock = 0;
+    long long max_clock = 0;
+    const auto now = [&clock] { return clock; };
+    const auto sleep = [&](long long ms) {
+      clock += ms;
+      max_clock = std::max(max_clock, clock);
+    };
+    CHECK(poll_until_true([] { return false; }, 1000, 300, now, sleep) == -1);
+    CHECK(max_clock == 1000);  // last nap is clamped to the remaining 100ms
+  }
+}
+
+TEST_SUITE("broker_launch_policy") {
+  TEST_CASE("launch, then poll the in-flight broker, never a rapid respawn loop") {
+    BrokerLaunchPolicy p;  // max 3, grace 18s, cooldown 30s
+    // First decision with nothing launched: launch.
+    CHECK(p.decide(0) == BrokerLaunchPolicy::kLaunch);
+    p.on_launched(0);
+    // While the launch is in flight (< grace), keep polling, do not relaunch.
+    CHECK(p.decide(1000) == BrokerLaunchPolicy::kPoll);
+    CHECK(p.decide(17000) == BrokerLaunchPolicy::kPoll);
+    // Grace elapsed, burst not spent: launch again (#2), then #3.
+    CHECK(p.decide(18000) == BrokerLaunchPolicy::kLaunch);
+    p.on_launched(18000);
+    CHECK(p.decide(36000) == BrokerLaunchPolicy::kLaunch);
+    p.on_launched(36000);
+    // Burst of 3 spent and still within cooldown of the last launch: give up.
+    CHECK(p.launches_done == 3);
+    CHECK(p.decide(54000) == BrokerLaunchPolicy::kGiveUp);
+  }
+
+  TEST_CASE("after the cooldown one more launch is allowed (late loader recovery)") {
+    BrokerLaunchPolicy p;
+    p.on_launched(0);
+    p.on_launched(0);
+    p.on_launched(0);
+    CHECK(p.decide(10000) == BrokerLaunchPolicy::kPoll);    // still in flight (< grace)
+    CHECK(p.decide(18000) == BrokerLaunchPolicy::kGiveUp);  // grace passed, cooling down
+    CHECK(p.decide(30000) == BrokerLaunchPolicy::kLaunch);  // cooldown elapsed
+    p.on_launched(30000);                                   // burst restarts from one
+    CHECK(p.launches_done == 1);
+  }
+
+  TEST_CASE("connecting clears the counters") {
+    BrokerLaunchPolicy p;
+    p.on_launched(0);
+    p.on_launched(0);
+    p.on_connected();
+    CHECK(p.launches_done == 0);
+    CHECK(p.decide(1) == BrokerLaunchPolicy::kLaunch);
+  }
+}
+
+TEST_SUITE("etahen_ipc") {
+  TEST_CASE("the launch-elfldr request carries etaHEN's magic and command") {
+    const std::string req = etahen_launch_elfldr_request();
+    REQUIRE(req.size() == 3 * sizeof(int32_t) + 0x1000);
+    int32_t magic = 0, cmd = 0, error = 1;
+    std::memcpy(&magic, req.data(), sizeof(magic));
+    std::memcpy(&cmd, req.data() + 4, sizeof(cmd));
+    std::memcpy(&error, req.data() + 8, sizeof(error));
+    CHECK(magic == kEtahenIpcMagic);
+    CHECK(cmd == kEtahenCmdLaunchElfldr);
+    CHECK(error == 0);
+    // The msg buffer is zeroed (the command carries no payload).
+    CHECK(req.find_first_not_of('\0', 12) == std::string::npos);
+  }
+
+  TEST_CASE("etahen_send reports ENOENT when the util socket is absent") {
+    std::string detail, error;
+    const int rc = etahen_send("/system_tmp/does-not-exist-prwb", etahen_launch_elfldr_request(),
+                               500, &detail, &error);
+    CHECK(rc == -1);
+    CHECK(!error.empty());  // "connect ...: No such file or directory"
+  }
+
+  TEST_CASE("etahen_send parses the daemon's error field from the reply") {
+    for (const int daemon_error : {0, -1}) {
+      char tmpl[] = "/tmp/prwb_etahenXXXXXX";
+      const int dirfd = mkstemp(tmpl);  // reserve a unique name, then reuse for the socket
+      REQUIRE(dirfd >= 0);
+      close(dirfd);
+      unlink(tmpl);
+      const std::string path = tmpl;
+
+      const int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
+      REQUIRE(lfd >= 0);
+      sockaddr_un addr{};
+      addr.sun_family = AF_UNIX;
+      std::strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
+      REQUIRE(bind(lfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+      REQUIRE(listen(lfd, 1) == 0);
+
+      std::thread fake([&] {
+        const int c = accept(lfd, nullptr, nullptr);
+        if (c < 0) {
+          return;
+        }
+        char buf[8192];
+        ssize_t total = 0;
+        const ssize_t want = static_cast<ssize_t>(3 * sizeof(int32_t) + 0x1000);
+        while (total < want) {
+          const ssize_t n = read(c, buf, sizeof(buf));
+          if (n <= 0) {
+            break;
+          }
+          total += n;
+        }
+        // Reply: an IPCMessage with the error field at offset 8.
+        std::string reply(3 * sizeof(int32_t) + 0x1000, '\0');
+        const int32_t header[3] = {kEtahenIpcMagic, 0x8000002 /*RETURN_VALUE*/, daemon_error};
+        std::memcpy(&reply[0], header, sizeof(header));
+        (void)!write(c, reply.data(), reply.size());
+        close(c);
+      });
+
+      std::string detail, error;
+      const int rc = etahen_send(path, etahen_launch_elfldr_request(), 2000, &detail, &error);
+      fake.join();
+      close(lfd);
+      unlink(path.c_str());
+      CHECK(rc == (daemon_error == 0 ? 0 : 1));
+    }
+  }
+}
+
+TEST_SUITE("spawn_tcp_probe") {
+  TEST_CASE("tcp_port_open is true for a listener and false for a refused port") {
+    const int lfd = socket(AF_INET, SOCK_STREAM, 0);
+    REQUIRE(lfd >= 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    REQUIRE(bind(lfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+    REQUIRE(listen(lfd, 1) == 0);
+    socklen_t len = sizeof(addr);
+    REQUIRE(getsockname(lfd, reinterpret_cast<sockaddr*>(&addr), &len) == 0);
+    const int port = ntohs(addr.sin_port);
+
+    std::string error;
+    CHECK(tcp_port_open("127.0.0.1:" + std::to_string(port), 1000, &error));
+    CHECK(error.empty());
+    close(lfd);
+    // The port is closed now: a connect is refused.
+    CHECK_FALSE(tcp_port_open("127.0.0.1:" + std::to_string(port), 1000, &error));
+    CHECK(!error.empty());
   }
 }
