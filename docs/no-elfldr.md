@@ -189,6 +189,45 @@ etaHEN's loader — make sure etaHEN is running, then relaunch.").
 > process — **no manual payload, elfldr, or websrv step is needed**. (websrv is
 > an optional fallback.)
 
+## Update (2026-11-02): what shipped, and the real bug
+
+Two things were settled by reading etaHEN again (`LightningMods/etaHEN@dafa13b`)
+and by the operator's console logs (runs 58/60):
+
+**The etaHEN auto-launch route is not reachable from a uid-1 sandboxed title.**
+The only in-daemon command that starts the bundled elfldr,
+`BREW_UTIL_LAUNCH_ELFLDR = 0xE1F1D8`, is served **only** on the AF_UNIX socket
+`/system_tmp/etaHEN_util_service` — the util daemon's `IPC_loop` binds that path
+and nothing else (`Source Code/util/source/msg.cpp:708-714`, handler `:535-543`).
+A sandboxed app sees only its **own** `/system_tmp`; etaHEN bridges only `/data`
+into app sandboxes (via a ShellCore patch, `util/source/main.cpp:218-220`;
+`Allow_data_in_sandbox`), never `/system_tmp`, which matches the earlier
+`ENOENT` probe. There is **no TCP equivalent**: the only TCP command intake is
+the legacy server on `9028` (`util/source/cpp_service.cpp:726-770`), which is
+default-off (`util/source/main.cpp:154`, default `"0"`) and whose handler
+(`cmd_server`, `:649-717`) implements only `JAILBREAK_CMD` — no launch. `9090`
+installs PKGs; `9081` is klog. So **no title-reachable call makes etaHEN launch
+elfldr** on a current build; "9021 refused" is the lite-mode case
+(`daemon/source/main.cpp:333`), recoverable only through that util socket.
+
+We still implement the genuine `BREW_UTIL_LAUNCH_ELFLDR` ask (correct ABI
+bytes, bounded, honest): when 9021 is refused the title connects the util
+socket and, if it answers, re-polls 9021. On the operator's console the socket
+is absent, so it logs and falls through — it never fakes a launch. The ABI is
+re-declared in `broker_client.h` (not copied from GPLv3 etaHEN).
+
+**The user's actual block was a connect race, not a missing loader.** elfldr on
+9021 works on that console; it launched a broker every ~10s, but the broker
+takes >1s to bind `127.0.0.1:17771` and the UI's single connect lost the race,
+so the UI relaunched the broker — an endless series that each self-exited with
+"no client for 10005ms", while the screen wrongly said "could not reach an ELF
+loader". Fixed in `spawn_glue.cpp` / `broker_*`: poll-connect 17771 for a
+bounded window, do not relaunch a broker already coming up, cap the relaunch
+burst, open the broker profile only after the socket listens (so the connect
+lands in the backlog), and report "broker-unreachable" distinctly from
+"no-loader". The friendly screen now also retries in the background, so a
+loader or broker that appears later is picked up without relaunching.
+
 ## What was read
 
 - `LightningMods/etaHEN@dafa13b` — `Source Code/include/msg.hpp`,

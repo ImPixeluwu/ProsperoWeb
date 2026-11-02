@@ -339,6 +339,8 @@ endless relaunches hammer websrv.
 | `PROSPEROWEB_SPAWN_PORT` | `17771` | loopback TCP port of the broker (UI and broker) |
 | `PROSPEROWEB_WEBSRV` | `127.0.0.1:8080` | websrv address (IPv4 literal) used to start the broker |
 | `PROSPEROWEB_ELFLDR` | `127.0.0.1:9021` | elfldr address (IPv4 literal) used to start the broker |
+| `PROSPEROWEB_ETAHEN_ASK` | `1` | `0` disables asking etaHEN to launch its bundled elfldr when 9021 is refused |
+| `PROSPEROWEB_ETAHEN_UTIL_SOCK` | `/system_tmp/etaHEN_util_service` | etaHEN utility-daemon command socket (AF_UNIX) used for the launch-elfldr request |
 | `PROSPEROWEB_BROKER_LOADER` | `auto` | how the UI starts the broker: `elfldr`, `websrv`, or `auto` (both; elfldr first in the native title, websrv first under the websrv tile) |
 | `PROSPEROWEB_SELF_PATH` | `/data/prosperoweb/prosperoweb.elf`; native title: `<install folder>/prosperoweb.elf` | the ELF the broker runs as itself and spawns for the children |
 | `PROSPEROWEB_TITLE_DIR` | found | native title: the install folder as the broker and children see it, instead of searching the ShadowMountPlus scan paths ([native-title.md](native-title.md)) |
