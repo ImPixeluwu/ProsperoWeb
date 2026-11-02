@@ -2,6 +2,7 @@
 #include "ps5_log.h"
 
 #include <atomic>
+#include <cerrno>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -52,7 +53,15 @@ void log_open(const std::string& path) {
   std::lock_guard<std::mutex> lock(g_log_lock);
 #if PROSPEROWEB_NATIVE_TITLE
   if (g_log_fd < 0) {
-    g_log_fd = open(path.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0644);
+    g_log_fd = open(path.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0666);
+    // The spawn broker runs as root and opens this same log; a stale run can
+    // leave log.txt root-owned 0644, so the uid-1 UI's open() fails with
+    // EACCES and the whole UI log silently vanishes. The profile directory is
+    // world-writable (the broker's open_profile), so replace the stale file.
+    if (g_log_fd < 0 && (errno == EACCES || errno == EPERM)) {
+      unlink(path.c_str());
+      g_log_fd = open(path.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0666);
+    }
   }
 #else
   if (g_log_file) {
