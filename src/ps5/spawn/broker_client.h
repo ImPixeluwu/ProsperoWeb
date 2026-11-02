@@ -109,4 +109,84 @@ int elfldr_send(const std::string& host_port, const std::string& line, int timeo
 int http_get(const std::string& host_port, const std::string& target, int timeout_ms,
              std::string* error);
 
+// Opens and immediately closes a loopback TCP connection to host_port
+// ("a.b.c.d:port"). Returns true when a listener accepted it (the port is
+// up), false otherwise (*error describes why, e.g. "connect ...: Connection
+// refused"). Used to tell "9021 is refused" from "9021 answered" without
+// sending a payload, so the happy path (a loader already up) is unchanged.
+bool tcp_port_open(const std::string& host_port, int timeout_ms, std::string* error);
+
+// The loaders start_broker tries, in order. loader is PROSPEROWEB_BROKER_LOADER
+// ("auto", "elfldr" or "websrv"; anything else is treated as "auto" and noted
+// by the caller). native is true in the native title (PROSPEROWEB_TITLE_UI_ROOT
+// set): "auto" then tries elfldr first (no websrv needed), websrv first
+// otherwise (websrv's tile is already running). A single named loader yields a
+// one-element order.
+std::vector<std::string> broker_loader_order(const std::string& loader, bool native);
+
+// etaHEN's utility daemon re-declared ABI (LightningMods/etaHEN@dafa13b,
+// Source Code/include/msg.hpp): the command socket is AF_UNIX at
+// "/system_tmp/etaHEN_util_service", framed as
+//   struct { int32 magic=0xDEADBABE; int32 cmd; int32 error; char msg[0x1000]; }
+// We re-declare the layout (an interface fact) rather than copy etaHEN's GPLv3
+// header. See docs/no-elfldr.md.
+constexpr int kEtahenIpcMagic = 0xDEADBABE;
+constexpr int kEtahenCmdLaunchElfldr = 0xE1F1D8;  // BREW_UTIL_LAUNCH_ELFLDR
+constexpr const char* kEtahenUtilSocketPath = "/system_tmp/etaHEN_util_service";
+
+// Builds the exact bytes of a BREW_UTIL_LAUNCH_ELFLDR request to etaHEN's
+// utility daemon: magic, the command, error=0 and a zeroed msg buffer (the
+// command carries no payload). The result is sizeof(IPCMessage) bytes.
+std::string etahen_launch_elfldr_request();
+
+// Connects the AF_UNIX stream socket at socket_path, sends request, and reads
+// one IPCMessage reply. Returns 0 when etaHEN answered with error==0 (it
+// launched, or elfldr was already running), 1 when etaHEN answered with a
+// non-zero error (*reply_detail may describe it), or -1 when the socket could
+// not be reached at all (*error says why; ENOENT means the socket is not in
+// this sandbox, the normal case for a uid-1 title). Bounded by timeout_ms.
+int etahen_send(const std::string& socket_path, const std::string& request, int timeout_ms,
+                std::string* reply_detail, std::string* error);
+
+// Polls probe() until it returns true or total_ms of wall-clock time elapses,
+// sleeping interval_ms between attempts (probe is always called at least
+// once). Returns the elapsed milliseconds on success, or -1 on timeout. The
+// clock and sleep are injectable for tests; the defaults use steady_clock and
+// std::this_thread::sleep_for. This is the bounded, no-hang retry discipline
+// the update path uses, reused for "ask, then re-poll 9021".
+long long poll_until_true(const std::function<bool()>& probe, long long total_ms,
+                          long long interval_ms,
+                          const std::function<long long()>& clock_ms = {},
+                          const std::function<void(long long)>& sleep_ms = {});
+
+// Decides, each time the UI finds no broker connection and may start one,
+// whether to launch a fresh broker, keep polling one already in flight, or
+// give up. Pure policy, so the connect-race / respawn-loop logic is unit
+// tested without real sockets; spawn_glue drives it with the real launch and
+// poll-connect. The problem it solves: a broker can take seconds to bind, so a
+// single connect attempt races it; and relaunching on every failed spawn spawns
+// an endless series of brokers (each then self-exits with "no client"). This
+// keeps polling a launched broker for its whole life and caps relaunches.
+struct BrokerLaunchPolicy {
+  enum Action {
+    kLaunch,  // no broker is in flight and the burst is not exhausted: start one
+    kPoll,    // a broker was launched recently: keep polling its socket, do not relaunch
+    kGiveUp,  // launched max_launches in a row with no connect and still cooling down
+  };
+  int max_launches = 3;                // brokers to launch in a burst before cooling down
+  long long launch_grace_ms = 18000;   // treat a launch as "in flight" this long
+  long long cooldown_ms = 30000;       // after a burst, wait this long, then allow one more
+
+  int launches_done = 0;
+  long long last_launch_ms = -1;
+
+  // Called when not connected and may_start is true. now_ms is the wall clock.
+  // kLaunch/kPoll keep the respawn bounded (no endless rapid series); once the
+  // burst is spent it returns kGiveUp until cooldown_ms passes, then kLaunch
+  // again — so a loader the user starts later is still picked up, slowly.
+  Action decide(long long now_ms) const;
+  void on_launched(long long now_ms);  // a loader accepted a broker launch
+  void on_connected();                 // the UI connected: clear the counters
+};
+
 }  // namespace prosperoweb::spawn

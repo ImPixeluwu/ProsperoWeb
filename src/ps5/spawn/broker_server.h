@@ -9,6 +9,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -55,10 +56,18 @@ struct BrokerServerOptions {
   std::atomic<int>* bound_tcp_port = nullptr;
   // Exit if no client connects within this long after start. Once a client
   // has connected, the broker exits as soon as that connection closes,
-  // killing the children.
-  int idle_ms = 10000;
+  // killing the children. Generous so it comfortably outlives the UI's
+  // poll-connect window (spawn_glue): the UI must not abandon a broker that
+  // is still coming up, and the broker must not exit before the UI's retries.
+  int idle_ms = 20000;
   // How often the reaper polls the children.
   int reap_interval_ms = 500;
+  // Called once, right after the sockets bind and listen but before the first
+  // client is accepted (and before the idle clock starts). The native title
+  // uses it to open its profile tree: that chmod walk can take seconds, and
+  // running it here (not before bind) means the UI's connect() succeeds at
+  // once via the listen backlog instead of racing a not-yet-bound socket.
+  std::function<void()> on_listening;
 };
 
 // Runs the broker until it is idle, *stop becomes true (may be null), or

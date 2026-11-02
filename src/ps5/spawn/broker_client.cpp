@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <thread>
 #include <vector>
 
 #include <arpa/inet.h>
@@ -399,6 +401,159 @@ int http_get(const std::string& host_port, const std::string& target, int timeou
     return -1;
   }
   return code;
+}
+
+bool tcp_port_open(const std::string& host_port, int timeout_ms, std::string* error) {
+  std::string local_error;
+  const int fd = connect_ipv4(host_port, timeout_ms, error ? error : &local_error);
+  if (fd < 0) {
+    return false;
+  }
+  close(fd);
+  if (error) {
+    error->clear();
+  }
+  return true;
+}
+
+std::vector<std::string> broker_loader_order(const std::string& loader, bool native) {
+  if (loader == "elfldr" || loader == "websrv") {
+    return {loader};
+  }
+  return native ? std::vector<std::string>{"elfldr", "websrv"}
+                : std::vector<std::string>{"websrv", "elfldr"};
+}
+
+std::string etahen_launch_elfldr_request() {
+  // struct IPCMessage { int32 magic; int32 cmd; int32 error; char msg[0x1000]; }
+  constexpr size_t kMsgLen = 0x1000;
+  std::string frame(3 * sizeof(int32_t) + kMsgLen, '\0');
+  const int32_t header[3] = {static_cast<int32_t>(kEtahenIpcMagic),
+                             static_cast<int32_t>(kEtahenCmdLaunchElfldr), 0};
+  std::memcpy(&frame[0], header, sizeof(header));
+  return frame;
+}
+
+int etahen_send(const std::string& socket_path, const std::string& request, int timeout_ms,
+                std::string* reply_detail, std::string* error) {
+  if (reply_detail) {
+    reply_detail->clear();
+  }
+  if (socket_path.size() + 1 > sizeof(sockaddr_un::sun_path)) {
+    *error = "socket path too long: " + socket_path;
+    return -1;
+  }
+  const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) {
+    *error = std::string("socket: ") + std::strerror(errno);
+    return -1;
+  }
+  timeval tv{timeout_ms / 1000, (timeout_ms % 1000) * 1000};
+  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+  sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  std::strncpy(addr.sun_path, socket_path.c_str(), sizeof(addr.sun_path) - 1);
+  if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    *error = "connect " + socket_path + ": " + std::strerror(errno);
+    close(fd);
+    return -1;
+  }
+  if (!send_all(fd, request, error)) {
+    close(fd);
+    return -1;
+  }
+  // The daemon answers with one IPCMessage; the error field is at offset 8.
+  std::string resp;
+  char buf[512];
+  while (resp.size() < request.size()) {
+    const ssize_t n = recv(fd, buf, sizeof(buf), 0);
+    if (n < 0 && errno == EINTR) {
+      continue;
+    }
+    if (n < 0) {
+      *error = std::string("recv: ") + std::strerror(errno);
+      close(fd);
+      return -1;
+    }
+    if (n == 0) {
+      break;
+    }
+    resp.append(buf, static_cast<size_t>(n));
+  }
+  close(fd);
+  if (resp.size() < 3 * sizeof(int32_t)) {
+    *error = "short reply (" + std::to_string(resp.size()) + " bytes)";
+    return -1;
+  }
+  int32_t reply_error = 0;
+  std::memcpy(&reply_error, &resp[2 * sizeof(int32_t)], sizeof(reply_error));
+  if (reply_detail && resp.size() > 3 * sizeof(int32_t)) {
+    *reply_detail = resp.substr(3 * sizeof(int32_t), 64);
+    const size_t nul = reply_detail->find('\0');
+    if (nul != std::string::npos) {
+      reply_detail->resize(nul);
+    }
+  }
+  return reply_error == 0 ? 0 : 1;
+}
+
+long long poll_until_true(const std::function<bool()>& probe, long long total_ms,
+                          long long interval_ms, const std::function<long long()>& clock_ms,
+                          const std::function<void(long long)>& sleep_ms) {
+  const auto now = clock_ms ? clock_ms : [] {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+  };
+  const auto nap = sleep_ms ? sleep_ms : [](long long ms) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+  };
+  const long long start = now();
+  for (;;) {
+    if (probe()) {
+      return now() - start;
+    }
+    const long long elapsed = now() - start;
+    if (elapsed >= total_ms) {
+      return -1;
+    }
+    const long long left = total_ms - elapsed;
+    nap(interval_ms < left ? interval_ms : left);
+  }
+}
+
+BrokerLaunchPolicy::Action BrokerLaunchPolicy::decide(long long now_ms) const {
+  const bool in_flight =
+      launches_done > 0 && last_launch_ms >= 0 && (now_ms - last_launch_ms) < launch_grace_ms;
+  if (in_flight) {
+    return kPoll;
+  }
+  if (launches_done >= max_launches) {
+    // Burst spent: hold off until the cooldown passes, then allow one more so
+    // a loader started later still gets a broker (slowly, never a rapid loop).
+    if (last_launch_ms >= 0 && (now_ms - last_launch_ms) >= cooldown_ms) {
+      return kLaunch;
+    }
+    return kGiveUp;
+  }
+  return kLaunch;
+}
+
+void BrokerLaunchPolicy::on_launched(long long now_ms) {
+  // After the cooldown the burst restarts from one, so launches_done is a burst
+  // counter, not an unbounded total.
+  if (launches_done >= max_launches && last_launch_ms >= 0 &&
+      (now_ms - last_launch_ms) >= cooldown_ms) {
+    launches_done = 0;
+  }
+  launches_done++;
+  last_launch_ms = now_ms;
+}
+
+void BrokerLaunchPolicy::on_connected() {
+  launches_done = 0;
+  last_launch_ms = -1;
 }
 
 }  // namespace prosperoweb::spawn

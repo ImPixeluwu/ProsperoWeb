@@ -412,6 +412,12 @@ int Server::run(const std::atomic<bool>* stop) {
   if (!listen_all()) {
     return 1;
   }
+  // The sockets are bound and listening now: a UI connect() already succeeds
+  // (the kernel completes it from the listen backlog). Any slow preparation
+  // runs here, so it never delays the bind and race the UI's first connect.
+  if (opt_.on_listening) {
+    opt_.on_listening();
+  }
   ps5_log_printf("broker: ready, pid %d", static_cast<int>(getpid()));
 
   std::thread reaper([this] { reaper_main(); });
