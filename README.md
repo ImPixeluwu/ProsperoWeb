@@ -32,7 +32,7 @@ It is early software (version 0.1.0): expect rough edges, and launch it only the
 
 ## Known limitations
 
-- **A privileged ELF loader is required.** The sandboxed title cannot create its own processes (verified on the console: `rfork_thread` is refused with `EPERM`), so a loader must start the web and network processes. elfldr on `127.0.0.1:9021` does this and etaHEN starts it automatically; the websrv tile is the fallback.
+- **A privileged ELF loader is required.** The sandboxed title cannot create its own processes (verified on the console: `rfork_thread` is refused with `EPERM`), so a loader must start the web and network processes. A loader on `127.0.0.1:9021` does this; etaHEN, many jailbreak hosts, or a standalone elfldr all provide one, and the UI connects to the spawn broker as soon as it is up. The websrv tile is the fallback.
 - **Hardware video decoding covers 8-bit H.264 and HEVC** (`sceVideodec2`). VP8, VP9 and AV1 always decode in software, and high resolutions or frame rates in software can drop frames, so players are steered to H.264 at up to 1080p by default.
 - **No DRM sites** (Netflix, Disney+, Kinopoisk, Okko, ...): there is no CDM, by design.
 - **No GPU acceleration**: software rendering only; no WebGL, no CSS 3D, no GPU compositing.
@@ -47,13 +47,13 @@ See also [docs/architecture.md](docs/architecture.md#non-goals).
 
 ### Native title
 
-`PRWB00001` is the browser UI itself as a native title: one folder, launched from the home screen like any other app, with the profile created automatically in `/data/prosperoweb/`. Its `eboot.bin` is the UI linked as a native application; its `prosperoweb.elf` is the payload that the spawn helper runs for the WebProcess and NetworkProcess. Prerequisites: a jailbroken PS5 with etaHEN or kstuff, [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus) (lists the title on the home screen) and elfldr listening on `127.0.0.1:9021` (starts the spawn helper; websrv on port 8080 is used as a fallback).
+`PRWB00001` is the browser UI itself as a native title: one folder, launched from the home screen like any other app, with the profile created automatically in `/data/prosperoweb/`. Its `eboot.bin` is the UI linked as a native application; its `prosperoweb.elf` is the payload that the spawn helper runs for the WebProcess and NetworkProcess. Prerequisites: a jailbroken PS5 with a kernel jailbreak (etaHEN or kstuff/kstuff-lite), [ShadowMountPlus](https://github.com/drakmor/ShadowMountPlus) (lists the title on the home screen) and an ELF loader on `127.0.0.1:9021` (provided by etaHEN, many jailbreak hosts, or a standalone elfldr; starts the spawn helper, websrv on port 8080 is the fallback). A separate elfldr is not needed when the jailbreak already provides one.
 
 1. Get `PRWB00001.zip` from a CI run or release, or build it (`cmake --build build-ps5 --target prosperoweb prosperoweb_native`, `scripts/ps5/package.sh`, `scripts/ps5/native/make-title.sh`).
 2. Unpack it so that the console has `/data/homebrew/PRWB00001/eboot.bin` (ShadowMountPlus scans `/data/homebrew` by default). Copy the zip and unpack it on the console, or keep the execute bit of `eboot.bin` when copying loose files.
 3. Wait for ShadowMountPlus's next scan (15 s by default), then start "ProsperoWeb" from the home screen.
 
-The first launch writes `/data/prosperoweb/log.txt` from the first line on. If the title does not start, the websrv tile below still works; [docs/native-title.md](docs/native-title.md) lists what to look for and how to fall back. The title is not listed in ProsperoStore yet ([docs/store-submission.md](docs/store-submission.md)).
+The first launch writes `/data/prosperoweb/log.txt` from the first line on. If the title does not start, the websrv tile below still works; [docs/native-title.md](docs/native-title.md) lists what to look for and how to fall back. The title is in the ProsperoStore catalog ([docs/store-submission.md](docs/store-submission.md)).
 
 ### Current install: websrv tile
 

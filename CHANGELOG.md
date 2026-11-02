@@ -4,6 +4,18 @@ All notable changes to ProsperoWeb are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.1 - 2026-11-02
+
+### Fixed
+
+- Startup on consoles whose ELF loader keeps the launch connection open until the payload exits (etaHEN's bundled elfldr, and some jailbreak hosts). The loader request is now sent asynchronously and the UI connects to the spawn broker as soon as it is listening, instead of blocking on the loader's response while the broker timed out with no client. The browser now starts with no separate elfldr on a setup like ShadowMountPlus + kstuff-lite + a jailbreak loader.
+- An empty `log.txt` when a previous root-owned log file blocked the title from writing; the title now reclaims the file.
+- A crash from restarting the background loader-retry thread.
+
+### Changed
+
+- The "no ELF loader" screen keeps retrying in the background, so starting a loader afterwards is picked up without relaunching the title.
+
 ## v0.2.0 - 2026-11-01
 
 ### Added
