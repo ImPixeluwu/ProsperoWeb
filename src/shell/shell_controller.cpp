@@ -654,6 +654,7 @@ void ShellController::tick(float dt_seconds) {
   pointer_moved_ = false;
 
   save_session_if_due(dt_seconds);
+  check_remote_devices();
 
   if (dirty_) {
     render_now();
@@ -1144,6 +1145,22 @@ void ShellController::show_menu_section(MenuSection section) {
                rebuild_menu_keeping(menu_selected_);
              }});
       }
+      if (config_.remote_control) {
+        const bool on = config_.remote_control->running();
+        menu_items_.push_back({std::string("Remote control: ") + (on ? "On" : "Off"), "",
+                               [this] { toggle_remote_control(); }});
+        if (on) {
+          menu_items_.push_back({"Show remote PIN", "", [this] {
+                                   close_menu();
+                                   show_remote_notice();
+                                 }});
+          menu_items_.push_back({"Disconnect phones", "", [this] {
+                                   config_.remote_control->disconnect_all();
+                                   remote_devices_ = 0;
+                                   close_menu();
+                                 }});
+        }
+      }
       if (!config_.diagnostics_url.empty()) {
         menu_items_.push_back({"Diagnostics", "", [this] {
                                  close_menu();
@@ -1337,6 +1354,7 @@ void ShellController::show_notice(Notice notice) {
     focus_before_notice_ = focus_;
   }
   notice_ = std::move(notice);
+  remote_notice_ = false;
   focus_ = Focus::Notice;
   stop_repeat();
   mark_dirty();
@@ -1347,6 +1365,7 @@ void ShellController::dismiss_notice(bool proceed) {
     return;
   }
   notice_.reset();
+  remote_notice_ = false;
   focus_ = focus_before_notice_;
   if (focus_ == Focus::Osk && !osk_open_) focus_ = Focus::Page;
   if (focus_ == Focus::Menu && !menu_open_) focus_ = Focus::Page;
@@ -1586,6 +1605,182 @@ json ShellController::chrome_state() const {
       {"target", text_request_ && text_request_->target == OskTarget::Page ? "page" : "address"}};
   state["focus"] = focus_name(focus_);
   return state;
+}
+
+// --- Remote control ---------------------------------------------------------
+
+namespace {
+
+// Enter in the focused field: key events for the page's handlers, then the
+// browser's default (submit the form, new line in a textarea) unless a
+// handler cancelled the keydown. Synthetic key events have no default action
+// of their own, so this behaves the same on every engine.
+constexpr const char* kSubmitFieldScript =
+    "(function(){var t=document.activeElement||document.body;"
+    "var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true};"
+    "var ok=t.dispatchEvent(new KeyboardEvent('keydown',o));"
+    "t.dispatchEvent(new KeyboardEvent('keypress',o));"
+    "t.dispatchEvent(new KeyboardEvent('keyup',o));"
+    "if(!ok)return;"
+    "if(t.tagName==='TEXTAREA'||t.isContentEditable){document.execCommand('insertText',false,'\\n');}"
+    "else if(t.form){if(t.form.requestSubmit)t.form.requestSubmit();else t.form.submit();}})()";
+
+Action action_for(core::RemoteAction a) {
+  switch (a) {
+    case core::RemoteAction::Back: return Action::Back;
+    case core::RemoteAction::Forward: return Action::Forward;
+    case core::RemoteAction::Reload: return Action::Reload;
+    case core::RemoteAction::PrevTab: return Action::PrevTab;
+    case core::RemoteAction::NextTab: return Action::NextTab;
+    case core::RemoteAction::NewTab: return Action::NewTab;
+    case core::RemoteAction::CloseTab: return Action::CloseTab;
+    case core::RemoteAction::PageUp: return Action::PageUp;
+    case core::RemoteAction::PageDown: return Action::PageDown;
+    case core::RemoteAction::Fullscreen: return Action::ToggleFullscreen;
+    case core::RemoteAction::Menu: return Action::OpenMenu;
+    case core::RemoteAction::Escape: return Action::None;
+  }
+  return Action::None;
+}
+
+}  // namespace
+
+void ShellController::remote_command(const core::RemoteCommand& command) {
+  if (text_request_) {
+    return;  // the system keyboard owns the input meanwhile
+  }
+  using Type = core::RemoteCommand::Type;
+  switch (command.type) {
+    case Type::OpenUrl:
+      if (focus_ == Focus::Notice) return;
+      if (osk_open_) close_osk();
+      if (menu_open_) close_menu();
+      if (focus_ == Focus::Chrome) set_focus(Focus::Page);
+      if (command.new_tab) {
+        open_url_in_new_tab(command.text);
+      } else {
+        navigate(command.text);
+      }
+      mark_dirty();
+      break;
+    case Type::Text:
+      if (osk_open_) {
+        // Typed on the phone into the open on-screen keyboard: it replaces the
+        // pre-filled address, and adds to text meant for a page field.
+        osk_.set_text(osk_target_ == OskTarget::Address ? command.text
+                                                         : osk_.text() + command.text);
+        mark_dirty();
+        if (command.submit) commit_osk();
+        return;
+      }
+      if (focus_ != Focus::Page) return;
+      if (auto* view = active_view()) {
+        commit_text(OskTarget::Page, tabs_.active_id().value_or(0), command.text, false);
+        if (command.submit) view->run_javascript(kSubmitFieldScript);
+      }
+      break;
+    case Type::Pointer: {
+      if (focus_ != Focus::Page) return;
+      const core::Vec2 p = pointer_.position();
+      pointer_.set_position({p.x + command.dx, p.y + command.dy});
+      pointer_moved_ = true;  // sent to the page from tick()
+      pointer_idle_seconds_ = 0.0f;
+      if (pointer_hidden_by_mouse_) {
+        pointer_hidden_by_mouse_ = false;
+        mark_dirty();
+      }
+      break;
+    }
+    case Type::Scroll:
+      if (focus_ != Focus::Page) return;
+      scroll_active(static_cast<int>(command.dx), static_cast<int>(command.dy));
+      break;
+    case Type::Click:
+      // Cross: a click on the page, or the selected entry of a menu or notice.
+      on_button(Button::Cross, true);
+      on_button(Button::Cross, false);
+      break;
+    case Type::Action: {
+      if (command.action == core::RemoteAction::Escape) {
+        on_button(Button::Circle, true);
+        on_button(Button::Circle, false);
+        return;
+      }
+      if (command.action == core::RemoteAction::Menu) {
+        if (menu_open_) {
+          close_menu();
+        } else if (focus_ == Focus::Page || focus_ == Focus::Chrome) {
+          open_menu();
+        }
+        return;
+      }
+      if (focus_ == Focus::Notice || focus_ == Focus::Osk) return;
+      if (menu_open_) close_menu();
+      if (focus_ == Focus::Chrome) set_focus(Focus::Page);
+      run_page_action(action_for(command.action));
+      mark_dirty();
+      break;
+    }
+  }
+}
+
+nlohmann::json ShellController::remote_status() const {
+  const auto* tab = tabs_.active();
+  int active_index = 0;
+  int index = 0;
+  for (const auto& t : tabs_.tabs()) {
+    if (tab && t.id == tab->id) active_index = index;
+    ++index;
+  }
+  return json{{"url", tab ? tab->url : std::string()},
+              {"title", tab ? tab->title : std::string()},
+              {"loading", tab && tab->loading},
+              {"tabs", tabs_.tabs().size()},
+              {"active_tab", active_index},
+              {"focus", focus_name(focus_)},
+              {"text_input_focused", text_input_focused_}};
+}
+
+void ShellController::toggle_remote_control() {
+  auto* remote = config_.remote_control;
+  if (remote->running()) {
+    remote->stop();
+    remote_devices_ = 0;
+    rebuild_menu_keeping(menu_selected_);
+    return;
+  }
+  std::string error;
+  if (!remote->start(error)) {
+    close_menu();
+    show_notice({"error", "Remote control unavailable", error});
+    return;
+  }
+  remote_devices_ = remote->paired_devices();
+  close_menu();
+  show_remote_notice();
+}
+
+void ShellController::show_remote_notice() {
+  const auto info = config_.remote_control ? config_.remote_control->info() : std::nullopt;
+  if (!info) {
+    return;
+  }
+  show_notice({"info", "Remote control",
+               "On a phone on the same network, open\n" + info->url + "\nand enter the PIN " +
+                   info->pin +
+                   "\n\nThe connection is not encrypted: avoid typing passwords from the phone."});
+  remote_notice_ = true;
+}
+
+void ShellController::check_remote_devices() {
+  if (!config_.remote_control) {
+    return;
+  }
+  const std::size_t n = config_.remote_control->paired_devices();
+  if (n > remote_devices_ && remote_notice_ && notice_) {
+    dismiss_notice(false);  // a phone just paired: the PIN is no longer needed
+  }
+  remote_devices_ = n;
 }
 
 }  // namespace prosperoweb::shell

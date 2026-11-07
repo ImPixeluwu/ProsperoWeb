@@ -26,6 +26,7 @@ It is early software (version 0.1.0): expect rough edges, and launch it only the
 - Add-ons (menu → Ad blocker / SponsorBlock): a built-in **ad blocker** (on by default) built from EasyList, EasyPrivacy, uBlock Origin's lists and Peter Lowe's list, enforced by WebKit's native content rule list (network blocking + element-hiding CSS, incl. YouTube promoted/masthead/sidebar), plus a small fail-open user script that removes YouTube pre/mid-roll video ads via JSON pruning. Optional cookie-banner filter, and background list updates on the console. Plus a bundled **SponsorBlock** user script (off by default) skipping YouTube segments by category. Not uBlock Origin and not the SponsorBlock extension — independent implementations using the public lists/API.
 - Bundled fonts with Latin, Cyrillic, CJK and colour emoji coverage (Noto, Noto CJK, Noto Color Emoji, Liberation, DejaVu).
 - JavaScript JIT (baseline + DFG; FTL off) and WebAssembly, ~1.7x faster than the interpreter on a micro-benchmark; `config.json` `"env"` can turn them off ([docs/ps5-runtime.md](docs/ps5-runtime.md#javascript-jit-and-webassembly)).
+- Phone remote control (menu → Remote control, off by default): open the address shown on the TV on a phone on the same network and enter the PIN to get a trackpad, an address bar, typing into the focused field and the browser's buttons ([docs/remote-control.md](docs/remote-control.md)).
 - English and Russian UI.
 - DRM notice: known DRM-only sites and pages that request EME get a clear message instead of a broken player.
 - Add-ons: a built-in ad blocker (native WebKit content rule list from EasyList, EasyPrivacy, Peter Lowe and uBlock Origin lists, plus a YouTube page/pre-roll script) and SponsorBlock (skips YouTube sponsor segments), toggled from the menu. These are independent implementations using the public lists and API, not the uBlock Origin or SponsorBlock extensions.
@@ -39,6 +40,7 @@ It is early software (version 0.1.0): expect rough edges, and launch it only the
 - **No WebAudio.**
 - **Ad blocker is network-first and best-effort on YouTube video ads.** A console sandbox limit on shared-memory handles means one merged rule list is attached; on-device list updates fetch from EasyList's host, while the full uBlock/Peter Lowe/cookie coverage ships bundled.
 - **The ad blocker uses WebKit's content rule list, not uBlock Origin.** It blocks network requests and hides elements (css-display-none) from EasyList/EasyPrivacy/uBlock/Peter-Lowe, but has no scriptlets and no procedural/extended-CSS cosmetic filters (those rules are dropped and counted). The merged set is capped at WebKit's 150000-rule limit, network rules prioritised. YouTube client-scheduled pre/mid-roll is removed by a small JSON-prune user script; server-stitched ads are best-effort. On-device list refresh needs network and recompiles the rule list (CPU/memory), falling back to the cached/bundled baseline offline.
+- **The phone remote control is unencrypted** (plain HTTP on the local network, PIN-paired): avoid typing passwords from the phone. Listening on the LAN from the console's UI process is not verified yet.
 - **Only firmware 13.42 is tested**; other versions are untested.
 
 See also [docs/architecture.md](docs/architecture.md#non-goals).
@@ -119,7 +121,7 @@ ctest --test-dir build-gtk            # core, shell, spawn helper and media unit
 build-gtk/src/frontend/host-gtk/prosperoweb-host --url https://en.wikipedia.org/wiki/PlayStation_5
 ```
 
-Options: `--size WxH` (default 1920x1080), `--profile DIR` (default `$XDG_DATA_HOME/prosperoweb`; session, history and bookmarks live in `DIR/state`), `--url URL`, `--screenshot PATH --after-ms N` (save a PNG and exit), `--demo[=KIND]` (chrome demo state over `about:blank`), `--lang en|ru`, `--user-agent UA`, `--chrome-dir DIR`, `--input LIST` (press gamepad buttons after start, for automation). `--help` lists them all.
+Options: `--size WxH` (default 1920x1080), `--profile DIR` (default `$XDG_DATA_HOME/prosperoweb`; session, history and bookmarks live in `DIR/state`), `--url URL`, `--screenshot PATH --after-ms N` (save a PNG and exit), `--demo[=KIND]` (chrome demo state over `about:blank`), `--lang en|ru`, `--user-agent UA`, `--chrome-dir DIR`, `--remote` / `--remote-port N` (switch the phone remote control on at start and print its URL and PIN), `--input LIST` (press gamepad buttons after start, for automation). `--help` lists them all.
 
 The chrome is loaded from `--chrome-dir`, `$PROSPEROWEB_CHROME_DIR`, the install location (`share/prosperoweb/chrome-ui`) or the source tree, whichever has `chrome.html` first. `cmake --install` installs the binary and the chrome.
 
@@ -186,6 +188,7 @@ To cut a release, push a `v*` tag (`git tag v0.1.0 && git push origin v0.1.0`). 
 
 - [docs/architecture.md](docs/architecture.md): processes, libraries, code layout, rendering/input/video paths, patch set, build pipeline, licensing, non-goals.
 - [docs/ps5-runtime.md](docs/ps5-runtime.md): on-disk layout, configuration, environment variables, process model, spawn contract, performance, text input, upgrades from earlier names.
+- [docs/remote-control.md](docs/remote-control.md): the phone remote control: use, security, protocol.
 - [docs/console-verification.md](docs/console-verification.md): console test checklist, what to capture on a failure, console run notes.
 - [docs/native-title.md](docs/native-title.md): the native `PRWB00001` title: toolchain, `sce_sys` requirements, launch chain, remaining work.
 - [docs/store-submission.md](docs/store-submission.md): ProsperoStore catalog requirements, chosen identifiers, draft record.

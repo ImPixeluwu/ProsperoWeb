@@ -4,6 +4,12 @@ All notable changes to ProsperoWeb are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- Phone remote control (menu → Remote control, off by default): a phone on the same network opens the address shown on the TV and pairs with a six-digit PIN, then gets a trackpad (drag, tap, two-finger scroll), an address bar, a text box that types into the focused field and the browser's buttons. New PIN on every start, locked after 5 wrong PINs, "Disconnect phones" in the menu. Plain HTTP: the phone page warns against typing passwords. See docs/remote-control.md.
+
 ## v0.2.1 - 2026-11-02
 
 ### Fixed

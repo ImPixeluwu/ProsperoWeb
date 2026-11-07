@@ -24,6 +24,9 @@ void usage(const char* argv0) {
       "  --lang en|ru          UI language for notices (default from $LANG)\n"
       "  --user-agent UA       override the user agent\n"
       "  --chrome-dir DIR      directory with chrome.html\n"
+      "  --remote-port N       phone remote control port (default 17780)\n"
+      "  --remote              switch the phone remote control on at start; prints\n"
+      "                        its URL and PIN\n"
       "  --input LIST          press gamepad buttons after start, comma separated\n"
       "                        (cross,circle,square,triangle,l1,r1,l2,r2,l3,r3,up,down,\n"
       "                        left,right,options,share,touchpad,wait, or pointer:XxY\n"
@@ -81,6 +84,10 @@ int main(int argc, char** argv) {
       opt.language = value("--lang");
     } else if (arg == "--user-agent") {
       opt.user_agent = value("--user-agent");
+    } else if (arg == "--remote-port") {
+      opt.remote_port = std::atoi(value("--remote-port"));
+    } else if (arg == "--remote") {
+      opt.remote = true;
     } else if (arg == "--chrome-dir") {
       opt.chrome_dir = value("--chrome-dir");
     } else if (arg == "--input") {

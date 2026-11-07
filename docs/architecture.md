@@ -54,6 +54,7 @@ The link line and the list of system modules (`NEEDED`) are in [webkit-port/READ
 |---|---|
 | `src/core/` | platform-independent models: tabs, URL normalizer, history, bookmarks, storage and session, gamepad mapper, pointer, on-screen keyboard, fullscreen state, DRM policy, injected page scripts (EME detector, gamepad key bridge) |
 | `src/shell/` | `ShellController` and the interfaces a frontend implements: `EngineView`, `EngineViewClient`, `EngineFactory`, `ChromeUi` |
+| `src/remote/` | the phone remote control: a small HTTP server thread, PIN pairing, the JSON API and the phone page, behind `shell::RemoteControl` ([remote-control.md](remote-control.md)) |
 | `src/chrome-ui/` | the browser chrome as one offline HTML page (`chrome.html`, `chrome.css`, `chrome.js`) |
 | `src/frontend/host-gtk/` | `prosperoweb-host`: GTK 4 + WebKitGTK 6.0 desktop frontend for development and screenshots |
 | `src/frontend/ps5/` | `prosperoweb.elf`: multi-call `main`, `Ps5App` (SDL2 frame loop, compositor, input), `WkWebView`/`Ps5EngineView` (WebKit C API), `Ps5ChromeUi`, config, log, runtime environment, libwpe loader |

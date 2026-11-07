@@ -13,6 +13,7 @@
 
 #include "prosperoweb/core/gamepad.h"
 #include "prosperoweb/core/storage.h"
+#include "prosperoweb/remote/remote_service.h"
 #include "prosperoweb/shell/chrome_ui.h"
 #include "prosperoweb/shell/engine_view.h"
 #include "prosperoweb/shell/shell_controller.h"
@@ -33,6 +34,8 @@ struct Options {
   std::string language = "en";
   std::string user_agent;
   std::string chrome_dir;    // empty: autodetect
+  int remote_port = 17780;   // phone remote control (menu: Remote control)
+  bool remote = false;       // switch it on at start
   // Debug/automation: gamepad buttons pressed one by one after start.
   std::vector<std::string> input;
   int input_delay_ms = 1500;
@@ -93,6 +96,7 @@ class HostApp final : public shell::ChromeUi, public shell::EngineFactory {
   WebKitNetworkSession* session_ = nullptr;
 
   std::unique_ptr<core::Storage> storage_;
+  std::unique_ptr<remote::RemoteService> remote_;  // outlives shell_
   std::unique_ptr<shell::ShellController> shell_;
   std::unique_ptr<Gamepad> gamepad_;
 

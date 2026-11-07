@@ -21,6 +21,7 @@ endif()
 
 target_link_libraries(prosperoweb-host PRIVATE
   prosperoweb::shell
+  prosperoweb::remote
   prosperoweb::chrome_ui
   PkgConfig::PROSPEROWEB_GTK
   prosperoweb_warnings)

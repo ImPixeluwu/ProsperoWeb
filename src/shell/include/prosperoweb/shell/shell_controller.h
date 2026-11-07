@@ -21,6 +21,7 @@
 #include "prosperoweb/core/history.h"
 #include "prosperoweb/core/on_screen_keyboard.h"
 #include "prosperoweb/core/pointer_model.h"
+#include "prosperoweb/core/remote_command.h"
 #include "prosperoweb/core/repeat_timer.h"
 #include "prosperoweb/core/session.h"
 #include "prosperoweb/core/storage.h"
@@ -29,6 +30,7 @@
 #include "prosperoweb/shell/addons.h"
 #include "prosperoweb/shell/chrome_ui.h"
 #include "prosperoweb/shell/engine_view.h"
+#include "prosperoweb/shell/remote.h"
 #include "prosperoweb/shell/text_input.h"
 
 namespace prosperoweb::shell {
@@ -92,6 +94,9 @@ class ShellController {
     // Persists the natural-scroll setting on toggle; nullptr hides the menu
     // entry. Must outlive the controller.
     std::function<void(bool)> on_natural_scroll_changed;
+    // The phone remote control (remote::RemoteService); nullptr hides its
+    // menu entries. Must outlive the controller.
+    RemoteControl* remote_control = nullptr;
   };
 
   enum class Focus : std::uint8_t { Page, Chrome, Osk, Menu, Notice };
@@ -156,6 +161,13 @@ class ShellController {
   bool open_url_in_new_tab(const std::string& url);
   // Navigates the active tab to address-bar input (normalized).
   void navigate(const std::string& input);
+
+  // A command from a paired phone (RemoteControl), on the shell thread.
+  // Ignored while a TextInputProvider request runs.
+  void remote_command(const core::RemoteCommand& command);
+  // What the phone shows: {url, title, loading, tabs, active_tab, focus,
+  // text_input_focused}.
+  nlohmann::json remote_status() const;
 
   void set_viewport(int width, int height);
 
@@ -326,6 +338,10 @@ class ShellController {
   void show_notice(Notice notice);
   void dismiss_notice(bool proceed);
   void toggle_bookmark();
+  // Remote control menu entries and notices.
+  void toggle_remote_control();
+  void show_remote_notice();
+  void check_remote_devices();
   void toggle_fullscreen();
   void exit_fullscreen();
   void set_focus(Focus focus);
@@ -403,6 +419,10 @@ class ShellController {
   std::optional<ChromePointer> chrome_pointer_;
   float since_click_ = -1.0f;  // seconds since the last Cross click, <0 = none
   bool text_input_focused_ = false;
+  // Phones paired at the last check, and whether the notice with the PIN is
+  // up (it closes itself when a phone pairs).
+  std::size_t remote_devices_ = 0;
+  bool remote_notice_ = false;
   bool quit_requested_ = false;
   bool dirty_ = true;
   bool session_dirty_ = false;

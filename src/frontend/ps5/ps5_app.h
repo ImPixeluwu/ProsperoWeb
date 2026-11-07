@@ -20,6 +20,7 @@
 #include "frame_stats.h"
 #include "pointer.h"
 #include "splash.h"
+#include "prosperoweb/remote/remote_service.h"
 #include "prosperoweb/shell/shell_controller.h"
 #include "ps5_addons.h"
 #include "ps5_audio_server.h"
@@ -121,6 +122,9 @@ class Ps5App {
   // The system keyboard dialog (nullptr with PROSPEROWEB_OSK=builtin); the
   // controller holds a pointer to it, so it is declared (and outlives) first.
   std::unique_ptr<Ps5ImeTextInput> ime_input_;
+  // The phone remote control (off until switched on from the menu); the
+  // controller holds a pointer to it.
+  std::unique_ptr<remote::RemoteService> remote_;
   std::unique_ptr<shell::ShellController> controller_;
 
   // Content cache: ARGB32 (what WKPagePaint writes), the active view painted
