@@ -264,5 +264,27 @@ check($('osk-keys').children[0].children[0] === key0 && !key0.classList.contains
       'key focus moves without recreating the keys');
 check($('osk-text').querySelector('.osk-caret') === caret, 'unchanged text keeps the caret node');
 
+// Pop-up notice: Open / Always allow / Dismiss; "Open" hidden for a blank pop-up.
+const popup = state();
+popup.notice = { kind: 'popup', title: 'Pop-up blocked', text: 'x', can_open: true };
+chrome.render(popup);
+check($('notice-ok').hidden === false && $('notice-ok-label').textContent === 'Open',
+      'pop-up notice offers Open');
+check($('notice-allow').hidden === false, 'pop-up notice offers Always allow');
+check($('notice-cancel').hidden === false && $('notice-cancel-label').textContent === 'Dismiss',
+      'pop-up notice offers Dismiss');
+popup.notice.can_open = false;
+chrome.render(popup);
+check($('notice-ok').hidden === true, 'a blank pop-up hides Open');
+const error = state();
+error.notice = { kind: 'error', title: 'Could not load the page', text: 'x' };
+chrome.render(error);
+check($('notice-ok').hidden === false && $('notice-ok-label').textContent === 'OK' &&
+      $('notice-allow').hidden === true && $('notice-cancel').hidden === true,
+      'other notices keep their single OK button');
+events.length = 0;
+$('notice-allow').click();
+check(events.length === 1 && events[0].type === 'notice_allow', 'Always allow sends notice_allow');
+
 console.log(checks + ' checks, ' + failures + ' failures');
 process.exit(failures ? 1 : 0);

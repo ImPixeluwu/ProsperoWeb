@@ -30,9 +30,17 @@ struct Fixture {
   FakeChromeUi chrome;
   std::unique_ptr<ShellController> shell;
   std::string diagnostics_url;
+  core::AddonsConfig addons;             // initial add-ons state
+  int addons_saves = 0;                  // on_addons_changed calls
+  core::AddonsConfig saved_addons;       // last state passed to it
 
   void make(bool start = true) {
     ShellController::Config config;
+    config.addons = addons;
+    config.on_addons_changed = [this](const core::AddonsConfig& a) {
+      ++addons_saves;
+      saved_addons = a;
+    };
     config.diagnostics_url = diagnostics_url;
     config.width = 1920;
     config.height = 1080;
@@ -201,11 +209,152 @@ TEST_SUITE("shell.navigation") {
   TEST_CASE("new window requests open a new tab") {
     Fixture f;
     f.make();
-    f.view(0).client().new_window_requested("https://popup.example/");
+    // A target="_blank" link the user clicked.
+    f.view(0).client().new_window_requested(
+        {"https://popup.example/", true, core::PopupOrigin::Link});
     CHECK(f.shell->tabs().size() == 2);
     REQUIRE(f.factory.created.size() == 2);
     CHECK(f.view(1).called("load https://popup.example/"));
     CHECK(f.view(1).visible);
+  }
+}
+
+TEST_SUITE("shell.popups") {
+  // window.open() to another site from a click: the usual pop-under.
+  const shell::NewWindowRequest kPopunder{"https://ads.example/landing", true,
+                                          core::PopupOrigin::Script};
+
+  TEST_CASE("a blocked pop-up shows a notice; Cross opens it") {
+    Fixture f;
+    f.make();
+    f.view(0).client().new_window_requested(kPopunder);
+    f.frame();
+    CHECK(f.shell->tabs().size() == 1);
+    CHECK(f.shell->blocked_popups() == 1);
+    CHECK(f.shell->focus() == Focus::Notice);
+    CHECK(f.chrome.last["notice"]["kind"] == "popup");
+    CHECK(f.chrome.last["notice"]["can_open"] == true);
+    CHECK(f.chrome.last["notice"]["text"].get<std::string>().find("home.example") !=
+          std::string::npos);
+
+    f.press(Button::Cross);
+    CHECK(f.shell->focus() == Focus::Page);
+    CHECK(f.shell->tabs().size() == 2);
+    CHECK(f.view(1).called("load https://ads.example/landing"));
+  }
+
+  TEST_CASE("Circle drops the pop-up") {
+    Fixture f;
+    f.make();
+    f.view(0).client().new_window_requested(kPopunder);
+    f.press(Button::Circle);
+    f.frame();
+    CHECK(f.shell->focus() == Focus::Page);
+    CHECK(f.shell->tabs().size() == 1);
+    CHECK(f.chrome.last["notice"]["kind"].is_null());
+  }
+
+  TEST_CASE("one notice per page load; the rest are dropped silently") {
+    Fixture f;
+    f.make();
+    f.view(0).client().new_window_requested(kPopunder);
+    f.press(Button::Circle);
+    f.view(0).client().new_window_requested(kPopunder);
+    CHECK(f.shell->focus() == Focus::Page);
+    CHECK(f.shell->blocked_popups() == 2);
+    f.frame();
+    CHECK(f.chrome.last["notice"]["kind"].is_null());
+
+    f.view(0).client().load_started();  // a new page may notify again
+    f.view(0).client().new_window_requested(kPopunder);
+    CHECK(f.shell->focus() == Focus::Notice);
+  }
+
+  TEST_CASE("Triangle allows the site from now on and opens the pop-up") {
+    Fixture f;
+    f.make();
+    f.view(0).client().new_window_requested(kPopunder);
+    f.press(Button::Triangle);
+    CHECK(f.shell->focus() == Focus::Page);
+    CHECK(f.shell->tabs().size() == 2);
+    REQUIRE(f.addons_saves == 1);
+    REQUIRE(f.saved_addons.popups.allowed_sites.size() == 1);
+    CHECK(f.saved_addons.popups.allowed_sites[0] == "home.example");
+
+    // Even a pop-up without a gesture now opens from that site.
+    f.shell->on_chrome_event(json{{"type", "tab_select"}, {"id", f.shell->tabs().tabs()[0].id}});
+    f.view(0).client().new_window_requested(
+        {"https://other.example/", false, core::PopupOrigin::Script});
+    CHECK(f.shell->tabs().size() == 3);
+    CHECK(f.shell->blocked_popups() == 1);
+  }
+
+  TEST_CASE("the chrome's Always allow button does the same") {
+    Fixture f;
+    f.make();
+    f.view(0).client().new_window_requested(kPopunder);
+    f.shell->on_chrome_event(json{{"type", "notice_allow"}});
+    CHECK(f.shell->tabs().size() == 2);
+    CHECK(f.addons_saves == 1);
+  }
+
+  TEST_CASE("a blank pop-up has nothing to open") {
+    Fixture f;
+    f.make();
+    f.view(0).client().new_window_requested({"about:blank", true, core::PopupOrigin::Script});
+    f.frame();
+    CHECK(f.chrome.last["notice"]["can_open"] == false);
+    CHECK(f.chrome.last["notice"]["text"].get<std::string>().find("blank window") !=
+          std::string::npos);
+    f.press(Button::Cross);
+    CHECK(f.shell->tabs().size() == 1);
+  }
+
+  TEST_CASE("pop-ups to the same site and with the blocker off open directly") {
+    Fixture f;
+    f.make();
+    f.view(0).client().new_window_requested(
+        {"https://www.home.example/player", true, core::PopupOrigin::Script});
+    CHECK(f.shell->tabs().size() == 2);
+
+    Fixture off;
+    off.addons.popups.enabled = false;
+    off.make();
+    off.view(0).client().new_window_requested(kPopunder);
+    CHECK(off.shell->tabs().size() == 2);
+    CHECK(off.shell->blocked_popups() == 0);
+  }
+
+  TEST_CASE("another notice replacing the pop-up notice does not open it") {
+    Fixture f;
+    f.make();
+    f.view(0).client().new_window_requested(kPopunder);
+    f.view(0).client().load_failed("https://home.example/", "boom");  // error notice
+    f.frame();
+    CHECK(f.chrome.last["notice"]["kind"] == "error");
+    f.press(Button::Cross);
+    CHECK(f.shell->tabs().size() == 1);
+  }
+
+  TEST_CASE("the menu has a pop-up blocker section with the on/off switch") {
+    Fixture f;
+    f.make();
+    f.shell->on_chrome_event(json{{"type", "menu_open"}});
+    f.frame();
+    const auto& items = f.chrome.last["menu"]["items"];
+    long index = -1;
+    for (std::size_t i = 0; i < items.size(); ++i) {
+      if (items[i]["label"] == "Pop-up blocker") index = static_cast<long>(i);
+    }
+    REQUIRE(index >= 0);
+    f.shell->on_chrome_event(json{{"type", "menu_select"}, {"index", index}});
+    f.frame();
+    CHECK(f.chrome.last["menu"]["section"] == "popups");
+    CHECK(f.chrome.last["menu"]["items"][0]["label"] == "Block pop-ups: On");
+    f.shell->on_chrome_event(json{{"type", "menu_select"}, {"index", 0}});
+    f.frame();
+    CHECK(f.chrome.last["menu"]["items"][0]["label"] == "Block pop-ups: Off");
+    CHECK_FALSE(f.saved_addons.popups.enabled);
   }
 }
 
@@ -1058,10 +1207,10 @@ TEST_SUITE("shell.chrome_events") {
     f.make();
     f.press(Button::Options);
     f.frame();
-    // No Quit item any more: Diagnostics is last.
-    REQUIRE(f.chrome.last["menu"]["items"].size() == 8);
-    CHECK(f.chrome.last["menu"]["items"][7]["label"] == "Diagnostics");
-    f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 7}});
+    // No Quit item any more: Diagnostics is last (after "Pop-up blocker").
+    REQUIRE(f.chrome.last["menu"]["items"].size() == 9);
+    CHECK(f.chrome.last["menu"]["items"][8]["label"] == "Diagnostics");
+    f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 8}});
     CHECK(f.shell->tabs().size() == 2);
     CHECK(f.active().called("load file:///data/prosperoweb/chrome/diag.html"));
     CHECK(f.shell->focus() == Focus::Page);

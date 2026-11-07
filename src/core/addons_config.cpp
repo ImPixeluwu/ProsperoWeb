@@ -59,6 +59,27 @@ AddonsConfig AddonsConfig::from_json(const nlohmann::json& addons) {
     }
   }
 
+  if (auto it = addons.find("popups"); it != addons.end() && it->is_object()) {
+    const auto& pp = *it;
+    if (auto v = pp.find("enabled"); v != pp.end() && v->is_boolean()) {
+      cfg.popups.enabled = v->get<bool>();
+    }
+    if (auto v = pp.find("allowed_sites"); v != pp.end() && v->is_array()) {
+      std::vector<std::string> sites;
+      for (const auto& s : *v) {
+        if (!s.is_string()) {
+          continue;
+        }
+        // Normalise hand-edited entries ("www.Example.com." -> "example.com").
+        std::string site = site_of(s.get<std::string>());
+        if (!site.empty() && std::find(sites.begin(), sites.end(), site) == sites.end()) {
+          sites.push_back(std::move(site));
+        }
+      }
+      cfg.popups.allowed_sites = std::move(sites);
+    }
+  }
+
   return cfg;
 }
 
@@ -82,6 +103,10 @@ nlohmann::json AddonsConfig::to_json() const {
   out["sponsorblock"] = {
       {"enabled", sponsorblock.enabled},
       {"categories", sponsorblock.categories},
+  };
+  out["popups"] = {
+      {"enabled", popups.enabled},
+      {"allowed_sites", popups.allowed_sites},
   };
   return out;
 }

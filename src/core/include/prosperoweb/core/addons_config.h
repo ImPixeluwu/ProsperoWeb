@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The persisted state of the bundled add-ons (ad blocker, SponsorBlock),
-// stored as the "addons" object of /data/prosperoweb/config.json. Parsing is
+// The persisted state of the bundled add-ons (ad blocker, SponsorBlock,
+// pop-up blocker), stored as the "addons" object of
+// /data/prosperoweb/config.json. Parsing is
 // tolerant: any missing key keeps the default below, so a config.json written
 // before add-ons existed migrates to the documented defaults on load.
 #pragma once
@@ -11,6 +12,8 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+
+#include "prosperoweb/core/popup_policy.h"
 
 namespace prosperoweb::core {
 
@@ -29,6 +32,7 @@ struct SponsorBlockConfig {
 struct AddonsConfig {
   AdblockConfig adblock;
   SponsorBlockConfig sponsorblock;
+  PopupBlockerConfig popups;  // "popups": {"enabled", "allowed_sites"}
 
   // The SponsorBlock categories offered in the UI, in display order.
   static const std::vector<std::string>& all_sponsorblock_categories();

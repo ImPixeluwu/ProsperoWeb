@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <vector>
@@ -96,7 +97,9 @@ class ShellController {
 
   enum class Focus : std::uint8_t { Page, Chrome, Osk, Menu, Notice };
   enum class OskTarget : std::uint8_t { Address, Page };
-  enum class MenuSection : std::uint8_t { Main, Bookmarks, History, Adblock, SponsorBlock };
+  enum class MenuSection : std::uint8_t {
+    Main, Bookmarks, History, Adblock, SponsorBlock, Popups
+  };
 
   ShellController(EngineFactory& factory, ChromeUi& chrome, core::Storage& storage,
                   Config config);
@@ -141,6 +144,7 @@ class ShellController {
   //   {type:'tab_select', id} {type:'tab_close', id} {type:'tab_new'}
   //   {type:'menu_open'} {type:'menu_select', index} {type:'menu_close'}
   //   {type:'notice_dismiss', proceed}
+  //   {type:'notice_allow'}                 blocked pop-up: always allow on this site
   //   {type:'osk_key', row, col} {type:'osk_commit'} {type:'osk_cancel'}
   //   {type:'address_focus'} {type:'address_blur'}
   // event is a JSON object; a JSON string holding such an object is decoded
@@ -208,6 +212,10 @@ class ShellController {
   // True while a TextInputProvider request is running (the shell ignores
   // gamepad input and keeps its focus meanwhile).
   bool text_input_active() const { return text_request_.has_value(); }
+  // The add-ons state as the shell holds it (pop-up blocker included).
+  const core::AddonsConfig& addons() const { return addons_; }
+  // Pop-ups the blocker refused since start-up.
+  std::uint32_t blocked_popups() const { return blocked_popups_; }
 
  private:
   class TabClient;
@@ -221,7 +229,7 @@ class ShellController {
   };
 
   struct Notice {
-    std::string kind;  // "drm", "error", "info"
+    std::string kind;  // "drm", "error", "info", "popup"
     std::string title;
     std::string text;
   };
@@ -229,6 +237,14 @@ class ShellController {
   struct PendingNavigation {
     std::uint64_t tab_id = 0;
     std::string url;
+  };
+
+  // The pop-up a "popup" notice is about: Cross opens it, Triangle allows
+  // the opener's site from now on and opens it, Circle drops it.
+  struct PendingPopup {
+    std::uint64_t tab_id = 0;
+    std::string opener_url;
+    std::string url;  // empty or about:blank when there is nothing to open
   };
 
   // The focused page field as reported by core::kFocusReporterScript
@@ -263,7 +279,7 @@ class ShellController {
   void on_fullscreen_entered(std::uint64_t id);
   void on_fullscreen_exited(std::uint64_t id);
   void on_script_message(std::uint64_t id, const std::string& json);
-  void on_new_window(std::uint64_t id, const std::string& url);
+  void on_new_window(std::uint64_t id, const NewWindowRequest& request);
   void on_text_input_focused(std::uint64_t id, bool focused);
   void on_cursor_changed(std::uint64_t id, PageCursor cursor);
 
@@ -319,6 +335,9 @@ class ShellController {
   // Add-ons menu helpers.
   void build_adblock_menu();
   void build_sponsorblock_menu();
+  void build_popups_menu();
+  // "Always allow" on a blocked pop-up's notice.
+  void allow_pending_popup_site();
   void apply_addons();
   void persist_addons();
   // Rebuilds the current menu section but keeps the selection on `keep`.
@@ -374,6 +393,12 @@ class ShellController {
   std::size_t menu_selected_ = 0;
   std::optional<Notice> notice_;
   std::optional<PendingNavigation> pending_nav_;
+  std::optional<PendingPopup> pending_popup_;
+  // Tabs that already showed a pop-up notice since their last load started:
+  // further blocked pop-ups of that page are dropped silently, so a page that
+  // opens one on every click cannot trap the user in notices.
+  std::set<std::uint64_t> popup_notice_shown_;
+  std::uint32_t blocked_popups_ = 0;
 
   // Held button for auto-repeat; held_in_osk_ selects osk_repeat_.
   std::optional<core::Button> held_button_;
