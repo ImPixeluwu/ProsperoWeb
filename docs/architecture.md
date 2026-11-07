@@ -116,7 +116,7 @@ The PlayStation port has no media backend, so the project adds one: `MediaPlayer
 
 ## Persistence
 
-`core::FileStorage` writes one JSON file per key, atomically (write `.tmp`, rename). On the PS5 the directory is `/data/prosperoweb/`: `tabs.json` (session), `history.json`, `bookmarks.json`, `config.json` (read-only settings). WebKit's own data (HTTP cache, cookies, localStorage, IndexedDB) lives in subdirectories configured through the website data store. On the host the same files are in `--profile DIR/state/`.
+`core::FileStorage` writes one JSON file per key, atomically (write `.tmp`, rename). On the PS5 the directory is `/data/prosperoweb/`: `tabs.json` (session), `history.json`, `bookmarks.json`, `userscripts.json` (installed user scripts), `config.json` (read-only settings). WebKit's own data (HTTP cache, cookies, localStorage, IndexedDB) lives in subdirectories configured through the website data store. On the host the same files are in `--profile DIR/state/`.
 
 ## DRM policy
 

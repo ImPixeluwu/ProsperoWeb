@@ -27,7 +27,7 @@ namespace prosperoweb::frontend {
 
 class WkWebView;
 
-class Ps5Addons final : public shell::AddonsBackend {
+class Ps5Addons final : public shell::AddonsBackend, public shell::UserScriptsBackend {
  public:
   // Result of a detached background fetch. Held by shared_ptr so the worker
   // can outlive this object (abandoned on the watchdog) without a use-after-
@@ -63,6 +63,9 @@ class Ps5Addons final : public shell::AddonsBackend {
   // shell::AddonsBackend
   void set_adblock(bool enabled, bool cookie_banners) override;
   void set_sponsorblock(bool enabled, const std::vector<std::string>& categories) override;
+  // shell::UserScriptsBackend: the user's own scripts, injected after the
+  // bundled add-ons on the shared controller.
+  void set_user_scripts(std::vector<std::string> sources) override;
   void update_filters_now() override;
   std::int64_t filters_last_updated() const override;
   bool filters_updating() const override;
@@ -114,6 +117,7 @@ class Ps5Addons final : public shell::AddonsBackend {
   core::AddonsConfig cfg_;
   std::string adblock_js_;
   std::string sponsorblock_js_;
+  std::vector<std::string> user_scripts_;  // core::userscript_wrapper() output
 
   WKUserContentExtensionStoreRef store_ = nullptr;
   WKUserContentControllerRef controller_ = nullptr;  // shared, owned by the factory

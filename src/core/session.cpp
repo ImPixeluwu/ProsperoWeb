@@ -24,6 +24,12 @@ bool Session::save(const char* key, const nlohmann::json& doc) {
 bool Session::load_tabs(TabManager& tabs) { return load(kTabsKey, tabs); }
 bool Session::load_history(History& history) { return load(kHistoryKey, history); }
 bool Session::load_bookmarks(Bookmarks& bookmarks) { return load(kBookmarksKey, bookmarks); }
+bool Session::load_userscripts(UserscriptStore& userscripts) {
+  return load(kUserscriptsKey, userscripts);
+}
+bool Session::save_userscripts(const UserscriptStore& userscripts) {
+  return save(kUserscriptsKey, userscripts.to_json());
+}
 
 bool Session::save_tabs(const TabManager& tabs) { return save(kTabsKey, tabs.to_json()); }
 bool Session::save_history(const History& history) {

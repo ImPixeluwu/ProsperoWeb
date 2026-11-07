@@ -151,7 +151,8 @@
       return;
     }
     var titles = { main: 'Menu', bookmarks: 'Bookmarks', history: 'History',
-                   adblock: 'Ad blocker', sponsorblock: 'SponsorBlock' };
+                   adblock: 'Ad blocker', sponsorblock: 'SponsorBlock',
+                   userscripts: 'User scripts', userscripts_remove: 'Remove a user script' };
     setText($('menu-title'), titles[menu.section] || 'Menu');
     var items = menu.items || [];
     var list = $('menu-items');
@@ -191,7 +192,7 @@
     setText($('notice-icon'), notice.kind === 'info' ? 'i' : '!');
     setText($('notice-title'), notice.title || '');
     setText($('notice-text'), notice.text || '');
-    setHidden($('notice-cancel'), notice.kind !== 'drm');
+    setHidden($('notice-cancel'), notice.kind !== 'drm' && notice.kind !== 'userscript');
   }
 
   var OSK_SPECIAL = ['shift', 'layout', 'clear', 'left', 'space', 'right', 'backspace', 'enter'];

@@ -42,7 +42,9 @@ struct Options {
 // The WebKitGTK host: one window with a GtkOverlay holding the content views
 // (a GtkStack, one WebKitWebView per tab) under a transparent chrome
 // WebKitWebView that renders src/chrome-ui/chrome.html.
-class HostApp final : public shell::ChromeUi, public shell::EngineFactory {
+class HostApp final : public shell::ChromeUi,
+                      public shell::EngineFactory,
+                      public shell::UserScriptsBackend {
  public:
   explicit HostApp(Options options);
   ~HostApp() override;
@@ -56,6 +58,8 @@ class HostApp final : public shell::ChromeUi, public shell::EngineFactory {
   void click(int x, int y) override;
   // shell::EngineFactory
   std::unique_ptr<shell::EngineView> create(shell::EngineViewClient& client) override;
+  // shell::UserScriptsBackend
+  void set_user_scripts(std::vector<std::string> sources) override;
 
  private:
   void build_window();

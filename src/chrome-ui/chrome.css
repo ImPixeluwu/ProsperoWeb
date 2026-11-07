@@ -319,6 +319,7 @@ button {
 .notice.drm .notice-icon { background: rgba(255, 181, 71, 0.18); color: var(--warn); }
 .notice.error .notice-icon { background: rgba(255, 107, 94, 0.18); color: var(--danger); }
 .notice.info .notice-icon { background: rgba(61, 139, 255, 0.18); color: var(--accent-2); }
+.notice.userscript .notice-icon { background: rgba(255, 181, 71, 0.18); color: var(--warn); }
 
 .notice h1 {
   margin: 0 0 1rem;

@@ -19,6 +19,7 @@ add_library(prosperoweb_core STATIC
   text_utils.cpp
   touchpad_model.cpp
   url_normalizer.cpp
+  userscripts.cpp
   utf16.cpp
 )
 add_library(prosperoweb::core ALIAS prosperoweb_core)

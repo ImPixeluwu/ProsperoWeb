@@ -358,6 +358,7 @@ int Ps5App::run() {
   cfg.diagnostics_url = "file://" + chrome_dir + "/diag.html";
   cfg.addons = config_.addons;
   cfg.addons_backend = addons_.get();
+  cfg.user_scripts_backend = addons_.get();
   cfg.on_addons_changed = [this](const core::AddonsConfig& a) {
     if (!Ps5Config::save_addons(*storage_, a)) {
       log_line("addons: failed to persist config.json");

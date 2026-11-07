@@ -4,6 +4,12 @@ All notable changes to ProsperoWeb are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- User scripts in the Greasemonkey/Tampermonkey format. Opening a `.user.js` link (for example on GreasyFork) offers to install the script, showing its name, version, description, the sites it runs on and a reminder to install only trusted scripts; installing a script with the same name and namespace updates it. Menu → User scripts lists them ("N active here" for the current page), turns each on or off and removes them. Scripts are saved in the profile (`userscripts.json`) and injected at document start into every frame, each one checking its `@match`/`@include`/`@exclude`/`@exclude-match` rules itself, with `@run-at` and `@noframes` honoured. A subset of the GM API is provided (`GM_info`, `GM_addStyle`, `GM_getValue`/`setValue`/`deleteValue`/`listValues`, `GM_openInTab`, `GM_xmlhttpRequest` on `fetch()`, `GM_log`, `unsafeWindow`, `GM.*`). The host frontend runs them too.
+
 ## v0.2.1 - 2026-11-02
 
 ### Fixed

@@ -150,6 +150,8 @@ ShellController::~ShellController() {
 // Lifecycle
 
 void ShellController::start() {
+  session_.load_userscripts(userscripts_);
+  push_userscripts();
   session_.load_history(history_);
   session_.load_bookmarks(bookmarks_);
   if (!session_.load_tabs(tabs_) || tabs_.empty()) {
@@ -397,6 +399,11 @@ void ShellController::on_load_finished(std::uint64_t id) {
   if (const auto* tab = tabs_.find(id); tab && !is_internal_url(tab->url)) {
     history_.add(tab->url, tab->title, now());
   }
+  // A *.user.js page in the active tab: fetch its text to offer installing it.
+  if (const auto* tab = tabs_.find(id);
+      tab && tabs_.active_id() == id && core::is_userscript_url(tab->url)) {
+    if (auto* view = view_for(id)) view->run_javascript(core::userscript_source_script());
+  }
   mark_dirty();
   mark_session_dirty();
 }
@@ -465,6 +472,10 @@ void ShellController::on_script_message(std::uint64_t id, const std::string& tex
       }
       focused_field_ = std::move(field);
     }
+    return;
+  }
+  if (type == "userscript_source") {
+    on_userscript_source(id, msg);
     return;
   }
   if (type != "eme") {
@@ -1127,6 +1138,13 @@ void ShellController::show_menu_section(MenuSection section) {
                                close_menu();
                                if (auto* view = active_view()) view->reload();
                              }});
+      {
+        const std::size_t here = tab ? userscripts_.count_for_url(tab->url) : 0;
+        menu_items_.push_back(
+            {userscripts_.size() ? "User scripts (" + std::to_string(here) + " active here)"
+                                 : std::string("User scripts"),
+             "", [this] { show_menu_section(MenuSection::Userscripts); }});
+      }
       if (config_.addons_backend) {
         // One coherent entry per add-on; each opens its own section.
         menu_items_.push_back(
@@ -1178,6 +1196,12 @@ void ShellController::show_menu_section(MenuSection section) {
       break;
     case MenuSection::SponsorBlock:
       build_sponsorblock_menu();
+      break;
+    case MenuSection::Userscripts:
+      build_userscripts_menu();
+      break;
+    case MenuSection::UserscriptsRemove:
+      build_userscripts_remove_menu();
       break;
   }
   mark_dirty();
@@ -1282,6 +1306,90 @@ void ShellController::build_sponsorblock_menu() {
   menu_items_.push_back({"Back", "", [this] { show_menu_section(MenuSection::Main); }});
 }
 
+void ShellController::on_userscript_source(std::uint64_t tab_id, const json& msg) {
+  const auto* tab = tabs_.find(tab_id);
+  if (!tab || tabs_.active_id() != tab_id || msg.value("url", std::string()) != tab->url ||
+      focus_ == Focus::Notice) {
+    return;
+  }
+  const std::string source = msg.value("source", std::string());
+  const auto meta = source.size() <= core::kMaxUserscriptBytes
+                        ? core::parse_userscript_meta(source)
+                        : std::nullopt;
+  if (!meta) {
+    return;  // not a user script after all: the page stays as it is
+  }
+  std::string runs_on;
+  std::vector<std::string> rules = meta->matches;
+  rules.insert(rules.end(), meta->includes.begin(), meta->includes.end());
+  for (std::size_t i = 0; i < rules.size() && i < 3; ++i) {
+    runs_on += (i ? ", " : "") + rules[i];
+  }
+  if (rules.size() > 3) runs_on += " and " + std::to_string(rules.size() - 3) + " more";
+  if (rules.empty()) runs_on = "every website";
+  const bool update = userscripts_.find(*meta).has_value();
+  std::string text = meta->name + (meta->version.empty() ? "" : " " + meta->version);
+  if (!meta->description.empty()) text += "\n" + meta->description;
+  text += "\nRuns on: " + runs_on;
+  text += "\nOnly install scripts you trust: a user script can read and change every page it "
+          "runs on.";
+  pending_install_ = PendingInstall{source, *meta};
+  show_notice({"userscript", update ? "Update user script?" : "Install user script?", text});
+}
+
+void ShellController::push_userscripts() {
+  if (config_.user_scripts_backend) {
+    config_.user_scripts_backend->set_user_scripts(userscripts_.injected_sources());
+  }
+}
+
+void ShellController::userscripts_changed() {
+  session_.save_userscripts(userscripts_);
+  push_userscripts();
+}
+
+void ShellController::build_userscripts_menu() {
+  menu_items_.clear();
+  const auto& scripts = userscripts_.scripts();
+  if (scripts.empty()) {
+    menu_items_.push_back({"No user scripts yet", "", [] {}});
+    menu_items_.push_back({"Open a .user.js link to install one", "", [] {}});
+  }
+  for (std::size_t i = 0; i < scripts.size(); ++i) {
+    const auto& s = scripts[i];
+    menu_items_.push_back(
+        {s.meta.name + (s.meta.version.empty() ? "" : " " + s.meta.version) + ": " +
+             (s.enabled ? "On" : "Off"),
+         "", [this, i] {
+           if (i < userscripts_.size()) {
+             userscripts_.set_enabled(i, !userscripts_.scripts()[i].enabled);
+             userscripts_changed();
+           }
+           rebuild_menu_keeping(menu_selected_);
+         }});
+  }
+  if (!scripts.empty()) {
+    menu_items_.push_back({"Remove a user script...", "",
+                           [this] { show_menu_section(MenuSection::UserscriptsRemove); }});
+  }
+  menu_items_.push_back({"Back", "", [this] { show_menu_section(MenuSection::Main); }});
+}
+
+void ShellController::build_userscripts_remove_menu() {
+  menu_items_.clear();
+  const auto& scripts = userscripts_.scripts();
+  for (std::size_t i = 0; i < scripts.size(); ++i) {
+    menu_items_.push_back({"Remove " + scripts[i].meta.name, "", [this, i] {
+                             userscripts_.remove(i);
+                             userscripts_changed();
+                             show_menu_section(userscripts_.size() ? MenuSection::UserscriptsRemove
+                                                                   : MenuSection::Userscripts);
+                           }});
+  }
+  menu_items_.push_back(
+      {"Back", "", [this] { show_menu_section(MenuSection::Userscripts); }});
+}
+
 void ShellController::apply_addons() {
   if (!config_.addons_backend) {
     return;
@@ -1336,6 +1444,9 @@ void ShellController::show_notice(Notice notice) {
   if (focus_ != Focus::Notice) {
     focus_before_notice_ = focus_;
   }
+  if (notice.kind != "userscript") {
+    pending_install_.reset();  // an install offer this notice replaces is gone
+  }
   notice_ = std::move(notice);
   focus_ = Focus::Notice;
   stop_repeat();
@@ -1346,6 +1457,7 @@ void ShellController::dismiss_notice(bool proceed) {
   if (!notice_) {
     return;
   }
+  const bool was_install = notice_->kind == "userscript";
   notice_.reset();
   focus_ = focus_before_notice_;
   if (focus_ == Focus::Osk && !osk_open_) focus_ = Focus::Page;
@@ -1354,6 +1466,15 @@ void ShellController::dismiss_notice(bool proceed) {
   pending_nav_.reset();
   if (pending && proceed && tabs_.find(pending->tab_id)) {
     load_in_tab_now(pending->tab_id, pending->url);
+  }
+  auto install = std::move(pending_install_);
+  pending_install_.reset();
+  if (was_install && install && proceed && userscripts_.install(install->source)) {
+    userscripts_changed();
+    show_notice({"info", "User script installed",
+                 install->meta.name +
+                     " runs from the next page load. Menu > User scripts turns it off or "
+                     "removes it."});
   }
   mark_dirty();
 }
@@ -1576,6 +1697,8 @@ json ShellController::chrome_state() const {
                         : menu_section_ == MenuSection::Bookmarks ? "bookmarks"
                         : menu_section_ == MenuSection::Adblock   ? "adblock"
                         : menu_section_ == MenuSection::SponsorBlock ? "sponsorblock"
+                        : menu_section_ == MenuSection::Userscripts ? "userscripts"
+                        : menu_section_ == MenuSection::UserscriptsRemove ? "userscripts_remove"
                                                                   : "history";
   state["menu"] = {{"open", menu_open_},
                    {"section", section},

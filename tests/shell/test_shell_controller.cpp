@@ -24,15 +24,27 @@ namespace {
 
 constexpr const char* kHome = "https://home.example/";
 
+// Records what the shell would inject as user scripts.
+struct FakeUserScripts final : shell::UserScriptsBackend {
+  void set_user_scripts(std::vector<std::string> sources) override {
+    last = std::move(sources);
+    ++calls;
+  }
+  std::vector<std::string> last;
+  int calls = 0;
+};
+
 struct Fixture {
   core::InMemoryStorage storage;
   FakeEngineFactory factory;
   FakeChromeUi chrome;
   std::unique_ptr<ShellController> shell;
   std::string diagnostics_url;
+  FakeUserScripts user_scripts;
 
   void make(bool start = true) {
     ShellController::Config config;
+    config.user_scripts_backend = &user_scripts;
     config.diagnostics_url = diagnostics_url;
     config.width = 1920;
     config.height = 1080;
@@ -206,6 +218,112 @@ TEST_SUITE("shell.navigation") {
     REQUIRE(f.factory.created.size() == 2);
     CHECK(f.view(1).called("load https://popup.example/"));
     CHECK(f.view(1).visible);
+  }
+}
+
+TEST_SUITE("shell.userscripts") {
+  const std::string kScript =
+      "// ==UserScript==\n// @name Big text\n// @namespace test\n// @version 1.0\n"
+      "// @description Larger fonts\n// @match *://*.news.example/*\n// ==/UserScript==\n"
+      "document.body.style.fontSize = '150%';\n";
+  const std::string kUrl = "https://scripts.example/big-text.user.js";
+
+  // Loads kUrl in the active tab and answers the source request as the page would.
+  void offer(Fixture& f, const std::string& source) {
+    f.finish_load(f.view(0), kUrl, "big-text.user.js");
+    f.view(0).client().script_message(
+        json{{"type", "userscript_source"}, {"url", kUrl}, {"source", source}}.dump());
+    f.frame();
+  }
+
+  TEST_CASE("a loaded .user.js page is asked for its source") {
+    Fixture f;
+    f.make();
+    f.finish_load(f.view(0), kUrl, "big-text.user.js");
+    CHECK(f.view(0).called("js " + core::userscript_source_script()));
+  }
+
+  TEST_CASE("the install notice shows the script; Cross installs and injects it") {
+    Fixture f;
+    f.make();
+    offer(f, kScript);
+    CHECK(f.chrome.last["notice"]["kind"] == "userscript");
+    CHECK(f.chrome.last["notice"]["title"] == "Install user script?");
+    const auto text = f.chrome.last["notice"]["text"].get<std::string>();
+    CHECK(text.find("Big text 1.0") != std::string::npos);
+    CHECK(text.find("Runs on: *://*.news.example/*") != std::string::npos);
+    CHECK(text.find("Only install scripts you trust") != std::string::npos);
+
+    f.press(Button::Cross);
+    f.frame();
+    REQUIRE(f.shell->userscripts().size() == 1);
+    REQUIRE(f.user_scripts.last.size() == 1);
+    CHECK(f.user_scripts.last[0].find("fontSize = '150%'") != std::string::npos);
+    CHECK(f.chrome.last["notice"]["title"] == "User script installed");
+    const auto saved = f.storage.read(core::Session::kUserscriptsKey);
+    REQUIRE(saved.has_value());
+    CHECK(json::parse(*saved).size() == 1);
+  }
+
+  TEST_CASE("Circle declines; a second offer of the same script is an update") {
+    Fixture f;
+    f.make();
+    offer(f, kScript);
+    f.press(Button::Circle);
+    CHECK(f.shell->userscripts().size() == 0);
+    offer(f, kScript);
+    f.press(Button::Cross);
+    f.press(Button::Cross);  // dismiss "installed"
+    offer(f, kScript);
+    CHECK(f.chrome.last["notice"]["title"] == "Update user script?");
+  }
+
+  TEST_CASE("plain JavaScript or a reply for another URL offers nothing") {
+    Fixture f;
+    f.make();
+    offer(f, "console.log('just a library');");
+    CHECK(f.chrome.last["notice"]["kind"].is_null());
+    f.view(0).client().script_message(
+        json{{"type", "userscript_source"}, {"url", "https://elsewhere.example/x.user.js"},
+             {"source", kScript}}.dump());
+    f.frame();
+    CHECK(f.chrome.last["notice"]["kind"].is_null());
+  }
+
+  TEST_CASE("installed scripts are injected at start; the menu toggles and removes them") {
+    Fixture f;
+    core::UserscriptStore stored;
+    REQUIRE(stored.install(kScript));
+    REQUIRE(f.storage.write(core::Session::kUserscriptsKey, stored.to_json().dump()));
+    f.make();
+    CHECK(f.user_scripts.last.size() == 1);
+
+    f.press(Button::Options);
+    f.frame();
+    const auto& items = f.chrome.last["menu"]["items"];
+    long index = -1;
+    for (std::size_t i = 0; i < items.size(); ++i) {
+      if (items[i]["label"].get<std::string>().starts_with("User scripts")) index = long(i);
+    }
+    REQUIRE(index >= 0);
+    CHECK(items[index]["label"] == "User scripts (0 active here)");
+    f.shell->on_chrome_event(json{{"type", "menu_select"}, {"index", index}});
+    f.frame();
+    CHECK(f.chrome.last["menu"]["section"] == "userscripts");
+    CHECK(f.chrome.last["menu"]["items"][0]["label"] == "Big text 1.0: On");
+    f.shell->on_chrome_event(json{{"type", "menu_select"}, {"index", 0}});
+    f.frame();
+    CHECK(f.chrome.last["menu"]["items"][0]["label"] == "Big text 1.0: Off");
+    CHECK(f.user_scripts.last.empty());
+
+    f.shell->on_chrome_event(json{{"type", "menu_select"}, {"index", 1}});  // Remove...
+    f.frame();
+    CHECK(f.chrome.last["menu"]["section"] == "userscripts_remove");
+    f.shell->on_chrome_event(json{{"type", "menu_select"}, {"index", 0}});  // Remove Big text
+    f.frame();
+    CHECK(f.shell->userscripts().size() == 0);
+    CHECK(f.chrome.last["menu"]["section"] == "userscripts");
+    CHECK(f.chrome.last["menu"]["items"][0]["label"] == "No user scripts yet");
   }
 }
 
@@ -1058,10 +1176,10 @@ TEST_SUITE("shell.chrome_events") {
     f.make();
     f.press(Button::Options);
     f.frame();
-    // No Quit item any more: Diagnostics is last.
-    REQUIRE(f.chrome.last["menu"]["items"].size() == 8);
-    CHECK(f.chrome.last["menu"]["items"][7]["label"] == "Diagnostics");
-    f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 7}});
+    // No Quit item any more: Diagnostics is last (after "User scripts").
+    REQUIRE(f.chrome.last["menu"]["items"].size() == 9);
+    CHECK(f.chrome.last["menu"]["items"][8]["label"] == "Diagnostics");
+    f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 8}});
     CHECK(f.shell->tabs().size() == 2);
     CHECK(f.active().called("load file:///data/prosperoweb/chrome/diag.html"));
     CHECK(f.shell->focus() == Focus::Page);
