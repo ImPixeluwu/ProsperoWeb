@@ -293,7 +293,7 @@ TEST_SUITE("shell.dpad") {
     const auto& items = f.chrome.last["menu"]["items"];
     long index = -1;
     for (std::size_t i = 0; i < items.size(); ++i) {
-      if (items[i]["label"] == "D-pad: scroll") index = static_cast<long>(i);
+      if (items[i]["label"] == "D-pad link navigation: Off") index = static_cast<long>(i);
     }
     REQUIRE(index >= 0);
     f.shell->on_chrome_event(json{{"type", "menu_select"}, {"index", index}});
@@ -301,7 +301,7 @@ TEST_SUITE("shell.dpad") {
     CHECK(f.shell->dpad_links());
     CHECK(f.dpad_saves == 1);
     CHECK(f.dpad_saved);
-    CHECK(f.chrome.last["menu"]["items"][index]["label"] == "D-pad: jump between links");
+    CHECK(f.chrome.last["menu"]["items"][index]["label"] == "D-pad link navigation: On");
   }
 }
 

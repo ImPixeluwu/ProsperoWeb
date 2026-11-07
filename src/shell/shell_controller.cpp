@@ -1213,7 +1213,7 @@ void ShellController::show_menu_section(MenuSection section) {
              }});
       }
       menu_items_.push_back(
-          {std::string("D-pad: ") + (dpad_links_ ? "jump between links" : "scroll"), "", [this] {
+          {std::string("D-pad link navigation: ") + (dpad_links_ ? "On" : "Off"), "", [this] {
              dpad_links_ = !dpad_links_;
              spatial_request_.reset();
              if (config_.on_dpad_links_changed) config_.on_dpad_links_changed(dpad_links_);

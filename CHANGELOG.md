@@ -8,7 +8,7 @@ All notable changes to ProsperoWeb are documented here. The format follows
 
 ### Added
 
-- D-pad link navigation (off by default; menu → "D-pad: jump between links", persisted as `dpad_links` in `config.json`, `--dpad-links` on the host). The D-pad moves the pointer to the nearest clickable element in the pressed direction (links, buttons, form fields, ARIA widgets) and Cross clicks it, which is faster than steering the pointer with the stick. An element in the same row or column wins over a nearer diagonal one; with nothing clickable that way on screen, the page scrolls by half a view. The pointer, sticks and touchpad keep working as before.
+- D-pad link navigation (off by default; menu → "D-pad link navigation: On/Off", persisted as `dpad_links` in `config.json`, `--dpad-links` on the host). The D-pad moves the pointer to the nearest clickable element in the pressed direction (links, buttons, form fields, ARIA widgets) and Cross clicks it, which is faster than steering the pointer with the stick. An element in the same row or column wins over a nearer diagonal one; with nothing clickable that way on screen, the page scrolls by half a view. The pointer, sticks and touchpad keep working as before.
 
 ## v0.2.1 - 2026-11-02
 
