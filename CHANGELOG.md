@@ -8,7 +8,7 @@ All notable changes to ProsperoWeb are documented here. The format follows
 
 ### Added
 
-- Spanish user interface (`"language": "es"` in `config.json`, `--lang es` on the host): menus, notices, the address bar, the on-screen keyboard, the keyboard dialog titles and the PS5 start-up screens. Pages also get `es-ES` as the preferred language.
+- Spanish user interface (`"language": "es"` in `config.json`, `--lang es` on the host): menus, notices, the address bar, the title of the console's keyboard dialog (the keyboard itself follows the system language), the built-in on-screen keyboard used as its fallback and on the host, and the PS5 start-up screens. Pages also get `es-ES` as the preferred language.
 
 ### Changed
 
