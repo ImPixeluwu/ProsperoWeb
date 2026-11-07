@@ -1,8 +1,8 @@
 # Phone remote control
 
-Control the browser from a phone (or any device with a web browser) on the
-same local network: a trackpad, an address bar, a text box that types into
-the focused field, and the browser's buttons. Nothing to install on the phone.
+Control the browser from a phone, tablet or computer on the same local
+network, with any web browser: a trackpad, an address bar, a text box that
+types into the focused field, and the browser's buttons. Nothing to install.
 
 ## Use
 
@@ -20,6 +20,23 @@ the focused field, and the browser's buttons. Nothing to install on the phone.
      (or into the open on-screen keyboard); *⏎* sends it and presses Enter.
    - **Buttons**: back, forward, reload, Esc (the Circle button), previous /
      next / new / close tab, page up / down, fullscreen, menu.
+
+On a computer (mouse or trackpad):
+
+- Drag on the pad with the mouse to move the pointer, click the pad to
+  click, and use the wheel (or two fingers on a laptop trackpad) to scroll.
+- **Capture mouse** turns the computer's mouse into the TV pointer (pointer
+  lock): move, left click to click, right click for Esc, the side buttons for
+  back / forward, wheel to scroll. Esc releases it.
+- Keyboard shortcuts while no text box has the focus: arrows scroll,
+  Space / PgDn and Shift+Space / PgUp page, Backspace or Alt+← back, Alt+→
+  forward, `[` and `]` switch tabs, M menu, F fullscreen, Esc close, Enter
+  click, `/` jumps to the address bar, I to the text box. In the address bar
+  Ctrl+Enter opens a new tab.
+
+The page adapts to the screen: one column on an upright phone or tablet,
+the pad beside the controls on a phone held sideways, a landscape tablet or
+a computer, and a compact layout on short landscape screens.
 
 Menu → **Show remote PIN** shows the address and PIN again, **Disconnect
 phones** forgets the paired phones (they must enter the PIN again) and

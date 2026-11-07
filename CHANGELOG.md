@@ -8,7 +8,7 @@ All notable changes to ProsperoWeb are documented here. The format follows
 
 ### Added
 
-- Phone remote control (menu → Remote control, off by default): a phone on the same network opens the address shown on the TV and pairs with a six-digit PIN, then gets a trackpad (drag, tap, two-finger scroll), an address bar, a text box that types into the focused field and the browser's buttons. New PIN on every start, locked after 5 wrong PINs, "Disconnect phones" in the menu. Plain HTTP: the phone page warns against typing passwords. See docs/remote-control.md.
+- Phone remote control (menu → Remote control, off by default): a phone on the same network opens the address shown on the TV and pairs with a six-digit PIN, then gets a trackpad (drag, tap, two-finger scroll), an address bar, a text box that types into the focused field and the browser's buttons. The page adapts to phones (upright or sideways), tablets and computers; on a computer the mouse drags, clicks and scrolls on the pad, can be captured as the TV pointer, and keyboard shortcuts cover scrolling, navigation and tabs. New PIN on every start, locked after 5 wrong PINs, "Disconnect phones" in the menu. Plain HTTP: the phone page warns against typing passwords. See docs/remote-control.md.
 
 ## v0.2.1 - 2026-11-02
 
