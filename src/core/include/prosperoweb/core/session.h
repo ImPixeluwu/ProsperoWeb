@@ -3,18 +3,21 @@
 
 #include "prosperoweb/core/bookmarks.h"
 #include "prosperoweb/core/history.h"
+#include "prosperoweb/core/site_user_agents.h"
 #include "prosperoweb/core/storage.h"
 #include "prosperoweb/core/tab_manager.h"
 
 namespace prosperoweb::core {
 
 // Loads and saves browser state through a Storage under the keys
-// kTabsKey, kHistoryKey and kBookmarksKey. Does not own anything.
+// kTabsKey, kHistoryKey, kBookmarksKey and kUserAgentsKey. Does not own
+// anything.
 class Session {
  public:
   static constexpr const char* kTabsKey = "tabs";
   static constexpr const char* kHistoryKey = "history";
   static constexpr const char* kBookmarksKey = "bookmarks";
+  static constexpr const char* kUserAgentsKey = "user_agents";
 
   explicit Session(Storage& storage) : storage_(storage) {}
 
@@ -23,10 +26,12 @@ class Session {
   bool load_tabs(TabManager& tabs);
   bool load_history(History& history);
   bool load_bookmarks(Bookmarks& bookmarks);
+  bool load_user_agents(SiteUserAgents& user_agents);
 
   bool save_tabs(const TabManager& tabs);
   bool save_history(const History& history);
   bool save_bookmarks(const Bookmarks& bookmarks);
+  bool save_user_agents(const SiteUserAgents& user_agents);
 
   // Convenience wrappers; return true only if every part succeeded.
   bool load_all(TabManager& tabs, History& history, Bookmarks& bookmarks);

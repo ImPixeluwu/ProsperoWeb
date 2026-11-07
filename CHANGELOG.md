@@ -4,6 +4,12 @@ All notable changes to ProsperoWeb are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- User agent per site: menu → "User agent: ..." cycles the current host through Default (the configured user agent), Desktop (Chrome) for sites that refuse Safari, Mobile (iPhone) for lighter mobile layouts from the same engine family, and Smart TV for TV interfaces (experimental). The page reloads with the new user agent; the choice is remembered per host (`user_agents.json` in the profile). URLs opened from the address bar, bookmarks or a new tab are requested with the right user agent from the start; following a link into (or out of) a host with another preset reloads that page once, at most once per tab every 5 seconds so that sites redirecting between `www.` and `m.` by user agent cannot loop.
+
 ## v0.2.1 - 2026-11-02
 
 ### Fixed

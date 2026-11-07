@@ -29,6 +29,8 @@ installed under `/data/prosperoweb/`:
                         tab/URL change and on Quit)
   history.json          persisted history
   bookmarks.json        persisted bookmarks
+  user_agents.json      user-agent preset per host (core::SiteUserAgents; only
+                        hosts not on Default)
   cache/                network cache (WKWebsiteDataStore)
   storage/ localstorage/ indexeddb/   web storage (WKWebsiteDataStore)
   tmp/                  TMPDIR (created at startup)

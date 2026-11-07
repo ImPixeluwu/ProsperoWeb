@@ -30,6 +30,7 @@ struct Fixture {
   FakeChromeUi chrome;
   std::unique_ptr<ShellController> shell;
   std::string diagnostics_url;
+  std::int64_t clock = 1000;  // what config.now returns
 
   void make(bool start = true) {
     ShellController::Config config;
@@ -38,7 +39,7 @@ struct Fixture {
     config.height = 1080;
     config.home_url = kHome;
     config.user_agent = "TestUA/1.0";
-    config.now = [] { return std::int64_t{1000}; };
+    config.now = [this] { return clock; };
     shell = std::make_unique<ShellController>(factory, chrome, storage, config);
     if (start) {
       shell->start();
@@ -206,6 +207,93 @@ TEST_SUITE("shell.navigation") {
     REQUIRE(f.factory.created.size() == 2);
     CHECK(f.view(1).called("load https://popup.example/"));
     CHECK(f.view(1).visible);
+  }
+}
+
+TEST_SUITE("shell.user_agent") {
+  long ua_menu_index(Fixture& f) {
+    const auto& items = f.chrome.last["menu"]["items"];
+    for (std::size_t i = 0; i < items.size(); ++i) {
+      if (items[i]["label"].get<std::string>().starts_with("User agent: ")) {
+        return static_cast<long>(i);
+      }
+    }
+    return -1;
+  }
+  std::string ua(core::UaPreset p) { return "ua " + std::string(core::ua_preset_string(p)); }
+  std::size_t count_of(const FakeEngineView& v, const std::string& entry) {
+    return v.count(entry);
+  }
+
+  TEST_CASE("the menu cycles the host's preset and reloads the page each time") {
+    Fixture f;
+    f.make();
+    f.press(Button::Options);
+    f.frame();
+    const long i = ua_menu_index(f);
+    REQUIRE(i >= 0);
+    CHECK(f.chrome.last["menu"]["items"][i]["label"] == "User agent: Default");
+    f.shell->on_chrome_event(json{{"type", "menu_select"}, {"index", i}});
+    f.frame();
+    CHECK(f.chrome.last["menu"]["items"][i]["label"] == "User agent: Desktop (Chrome)");
+    CHECK(f.view(0).called(ua(core::UaPreset::DesktopChrome)));
+    f.shell->on_chrome_event(json{{"type", "menu_select"}, {"index", i}});
+    f.frame();
+    CHECK(f.chrome.last["menu"]["items"][i]["label"] == "User agent: Mobile (iPhone)");
+    CHECK(count_of(f.view(0), "reload") == 2);  // user changes are never throttled
+    const auto saved = f.storage.read(core::Session::kUserAgentsKey);
+    REQUIRE(saved.has_value());
+    CHECK(json::parse(*saved) == json{{"home.example", "mobile"}});
+  }
+
+  TEST_CASE("opening a URL sends its host's user agent before the load, without a reload") {
+    Fixture f;
+    REQUIRE(f.storage.write(core::Session::kUserAgentsKey, R"({"news.example":"mobile"})"));
+    f.make();
+    f.shell->open_url_in_new_tab("https://news.example/");
+    const auto& calls = f.view(1).calls;
+    const auto set = std::find(calls.begin(), calls.end(), ua(core::UaPreset::Mobile));
+    const auto load = std::find(calls.begin(), calls.end(), "load https://news.example/");
+    REQUIRE(set != calls.end());
+    REQUIRE(load != calls.end());
+    CHECK(set < load);
+    CHECK_FALSE(f.view(1).called("reload"));
+    CHECK_FALSE(f.view(0).called(ua(core::UaPreset::Mobile)));  // other hosts keep theirs
+  }
+
+  TEST_CASE("following a link into or out of a preset host reloads once") {
+    Fixture f;
+    REQUIRE(f.storage.write(core::Session::kUserAgentsKey, R"({"news.example":"mobile"})"));
+    f.make();
+    f.finish_load(f.view(0), "https://news.example/story", "Story");
+    CHECK(f.view(0).called(ua(core::UaPreset::Mobile)));
+    CHECK(f.view(0).count("reload") == 1);
+    f.finish_load(f.view(0), "https://news.example/other", "Other");  // same host
+    CHECK(f.view(0).count("reload") == 1);
+    f.clock += 60;
+    f.finish_load(f.view(0), "https://home.example/", "Home");  // back to the configured UA
+    CHECK(f.view(0).called("ua TestUA/1.0"));
+    CHECK(f.view(0).count("reload") == 2);
+  }
+
+  TEST_CASE("a redirect loop between hosts with different presets reloads only once") {
+    Fixture f;
+    REQUIRE(f.storage.write(core::Session::kUserAgentsKey, R"({"www.loop.example":"mobile"})"));
+    f.make();
+    for (int i = 0; i < 4; ++i) {
+      f.view(0).client().url_changed("https://www.loop.example/");
+      f.view(0).client().url_changed("https://m.loop.example/");
+    }
+    CHECK(f.view(0).count("reload") == 1);
+  }
+
+  TEST_CASE("pages without a host have no user-agent entry") {
+    Fixture f;
+    f.make();
+    f.finish_load(f.view(0), "about:blank", "");
+    f.press(Button::Options);
+    f.frame();
+    CHECK(ua_menu_index(f) < 0);
   }
 }
 
@@ -1058,10 +1146,10 @@ TEST_SUITE("shell.chrome_events") {
     f.make();
     f.press(Button::Options);
     f.frame();
-    // No Quit item any more: Diagnostics is last.
-    REQUIRE(f.chrome.last["menu"]["items"].size() == 8);
-    CHECK(f.chrome.last["menu"]["items"][7]["label"] == "Diagnostics");
-    f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 7}});
+    // No Quit item any more: Diagnostics is last (after "User agent").
+    REQUIRE(f.chrome.last["menu"]["items"].size() == 9);
+    CHECK(f.chrome.last["menu"]["items"][8]["label"] == "Diagnostics");
+    f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 8}});
     CHECK(f.shell->tabs().size() == 2);
     CHECK(f.active().called("load file:///data/prosperoweb/chrome/diag.html"));
     CHECK(f.shell->focus() == Focus::Page);

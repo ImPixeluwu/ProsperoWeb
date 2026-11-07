@@ -13,6 +13,7 @@ add_library(prosperoweb_core STATIC
   pointer_model.cpp
   repeat_timer.cpp
   session.cpp
+  site_user_agents.cpp
   sponsorblock.cpp
   storage.cpp
   tab_manager.cpp

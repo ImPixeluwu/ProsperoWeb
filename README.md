@@ -19,6 +19,7 @@ It is early software (version 0.1.0): expect rough edges, and launch it only the
 ## Features
 
 - Tabs, address bar with URL/search normalisation, back/forward/reload, bookmarks and history, session restore.
+- User agent per site (menu → "User agent: ..."): Default (the configured one), Desktop (Chrome), Mobile (iPhone) or Smart TV, remembered per host; the page reloads with the new one.
 - DualSense: a virtual pointer on the left stick or the touchpad (trackpad-style: slide, tap, two-finger scroll, press and slide to drag), trusted clicks and scrolling, tab switching, menu; USB keyboard.
 - Text entry through the console's own keyboard dialog, pre-filled with the URL or the field's value; a built-in on-screen keyboard (Latin, Cyrillic, symbols) as the fallback.
 - HTML5 Fullscreen API and a chrome-hiding fullscreen mode.
