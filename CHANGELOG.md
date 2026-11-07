@@ -4,6 +4,17 @@ All notable changes to ProsperoWeb are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- Spanish user interface (`"language": "es"` in `config.json`, `--lang es` on the host): menus, notices, the address bar, the on-screen keyboard, the keyboard dialog titles and the PS5 start-up screens. Pages also get `es-ES` as the preferred language.
+
+### Changed
+
+- All UI strings come from one table (`src/core/i18n.cpp`, `core::tr`), shared by the shell, the HTML chrome (sent once as `strings` in the chrome state), the on-screen keyboard and the PS5 splash screens. English is the fallback, so a language can be added before every string is translated. The menus and most notices were English-only before; Russian keeps its existing translations and falls back to English for the rest.
+- The host frontend picks Spanish from `$LANG` too.
+
 ## v0.2.1 - 2026-11-02
 
 ### Fixed

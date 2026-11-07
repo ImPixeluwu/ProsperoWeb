@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <optional>
@@ -19,6 +20,7 @@
 #include "prosperoweb/core/gamepad.h"
 #include "prosperoweb/core/gamepad_mapper.h"
 #include "prosperoweb/core/history.h"
+#include "prosperoweb/core/i18n.h"
 #include "prosperoweb/core/on_screen_keyboard.h"
 #include "prosperoweb/core/pointer_model.h"
 #include "prosperoweb/core/repeat_timer.h"
@@ -63,7 +65,7 @@ class ShellController {
     int height = 1080;
     std::string home_url = "about:blank";
     std::string user_agent;
-    std::string language = "en";  // "en" or "ru"
+    std::string language = "en";  // "en", "ru" or "es" (core::language_from_code)
     // Input/feature probe page, offered as "Diagnostics" in the main menu
     // (opens in a new tab); no menu item when empty.
     std::string diagnostics_url;
@@ -334,6 +336,12 @@ class ShellController {
 
   std::int64_t now() const;
   core::Language language() const;
+  // A UI string in the configured language (core::tr), with {0}.. filled in.
+  std::string ui_text(core::Text text) const;
+  std::string ui_text(core::Text text, std::initializer_list<std::string_view> args) const;
+  std::string on_off(bool on) const;
+  // The on-screen keyboard's label for key, special keys translated.
+  std::string osk_label(const core::OnScreenKeyboard::Key& key) const;
   void mark_dirty() { dirty_ = true; }
   void mark_session_dirty() { session_dirty_ = true; }
   void save_session_if_due(float dt_seconds);
@@ -374,6 +382,9 @@ class ShellController {
   std::size_t menu_selected_ = 0;
   std::optional<Notice> notice_;
   std::optional<PendingNavigation> pending_nav_;
+  // The next render carries the UI strings ("strings") for the chrome: at
+  // start and whenever the chrome (re)loads.
+  bool chrome_strings_pending_ = true;
 
   // Held button for auto-repeat; held_in_osk_ selects osk_repeat_.
   std::optional<core::Button> held_button_;

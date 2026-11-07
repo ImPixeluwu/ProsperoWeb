@@ -32,8 +32,8 @@
   <div id="menu-title" class="menu-title"></div>
   <ol id="menu-items" class="menu-items"></ol>
   <div class="menu-hints">
-    <span><span class="glyph cross">&#x2715;</span> Select</span>
-    <span><span class="glyph circle">&#x25cb;</span> Back</span>
+    <span><span class="glyph cross">&#x2715;</span> <span id="hint-select">Select</span></span>
+    <span><span class="glyph circle">&#x25cb;</span> <span id="hint-back">Back</span></span>
   </div>
 </div>
 
@@ -43,8 +43,8 @@
     <h1 id="notice-title"></h1>
     <p id="notice-text"></p>
     <div class="notice-buttons">
-      <button id="notice-ok" class="btn primary"><span class="glyph cross">&#x2715;</span> OK</button>
-      <button id="notice-cancel" class="btn"><span class="glyph circle">&#x25cb;</span> Cancel</button>
+      <button id="notice-ok" class="btn primary"><span class="glyph cross">&#x2715;</span> <span id="notice-ok-label">OK</span></button>
+      <button id="notice-cancel" class="btn"><span class="glyph circle">&#x25cb;</span> <span id="notice-cancel-label">Cancel</span></button>
     </div>
   </div>
 </div>
@@ -56,14 +56,14 @@
   </div>
   <div id="osk-keys" class="osk-keys"></div>
   <div class="osk-hints">
-    <span><span class="glyph cross">&#x2715;</span> Key</span>
-    <span>L1/R1 Caret</span>
-    <span><span class="glyph square">&#x25a1;</span> Delete (hold to repeat)</span>
-    <span><span class="glyph triangle">&#x25b3;</span> Space</span>
-    <span>L2 Shift</span>
-    <span>Touchpad Layout</span>
-    <span>OPTIONS Done</span>
-    <span><span class="glyph circle">&#x25cb;</span> Cancel</span>
+    <span><span class="glyph cross">&#x2715;</span> <span id="osk-hint-key">Key</span></span>
+    <span>L1/R1 <span id="osk-hint-caret">Caret</span></span>
+    <span><span class="glyph square">&#x25a1;</span> <span id="osk-hint-delete">Delete (hold to repeat)</span></span>
+    <span><span class="glyph triangle">&#x25b3;</span> <span id="osk-hint-space">Space</span></span>
+    <span>L2 <span id="osk-hint-shift">Shift</span></span>
+    <span>Touchpad <span id="osk-hint-layout">Layout</span></span>
+    <span>OPTIONS <span id="osk-hint-done">Done</span></span>
+    <span><span class="glyph circle">&#x25cb;</span> <span id="osk-hint-cancel">Cancel</span></span>
   </div>
 </div>
 

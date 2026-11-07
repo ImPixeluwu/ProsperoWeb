@@ -19,7 +19,7 @@ inline constexpr const char* kPs5DataDir = "/data/prosperoweb";
 // copied into kPs5DataDir once (prosperoweb/core/legacy_profile.h).
 inline constexpr const char* kLegacyDataDirs[] = {"/data/prosperobrowser", "/data/ps5browser"};
 
-// Maps a config.json language ("en", "ru", or already a tag like "de-DE")
+// Maps a config.json language ("en", "ru", "es", or already a tag like "de-DE")
 // to the BCP 47 tag WebKit expects in SYSTEM_LANGUAGE.
 std::string system_language_tag(const std::string& language);
 

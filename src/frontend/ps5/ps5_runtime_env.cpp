@@ -153,6 +153,9 @@ std::string system_language_tag(const std::string& language) {
   if (language == "ru") {
     return "ru-RU";
   }
+  if (language == "es") {
+    return "es-ES";
+  }
   return language;
 }
 

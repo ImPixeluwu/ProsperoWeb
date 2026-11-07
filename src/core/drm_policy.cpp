@@ -15,19 +15,6 @@ constexpr std::array<std::string_view, 14> kWidevineOnlyHosts = {
     "max.com",      "tv.apple.com",    "crunchyroll.com", "tubitv.com",
 };
 
-constexpr std::string_view kNoticeEn =
-    "This site requested protected (DRM) playback. This browser does not include a DRM module "
-    "(Widevine, PlayReady or FairPlay), so protected videos cannot be played here. Free, "
-    "non-protected videos on other sites are not affected. To watch this content, please use "
-    "the service's official PS5 app or another supported device.";
-
-constexpr std::string_view kNoticeRu =
-    "Этот сайт запросил воспроизведение защищённого (DRM) видео. В этом браузере нет модуля DRM "
-    "(Widevine, PlayReady или FairPlay), поэтому защищённое видео здесь воспроизвести нельзя. "
-    "Обычное незащищённое видео на других сайтах работает как прежде. Чтобы посмотреть этот "
-    "контент, воспользуйтесь официальным приложением сервиса для PS5 или другим поддерживаемым "
-    "устройством.";
-
 bool host_matches(std::string_view host, std::string_view domain) {
   if (host == domain) {
     return true;
@@ -58,9 +45,7 @@ bool DrmPolicy::is_protected_key_system(std::string_view key_system) {
   return key_system != "org.w3.clearkey";
 }
 
-std::string_view DrmPolicy::notice_text(Language lang) {
-  return lang == Language::Ru ? kNoticeRu : kNoticeEn;
-}
+std::string_view DrmPolicy::notice_text(Language lang) { return tr(lang, Text::DrmText); }
 
 bool DrmPolicy::should_notify(std::string_view origin) {
   return notified_origins_.insert(detail::to_lower_ascii(detail::trim(origin))).second;

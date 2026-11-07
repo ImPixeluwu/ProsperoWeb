@@ -7,6 +7,7 @@ add_library(prosperoweb_core STATIC
   fullscreen_controller.cpp
   gamepad_mapper.cpp
   history.cpp
+  i18n.cpp
   legacy_profile.cpp
   in_memory_storage.cpp
   on_screen_keyboard.cpp

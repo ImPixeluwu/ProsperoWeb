@@ -8,6 +8,7 @@
 #include <string>
 
 #include "host_app.h"
+#include "prosperoweb/core/i18n.h"
 #include "prosperoweb/core/legacy_profile.h"
 
 namespace {
@@ -21,7 +22,7 @@ void usage(const char* argv0) {
       "  --screenshot PATH     save a PNG of the window and exit\n"
       "  --after-ms N          delay before the screenshot (default 3000)\n"
       "  --demo[=KIND]         chrome demo state over about:blank (KIND: 1, osk, notice, menu)\n"
-      "  --lang en|ru          UI language for notices (default from $LANG)\n"
+      "  --lang en|ru|es       UI language (default from $LANG)\n"
       "  --user-agent UA       override the user agent\n"
       "  --chrome-dir DIR      directory with chrome.html\n"
       "  --input LIST          press gamepad buttons after start, comma separated\n"
@@ -45,8 +46,9 @@ int main(int argc, char** argv) {
                  prosperoweb::core::renamed_env_name(name).c_str());
   }
   prosperoweb::host::Options opt;
-  if (const char* lang = std::getenv("LANG"); lang && std::strncmp(lang, "ru", 2) == 0) {
-    opt.language = "ru";
+  if (const char* lang = std::getenv("LANG"); lang) {
+    opt.language = std::string(prosperoweb::core::language_code(
+        prosperoweb::core::language_from_code(lang)));
   }
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
