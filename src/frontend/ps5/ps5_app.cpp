@@ -370,6 +370,13 @@ int Ps5App::run() {
       log_line("input: failed to persist natural_scroll");
     }
   };
+  cfg.dpad_links = config_.dpad_links;
+  cfg.on_dpad_links_changed = [this](bool v) {
+    log_printf("input: D-pad %s", v ? "jumps between links" : "scrolls");
+    if (!Ps5Config::save_dpad_links(*storage_, v)) {
+      log_line("input: failed to persist dpad_links");
+    }
+  };
   if (use_system_ime(config_.osk)) {
     ime_input_ = std::make_unique<Ps5ImeTextInput>();
     cfg.text_input = ime_input_.get();

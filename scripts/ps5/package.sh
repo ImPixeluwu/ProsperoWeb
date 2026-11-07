@@ -126,6 +126,7 @@ cat > "${OUT}/config.json.sample" <<EOF
   "width": 1920,
   "height": 1080,
   "natural_scroll": false,
+  "dpad_links": false,
   "addons": {
     "adblock": { "enabled": true, "cookie_banners": false, "auto_update": true, "last_updated": 0 },
     "sponsorblock": { "enabled": false, "categories": ["sponsor"] }

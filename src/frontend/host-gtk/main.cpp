@@ -23,6 +23,7 @@ void usage(const char* argv0) {
       "  --demo[=KIND]         chrome demo state over about:blank (KIND: 1, osk, notice, menu)\n"
       "  --lang en|ru          UI language for notices (default from $LANG)\n"
       "  --user-agent UA       override the user agent\n"
+      "  --dpad-links          the D-pad jumps between links instead of scrolling\n"
       "  --chrome-dir DIR      directory with chrome.html\n"
       "  --input LIST          press gamepad buttons after start, comma separated\n"
       "                        (cross,circle,square,triangle,l1,r1,l2,r2,l3,r3,up,down,\n"
@@ -81,6 +82,8 @@ int main(int argc, char** argv) {
       opt.language = value("--lang");
     } else if (arg == "--user-agent") {
       opt.user_agent = value("--user-agent");
+    } else if (arg == "--dpad-links") {
+      opt.dpad_links = true;
     } else if (arg == "--chrome-dir") {
       opt.chrome_dir = value("--chrome-dir");
     } else if (arg == "--input") {

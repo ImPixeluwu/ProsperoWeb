@@ -23,6 +23,7 @@
 #include "prosperoweb/core/pointer_model.h"
 #include "prosperoweb/core/repeat_timer.h"
 #include "prosperoweb/core/session.h"
+#include "prosperoweb/core/spatial_nav.h"
 #include "prosperoweb/core/storage.h"
 #include "prosperoweb/core/tab_manager.h"
 #include "prosperoweb/core/touchpad_model.h"
@@ -45,6 +46,9 @@ class ShellController {
   static constexpr int kScrollStep = 120;
   // Fraction of the viewport scrolled by L2/R2.
   static constexpr float kPageScrollFraction = 0.85f;
+  // D-pad link navigation scrolls this fraction of the view when nothing
+  // clickable lies in the pressed direction.
+  static constexpr float kSpatialScrollFraction = 0.5f;
   // How long after a Cross click a text_input_focused(true) opens the OSK.
   static constexpr float kClickFocusWindowSeconds = 1.0f;
   static constexpr std::size_t kMenuHistoryItems = 30;
@@ -92,6 +96,12 @@ class ShellController {
     // Persists the natural-scroll setting on toggle; nullptr hides the menu
     // entry. Must outlive the controller.
     std::function<void(bool)> on_natural_scroll_changed;
+    // D-pad link navigation (core/spatial_nav.h): the D-pad moves the pointer
+    // to the nearest clickable element instead of scrolling. Default false.
+    bool dpad_links = false;
+    // Persists the setting on toggle (the menu entry is always shown; without
+    // this the choice lasts for the session).
+    std::function<void(bool)> on_dpad_links_changed;
   };
 
   enum class Focus : std::uint8_t { Page, Chrome, Osk, Menu, Notice };
@@ -202,6 +212,8 @@ class ShellController {
   bool quit_requested() const { return quit_requested_; }
   // Whether natural touchpad scrolling is active (reflects the touchpad model).
   bool natural_scroll() const { return touchpad_.natural_scroll(); }
+  // Whether the D-pad jumps between links (see Config::dpad_links).
+  bool dpad_links() const { return dpad_links_; }
   // True while the active page reports a focused editable element; hosts
   // with a physical keyboard use it to stop treating letters as buttons.
   bool text_input_focused() const { return text_input_focused_; }
@@ -298,6 +310,11 @@ class ShellController {
   void sync_chrome_pointer();
   void note_page_pointer(std::uint64_t tab_id, int x, int y);
   void scroll_active(int dx, int dy);
+  // D-pad link navigation: asks the active page for its clickable elements
+  // (core::spatial_targets_script); on_spatial_targets() then moves the
+  // pointer, or scrolls when there is nothing in that direction.
+  void navigate_spatial(core::NavDirection dir);
+  void on_spatial_targets(std::uint64_t tab_id, const nlohmann::json& msg);
   core::Vec2 to_view(core::Vec2 window_pos) const;
 
   // Overlays.
@@ -374,6 +391,14 @@ class ShellController {
   std::size_t menu_selected_ = 0;
   std::optional<Notice> notice_;
   std::optional<PendingNavigation> pending_nav_;
+  bool dpad_links_ = false;
+  // The D-pad press waiting for its spatial_targets reply (tab and
+  // direction); replies that do not match are stale and ignored.
+  struct SpatialRequest {
+    std::uint64_t tab_id = 0;
+    core::NavDirection dir = core::NavDirection::Down;
+  };
+  std::optional<SpatialRequest> spatial_request_;
 
   // Held button for auto-repeat; held_in_osk_ selects osk_repeat_.
   std::optional<core::Button> held_button_;
