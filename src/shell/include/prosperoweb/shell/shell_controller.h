@@ -202,6 +202,8 @@ class ShellController {
   bool quit_requested() const { return quit_requested_; }
   // Whether natural touchpad scrolling is active (reflects the touchpad model).
   bool natural_scroll() const { return touchpad_.natural_scroll(); }
+  // Page zoom levels remembered per host (saved with the session).
+  const core::SiteZoom& site_zoom() const { return zoom_; }
   // True while the active page reports a focused editable element; hosts
   // with a physical keyboard use it to stop treating letters as buttons.
   bool text_input_focused() const { return text_input_focused_; }
@@ -217,6 +219,7 @@ class ShellController {
     std::unique_ptr<TabClient> client;
     std::unique_ptr<EngineView> view;
     bool loaded = false;  // a URL was sent to the view
+    double zoom = 1.0;    // page zoom last sent to the view
     PageCursor cursor = PageCursor::Pointer;
   };
 
@@ -298,6 +301,11 @@ class ShellController {
   void sync_chrome_pointer();
   void note_page_pointer(std::uint64_t tab_id, int x, int y);
   void scroll_active(int dx, int dy);
+  // Sends the zoom remembered for url's host to the tab's view if it changed.
+  void apply_zoom(std::uint64_t id, const std::string& url);
+  // Menu zoom: +1 in, -1 out, 0 back to 100% for the active tab's host;
+  // saved and applied to every tab of that host.
+  void change_zoom(int direction);
   core::Vec2 to_view(core::Vec2 window_pos) const;
 
   // Overlays.
@@ -357,6 +365,7 @@ class ShellController {
   core::FullscreenController fullscreen_;
   core::DrmPolicy drm_;
   core::AddonsConfig addons_;
+  core::SiteZoom zoom_;
 
   std::map<std::uint64_t, TabEntry> entries_;
   std::optional<std::uint64_t> visible_tab_;

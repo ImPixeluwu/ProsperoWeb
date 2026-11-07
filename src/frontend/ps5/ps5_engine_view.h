@@ -42,6 +42,7 @@ class Ps5EngineView final : public shell::EngineView {
   void request_exit_fullscreen() override;
   void run_javascript(const std::string& js) override;
   void set_user_agent(const std::string& user_agent) override;
+  void set_zoom(double factor) override;
 
   // Compositor access for the frame loop.
   WkWebView& web() { return *web_; }

@@ -150,6 +150,7 @@ ShellController::~ShellController() {
 // Lifecycle
 
 void ShellController::start() {
+  session_.load_zoom(zoom_);
   session_.load_history(history_);
   session_.load_bookmarks(bookmarks_);
   if (!session_.load_tabs(tabs_) || tabs_.empty()) {
@@ -364,6 +365,7 @@ void ShellController::load_in_tab_now(std::uint64_t id, const std::string& url) 
   auto& entry = ensure_entry(id);
   entry.loaded = true;
   tabs_.update_url(id, url);
+  apply_zoom(id, url);  // before the first paint
   entry.view->load(url);
   mark_dirty();
   mark_session_dirty();
@@ -377,6 +379,38 @@ void ShellController::on_url_changed(std::uint64_t id, const std::string& url) {
     mark_dirty();
     mark_session_dirty();
   }
+  apply_zoom(id, url);  // another host may have another zoom level
+}
+
+void ShellController::apply_zoom(std::uint64_t id, const std::string& url) {
+  const auto it = entries_.find(id);
+  if (it == entries_.end() || !it->second.view) {
+    return;
+  }
+  const double factor = zoom_.for_url(url);
+  if (std::fabs(factor - it->second.zoom) > 1e-6) {
+    it->second.view->set_zoom(factor);
+    it->second.zoom = factor;
+  }
+}
+
+void ShellController::change_zoom(int direction) {
+  const auto* tab = tabs_.active();
+  if (!tab || !core::SiteZoom::applies_to(tab->url)) {
+    return;
+  }
+  if (direction > 0) {
+    zoom_.zoom_in(tab->url);
+  } else if (direction < 0) {
+    zoom_.zoom_out(tab->url);
+  } else {
+    zoom_.reset(tab->url);
+  }
+  session_.save_zoom(zoom_);
+  for (const auto& t : tabs_.tabs()) {
+    apply_zoom(t.id, t.url);
+  }
+  rebuild_menu_keeping(menu_selected_);
 }
 
 void ShellController::on_title_changed(std::uint64_t id, const std::string& title) {
@@ -1127,6 +1161,14 @@ void ShellController::show_menu_section(MenuSection section) {
                                close_menu();
                                if (auto* view = active_view()) view->reload();
                              }});
+      if (tab && core::SiteZoom::applies_to(tab->url)) {
+        // The menu stays open so the level can be stepped several times.
+        menu_items_.push_back({"Zoom in", "", [this] { change_zoom(+1); }});
+        menu_items_.push_back(
+            {"Zoom: " + core::SiteZoom::percent(zoom_.for_url(tab->url)) + " (select to reset)",
+             "", [this] { change_zoom(0); }});
+        menu_items_.push_back({"Zoom out", "", [this] { change_zoom(-1); }});
+      }
       if (config_.addons_backend) {
         // One coherent entry per add-on; each opens its own section.
         menu_items_.push_back(

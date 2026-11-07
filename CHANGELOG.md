@@ -4,6 +4,12 @@ All notable changes to ProsperoWeb are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- Page zoom: menu → Zoom in / Zoom out step through 50%-300% (the menu stays open so the level can be stepped several times; selecting "Zoom: N%" resets it to 100%). The level is remembered per host, applied to every tab of that host and on the next start (`zoom.json` in the profile), as desktop browsers do. It scales the whole layout (WebKit page zoom), which helps reading desktop sites from the couch.
+
 ## v0.2.1 - 2026-11-02
 
 ### Fixed

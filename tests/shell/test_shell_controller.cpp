@@ -209,6 +209,100 @@ TEST_SUITE("shell.navigation") {
   }
 }
 
+TEST_SUITE("shell.zoom") {
+  // Index of the first main-menu item whose label starts with prefix, or -1.
+  long menu_index(Fixture& f, const std::string& prefix) {
+    const auto& items = f.chrome.last["menu"]["items"];
+    for (std::size_t i = 0; i < items.size(); ++i) {
+      if (items[i]["label"].get<std::string>().starts_with(prefix)) return static_cast<long>(i);
+    }
+    return -1;
+  }
+  void open_menu(Fixture& f) {
+    f.press(Button::Options);
+    f.frame();
+  }
+  void select(Fixture& f, const std::string& prefix) {
+    const long i = menu_index(f, prefix);
+    REQUIRE(i >= 0);
+    f.shell->on_chrome_event(json{{"type", "menu_select"}, {"index", i}});
+    f.frame();
+  }
+
+  TEST_CASE("the menu zooms the page in steps and stays open") {
+    Fixture f;
+    f.make();
+    open_menu(f);
+    CHECK(menu_index(f, "Zoom: 100%") >= 0);
+    select(f, "Zoom in");
+    CHECK(f.view(0).called("zoom 110"));
+    select(f, "Zoom in");
+    CHECK(f.view(0).zoom == doctest::Approx(1.25));
+    CHECK(f.chrome.last["menu"]["open"] == true);
+    CHECK(menu_index(f, "Zoom: 125% (select to reset)") >= 0);
+    select(f, "Zoom out");
+    CHECK(f.view(0).zoom == doctest::Approx(1.1));
+  }
+
+  TEST_CASE("the level is saved per host and reset to 100% from the menu") {
+    Fixture f;
+    f.make();
+    open_menu(f);
+    select(f, "Zoom in");
+    const auto saved = f.storage.read(core::Session::kZoomKey);
+    REQUIRE(saved.has_value());
+    CHECK(json::parse(*saved) == json{{"home.example", 1.1}});
+    select(f, "Zoom: 110%");
+    CHECK(f.view(0).zoom == doctest::Approx(1.0));
+    CHECK(json::parse(*f.storage.read(core::Session::kZoomKey)) == json::object());
+  }
+
+  TEST_CASE("other tabs of the same host follow; other hosts keep their level") {
+    Fixture f;
+    f.make();
+    f.shell->open_url_in_new_tab("https://home.example/other");
+    f.shell->open_url_in_new_tab("https://elsewhere.example/");
+    f.shell->on_chrome_event(json{{"type", "tab_select"}, {"id", f.shell->tabs().tabs()[0].id}});
+    open_menu(f);
+    select(f, "Zoom in");
+    CHECK(f.view(0).zoom == doctest::Approx(1.1));
+    CHECK(f.view(1).zoom == doctest::Approx(1.1));
+    CHECK(f.view(2).zoom == doctest::Approx(1.0));
+  }
+
+  TEST_CASE("navigating to another host applies that host's level") {
+    Fixture f;
+    f.make();
+    open_menu(f);
+    select(f, "Zoom in");
+    f.press(Button::Circle);  // close the menu
+    f.finish_load(f.view(0), "https://elsewhere.example/", "Elsewhere");
+    CHECK(f.view(0).zoom == doctest::Approx(1.0));
+    f.finish_load(f.view(0), "https://home.example/again", "Home");
+    CHECK(f.view(0).zoom == doctest::Approx(1.1));
+  }
+
+  TEST_CASE("a saved level is applied before the first load") {
+    Fixture f;
+    REQUIRE(f.storage.write(core::Session::kZoomKey, R"({"home.example":1.5})"));
+    f.make();
+    const auto& calls = f.view(0).calls;
+    const auto zoom = std::find(calls.begin(), calls.end(), "zoom 150");
+    const auto load = std::find(calls.begin(), calls.end(), std::string("load ") + kHome);
+    REQUIRE(zoom != calls.end());
+    REQUIRE(load != calls.end());
+    CHECK(zoom < load);
+  }
+
+  TEST_CASE("pages without a host have no zoom entries") {
+    Fixture f;
+    f.make();
+    f.finish_load(f.view(0), "about:blank", "");
+    open_menu(f);
+    CHECK(menu_index(f, "Zoom") < 0);
+  }
+}
+
 TEST_SUITE("shell.tabs") {
   TEST_CASE("open, switch and close toggle view visibility") {
     Fixture f;
@@ -1058,10 +1152,10 @@ TEST_SUITE("shell.chrome_events") {
     f.make();
     f.press(Button::Options);
     f.frame();
-    // No Quit item any more: Diagnostics is last.
-    REQUIRE(f.chrome.last["menu"]["items"].size() == 8);
-    CHECK(f.chrome.last["menu"]["items"][7]["label"] == "Diagnostics");
-    f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 7}});
+    // No Quit item any more: Diagnostics is last (after the three zoom items).
+    REQUIRE(f.chrome.last["menu"]["items"].size() == 11);
+    CHECK(f.chrome.last["menu"]["items"][10]["label"] == "Diagnostics");
+    f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 10}});
     CHECK(f.shell->tabs().size() == 2);
     CHECK(f.active().called("load file:///data/prosperoweb/chrome/diag.html"));
     CHECK(f.shell->focus() == Focus::Page);

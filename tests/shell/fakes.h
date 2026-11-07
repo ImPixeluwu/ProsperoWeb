@@ -52,6 +52,10 @@ class FakeEngineView final : public EngineView {
   void request_exit_fullscreen() override { log("request_exit_fullscreen"); }
   void run_javascript(const std::string& js) override { log("js " + js); }
   void set_user_agent(const std::string& ua) override { log("ua " + ua); }
+  void set_zoom(double factor) override {
+    zoom = factor;
+    log("zoom " + std::to_string(static_cast<int>(factor * 100.0 + 0.5)));
+  }
 
   bool called(const std::string& entry) const {
     return std::find(calls.begin(), calls.end(), entry) != calls.end();
@@ -68,6 +72,7 @@ class FakeEngineView final : public EngineView {
 
   std::vector<std::string> calls;
   bool visible = false;
+  double zoom = 1.0;
   int width = 0;
   int height = 0;
 

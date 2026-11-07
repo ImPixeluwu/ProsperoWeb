@@ -200,6 +200,7 @@ void Ps5EngineView::insert_text(const std::string& utf8) {
 void Ps5EngineView::request_exit_fullscreen() { web_->request_exit_fullscreen(); }
 void Ps5EngineView::run_javascript(const std::string& js) { web_->run_javascript(js); }
 void Ps5EngineView::set_user_agent(const std::string& ua) { web_->set_user_agent(ua); }
+void Ps5EngineView::set_zoom(double factor) { web_->set_page_zoom(factor); }
 
 // --- factory ----------------------------------------------------------------
 

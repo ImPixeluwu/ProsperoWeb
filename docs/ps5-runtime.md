@@ -29,6 +29,8 @@ installed under `/data/prosperoweb/`:
                         tab/URL change and on Quit)
   history.json          persisted history
   bookmarks.json        persisted bookmarks
+  zoom.json             page zoom per host (core::SiteZoom; only levels other
+                        than 100%)
   cache/                network cache (WKWebsiteDataStore)
   storage/ localstorage/ indexeddb/   web storage (WKWebsiteDataStore)
   tmp/                  TMPDIR (created at startup)

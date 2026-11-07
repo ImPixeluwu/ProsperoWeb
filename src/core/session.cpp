@@ -24,6 +24,8 @@ bool Session::save(const char* key, const nlohmann::json& doc) {
 bool Session::load_tabs(TabManager& tabs) { return load(kTabsKey, tabs); }
 bool Session::load_history(History& history) { return load(kHistoryKey, history); }
 bool Session::load_bookmarks(Bookmarks& bookmarks) { return load(kBookmarksKey, bookmarks); }
+bool Session::load_zoom(SiteZoom& zoom) { return load(kZoomKey, zoom); }
+bool Session::save_zoom(const SiteZoom& zoom) { return save(kZoomKey, zoom.to_json()); }
 
 bool Session::save_tabs(const TabManager& tabs) { return save(kTabsKey, tabs.to_json()); }
 bool Session::save_history(const History& history) {
