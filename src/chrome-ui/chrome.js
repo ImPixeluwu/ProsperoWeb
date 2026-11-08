@@ -151,7 +151,8 @@
       return;
     }
     var titles = { main: 'Menu', bookmarks: 'Bookmarks', history: 'History',
-                   adblock: 'Ad blocker', sponsorblock: 'SponsorBlock' };
+                   adblock: 'Ad blocker', sponsorblock: 'SponsorBlock',
+                   popups: 'Pop-up blocker' };
     setText($('menu-title'), titles[menu.section] || 'Menu');
     var items = menu.items || [];
     var list = $('menu-items');
@@ -191,7 +192,14 @@
     setText($('notice-icon'), notice.kind === 'info' ? 'i' : '!');
     setText($('notice-title'), notice.title || '');
     setText($('notice-text'), notice.text || '');
-    setHidden($('notice-cancel'), notice.kind !== 'drm');
+    // A blocked pop-up: Cross opens it (hidden when there is nothing to
+    // open), Triangle always allows the site, Circle dismisses.
+    var popup = notice.kind === 'popup';
+    setText($('notice-ok-label'), popup ? 'Open' : 'OK');
+    setHidden($('notice-ok'), popup && !notice.can_open);
+    setHidden($('notice-allow'), !popup);
+    setText($('notice-cancel-label'), popup ? 'Dismiss' : 'Cancel');
+    setHidden($('notice-cancel'), notice.kind !== 'drm' && !popup);
   }
 
   var OSK_SPECIAL = ['shift', 'layout', 'clear', 'left', 'space', 'right', 'backspace', 'enter'];
@@ -374,6 +382,9 @@
   });
   $('notice-cancel').addEventListener('click', function () {
     send({ type: 'notice_dismiss', proceed: false });
+  });
+  $('notice-allow').addEventListener('click', function () {
+    send({ type: 'notice_allow' });
   });
 
   window.ps5chrome = { render: render, pointer: pointer, click: click, send: send };

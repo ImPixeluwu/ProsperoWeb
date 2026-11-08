@@ -270,9 +270,10 @@ WKPageRef ui_create_new_page(WKPageRef, WKPageConfigurationRef,
     if (req) {
       std::string url = consume_wk_url(WKURLRequestCopyURL(req));
       WKRelease(req);
-      if (!url.empty()) {
-        cb.create_new_page(url);
-      }
+      // An empty URL (window.open() with no argument) still goes to the
+      // shell, whose pop-up blocker decides what to do with it.
+      cb.create_new_page(url, WKNavigationActionHasUnconsumedUserGesture(action),
+                         static_cast<std::uint32_t>(WKNavigationActionGetNavigationType(action)));
     }
   }
   // We never let the engine open a window; the shell opens a tab instead.
@@ -485,6 +486,9 @@ WkWebView::WkWebView(WKContextRef context, WKWebsiteDataStoreRef data_store,
     WKPreferencesSetDefaultFontSize(preferences_, 16);
     WKPreferencesSetDefaultFixedFontSize(preferences_, 13);
   }
+  // Every window request reaches createNewPage, gesture or not: the shell's
+  // pop-up blocker (core::decide_popup) decides and can tell the user, which
+  // WebCore's own blocker would do silently.
   WKPreferencesSetJavaScriptCanOpenWindowsAutomatically(preferences_, true);
 
   WKPageConfigurationRef config = WKPageConfigurationCreate();

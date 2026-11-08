@@ -118,7 +118,9 @@ class ShellController::TabClient final : public EngineViewClient {
   void script_message(const std::string& json_text) override {
     owner_.on_script_message(id_, json_text);
   }
-  void new_window_requested(const std::string& url) override { owner_.on_new_window(id_, url); }
+  void new_window_requested(const NewWindowRequest& request) override {
+    owner_.on_new_window(id_, request);
+  }
   void text_input_focused(bool focused) override { owner_.on_text_input_focused(id_, focused); }
   void cursor_changed(PageCursor cursor) override { owner_.on_cursor_changed(id_, cursor); }
 
@@ -258,6 +260,10 @@ void ShellController::close_tab(std::uint64_t id) {
   if (pending_nav_ && pending_nav_->tab_id == id) {
     pending_nav_.reset();
   }
+  if (pending_popup_ && pending_popup_->tab_id == id) {
+    pending_popup_.reset();
+  }
+  popup_notice_shown_.erase(id);
   if (tabs_.active_id() == id && fullscreen_.state() == FsState::ElementFullscreen) {
     fullscreen_.user_exit();
   }
@@ -387,6 +393,7 @@ void ShellController::on_title_changed(std::uint64_t id, const std::string& titl
 }
 
 void ShellController::on_load_started(std::uint64_t id) {
+  popup_notice_shown_.erase(id);  // a new page may show one pop-up notice again
   if (tabs_.set_loading(id, true)) {
     mark_dirty();
   }
@@ -480,8 +487,30 @@ void ShellController::on_script_message(std::uint64_t id, const std::string& tex
   }
 }
 
-void ShellController::on_new_window(std::uint64_t /*id*/, const std::string& url) {
-  open_tab(url.empty() ? std::string("about:blank") : url, true);
+void ShellController::on_new_window(std::uint64_t id, const NewWindowRequest& request) {
+  const auto* opener = tabs_.find(id);
+  const std::string opener_url = opener ? opener->url : std::string();
+  const core::PopupRequest popup{opener_url, request.url, request.user_gesture, request.origin};
+  if (core::decide_popup(addons_.popups, popup) == core::PopupDecision::Allow) {
+    open_tab(request.url.empty() ? std::string("about:blank") : request.url, true);
+    return;
+  }
+
+  ++blocked_popups_;
+  // One notice per page load, and never over another notice: the rest of a
+  // page's pop-ups are dropped silently.
+  if (focus_ == Focus::Notice || popup_notice_shown_.contains(id)) {
+    return;
+  }
+  popup_notice_shown_.insert(id);
+  pending_popup_ = PendingPopup{id, opener_url, request.url};
+
+  const std::string site = core::site_of_url(opener_url);
+  const std::string who = site.empty() ? std::string("This page") : site;
+  const bool blank = core::site_of_url(request.url).empty();
+  show_notice({"popup", "Pop-up blocked",
+               blank ? who + " tried to open a blank window."
+                     : who + " tried to open a new window:\n" + request.url});
 }
 
 void ShellController::on_text_input_focused(std::uint64_t id, bool focused) {
@@ -936,7 +965,19 @@ void ShellController::handle_notice_button(Button button) {
     dismiss_notice(true);
   } else if (button == Button::Circle) {
     dismiss_notice(false);
+  } else if (button == Button::Triangle && notice_ && notice_->kind == "popup") {
+    allow_pending_popup_site();
   }
+}
+
+void ShellController::allow_pending_popup_site() {
+  if (!pending_popup_) {
+    return;
+  }
+  if (core::allow_popups_for(addons_.popups, pending_popup_->opener_url)) {
+    persist_addons();
+  }
+  dismiss_notice(true);  // and open the pop-up the user just allowed
 }
 
 // ---------------------------------------------------------------------------
@@ -1134,6 +1175,9 @@ void ShellController::show_menu_section(MenuSection section) {
         menu_items_.push_back(
             {"SponsorBlock", "", [this] { show_menu_section(MenuSection::SponsorBlock); }});
       }
+      // The pop-up blocker lives in the shell and needs no engine backend.
+      menu_items_.push_back(
+          {"Pop-up blocker", "", [this] { show_menu_section(MenuSection::Popups); }});
       if (config_.on_natural_scroll_changed) {
         menu_items_.push_back(
             {std::string("Natural scrolling: ") + (touchpad_.natural_scroll() ? "On" : "Off"), "",
@@ -1178,6 +1222,9 @@ void ShellController::show_menu_section(MenuSection section) {
       break;
     case MenuSection::SponsorBlock:
       build_sponsorblock_menu();
+      break;
+    case MenuSection::Popups:
+      build_popups_menu();
       break;
   }
   mark_dirty();
@@ -1282,6 +1329,34 @@ void ShellController::build_sponsorblock_menu() {
   menu_items_.push_back({"Back", "", [this] { show_menu_section(MenuSection::Main); }});
 }
 
+void ShellController::build_popups_menu() {
+  menu_items_.clear();
+  auto& pp = addons_.popups;
+
+  menu_items_.push_back(
+      {std::string("Block pop-ups: ") + (pp.enabled ? "On" : "Off"), "", [this] {
+         addons_.popups.enabled = !addons_.popups.enabled;
+         persist_addons();
+         rebuild_menu_keeping(menu_selected_);
+       }});
+  menu_items_.push_back(
+      {"Blocked since start: " + std::to_string(blocked_popups_), "", [] {}});
+  if (pp.allowed_sites.empty()) {
+    menu_items_.push_back({"No sites allowed to open pop-ups", "", [] {}});
+  }
+  for (const auto& site : pp.allowed_sites) {
+    // Selecting an allowed site removes it from the list.
+    menu_items_.push_back({"Allowed: " + site + " (select to remove)", "", [this, site] {
+                             auto& sites = addons_.popups.allowed_sites;
+                             sites.erase(std::remove(sites.begin(), sites.end(), site),
+                                         sites.end());
+                             persist_addons();
+                             rebuild_menu_keeping(menu_selected_);
+                           }});
+  }
+  menu_items_.push_back({"Back", "", [this] { show_menu_section(MenuSection::Main); }});
+}
+
 void ShellController::apply_addons() {
   if (!config_.addons_backend) {
     return;
@@ -1336,6 +1411,9 @@ void ShellController::show_notice(Notice notice) {
   if (focus_ != Focus::Notice) {
     focus_before_notice_ = focus_;
   }
+  if (notice.kind != "popup") {
+    pending_popup_.reset();  // a pop-up notice this one replaces is gone
+  }
   notice_ = std::move(notice);
   focus_ = Focus::Notice;
   stop_repeat();
@@ -1346,6 +1424,7 @@ void ShellController::dismiss_notice(bool proceed) {
   if (!notice_) {
     return;
   }
+  const bool was_popup = notice_->kind == "popup";
   notice_.reset();
   focus_ = focus_before_notice_;
   if (focus_ == Focus::Osk && !osk_open_) focus_ = Focus::Page;
@@ -1354,6 +1433,11 @@ void ShellController::dismiss_notice(bool proceed) {
   pending_nav_.reset();
   if (pending && proceed && tabs_.find(pending->tab_id)) {
     load_in_tab_now(pending->tab_id, pending->url);
+  }
+  auto popup = std::move(pending_popup_);
+  pending_popup_.reset();
+  if (was_popup && popup && proceed && !core::site_of_url(popup->url).empty()) {
+    open_tab(popup->url, true);
   }
   mark_dirty();
 }
@@ -1448,6 +1532,8 @@ void ShellController::on_chrome_event(const json& event) {
     close_menu();
   } else if (type == "notice_dismiss") {
     dismiss_notice(event.value("proceed", true));
+  } else if (type == "notice_allow") {
+    if (notice_ && notice_->kind == "popup") allow_pending_popup_site();
   } else if (type == "osk_key") {
     const long row = int_of("row");
     const long col = int_of("col");
@@ -1562,6 +1648,11 @@ json ShellController::chrome_state() const {
 
   if (notice_) {
     state["notice"] = {{"kind", notice_->kind}, {"title", notice_->title}, {"text", notice_->text}};
+    if (notice_->kind == "popup") {
+      // A blank pop-up has nothing to open: the chrome hides "Open".
+      state["notice"]["can_open"] =
+          pending_popup_ && !core::site_of_url(pending_popup_->url).empty();
+    }
   } else {
     state["notice"] = {{"kind", nullptr}, {"title", ""}, {"text", ""}};
   }
@@ -1576,6 +1667,7 @@ json ShellController::chrome_state() const {
                         : menu_section_ == MenuSection::Bookmarks ? "bookmarks"
                         : menu_section_ == MenuSection::Adblock   ? "adblock"
                         : menu_section_ == MenuSection::SponsorBlock ? "sponsorblock"
+                        : menu_section_ == MenuSection::Popups    ? "popups"
                                                                   : "history";
   state["menu"] = {{"open", menu_open_},
                    {"section", section},

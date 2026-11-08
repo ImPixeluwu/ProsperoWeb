@@ -11,6 +11,7 @@ add_library(prosperoweb_core STATIC
   in_memory_storage.cpp
   on_screen_keyboard.cpp
   pointer_model.cpp
+  popup_policy.cpp
   repeat_timer.cpp
   session.cpp
   sponsorblock.cpp

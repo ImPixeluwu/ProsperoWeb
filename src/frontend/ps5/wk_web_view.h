@@ -47,7 +47,11 @@ class WkWebView {
     std::function<void(const std::string& url)> url_changed;
     std::function<void(const std::string& title)> title_changed;
     std::function<void(bool can_back, bool can_forward)> nav_state_changed;
-    std::function<void(const std::string& url)> create_new_page;
+    // createNewPage: the target URL, whether the navigation carries an
+    // unconsumed user gesture, and its WKFrameNavigationType
+    // (kWKFrameNavigationTypeLinkClicked, FormSubmitted, ..., Other).
+    std::function<void(const std::string& url, bool user_gesture, std::uint32_t navigation_type)>
+        create_new_page;
     // Body of a window.webkit.messageHandlers.<name>.postMessage(), as JSON
     // (a string body is passed as is). Delivered natively when WebKit has
     // user message handlers, otherwise through the bridge (poll_all()).

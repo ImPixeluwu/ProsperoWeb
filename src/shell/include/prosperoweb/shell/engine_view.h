@@ -5,11 +5,21 @@
 #include <memory>
 #include <string>
 
+#include "prosperoweb/core/popup_policy.h"
+
 namespace prosperoweb::shell {
 
 // The mouse cursor the page asks for (CSS `cursor`), as far as the engine
 // reports it. None hides the pointer.
 enum class PageCursor : std::uint8_t { Pointer, Hand, None };
+
+// A page asked for a new window. The shell's pop-up blocker decides from
+// these fields (core::decide_popup) whether to open it as a tab.
+struct NewWindowRequest {
+  std::string url;            // may be empty or about:blank
+  bool user_gesture = false;  // the request came from a real click or key press
+  core::PopupOrigin origin = core::PopupOrigin::Script;  // link, form or script
+};
 
 // Callbacks from a web engine view to the shell. All calls are made on the
 // shell's thread (the frontend's main loop).
@@ -29,8 +39,9 @@ class EngineViewClient {
   // A message posted by the injected page scripts to the "prosperoweb"
   // handler, serialized as JSON (e.g. {"type":"eme","keySystem":..,"origin":..}).
   virtual void script_message(const std::string& json) = 0;
-  // window.open() / target=_blank; the shell opens the URL in a new tab.
-  virtual void new_window_requested(const std::string& url) = 0;
+  // window.open() / target=_blank. The shell opens the URL in a new tab
+  // unless its pop-up blocker refuses it.
+  virtual void new_window_requested(const NewWindowRequest& request) = 0;
   // An editable element gained (true) or lost (false) focus.
   virtual void text_input_focused(bool focused) = 0;
   // The page changed the cursor under the pointer (engines that report it).

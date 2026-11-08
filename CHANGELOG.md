@@ -4,6 +4,12 @@ All notable changes to ProsperoWeb are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- Pop-up blocker (on by default). Pages can no longer open tabs on their own: a new window opens only for a link or form the user activated, or for a script pop-up to the same site after a click. Anything else (timers, page-load pop-ups, the cross-site pop-unders of streaming sites) is blocked with a notice that offers to open it, to always allow the site, or to dismiss it; a page shows at most one such notice per load. Menu → Pop-up blocker turns it off and lists the allowed sites. Persisted in `config.json` (`addons.popups`).
+
 ## v0.2.1 - 2026-11-02
 
 ### Fixed

@@ -6,6 +6,7 @@
 #include <WebKit/WKContextConfigurationPlayStation.h>
 #include <WebKit/WKContextPrivate.h>
 #include <WebKit/WKEvent.h>
+#include <WebKit/WKPageLoadTypes.h>
 #include <WebKit/WKString.h>
 #include <WebKit/WKViewClient.h>
 #include <WebKit/WKWebsiteDataStoreConfigurationRef.h>
@@ -129,8 +130,17 @@ Ps5EngineView::Ps5EngineView(shell::EngineViewClient& client, WKContextRef conte
     cursor_ = cursor;
     client_.cursor_changed(cursor);
   };
-  cb.create_new_page = [this](const std::string& url) {
-    client_.new_window_requested(url);
+  cb.create_new_page = [this](const std::string& url, bool user_gesture,
+                              std::uint32_t navigation_type) {
+    shell::NewWindowRequest request;
+    request.url = url;
+    request.user_gesture = user_gesture;
+    request.origin = navigation_type == kWKFrameNavigationTypeLinkClicked
+                         ? core::PopupOrigin::Link
+                     : navigation_type == kWKFrameNavigationTypeFormSubmitted
+                         ? core::PopupOrigin::Form
+                         : core::PopupOrigin::Script;
+    client_.new_window_requested(request);
   };
   cb.script_message = [this](const std::string& json) {
     // Focus reports from core::kFocusReporterScript drive the OSK auto-open;

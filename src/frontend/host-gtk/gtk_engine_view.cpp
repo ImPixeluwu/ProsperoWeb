@@ -40,7 +40,9 @@ GtkEngineView::GtkEngineView(shell::EngineViewClient& client, WebKitNetworkSessi
   webkit_settings_set_enable_mediasource(settings, TRUE);
   webkit_settings_set_enable_encrypted_media(settings, TRUE);
   webkit_settings_set_media_playback_requires_user_gesture(settings, FALSE);
-  webkit_settings_set_javascript_can_open_windows_automatically(settings, FALSE);
+  // As on the PS5: every window request reaches "create" and the shell's
+  // pop-up blocker decides (WebCore's own blocker would drop it silently).
+  webkit_settings_set_javascript_can_open_windows_automatically(settings, TRUE);
 
   view_ = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, "network-session", session,
                                        "user-content-manager", content_manager_, "settings",
@@ -234,8 +236,16 @@ GtkWidget* GtkEngineView::on_create(WebKitWebView* /*view*/, WebKitNavigationAct
                                     gpointer self) {
   WebKitURIRequest* request = webkit_navigation_action_get_request(action);
   const char* uri = request ? webkit_uri_request_get_uri(request) : nullptr;
-  static_cast<GtkEngineView*>(self)->client_.new_window_requested(uri ? uri : "");
-  return nullptr;  // the shell opens the URL in a tab of its own
+  shell::NewWindowRequest req;
+  req.url = uri ? uri : "";
+  req.user_gesture = webkit_navigation_action_is_user_gesture(action);
+  switch (webkit_navigation_action_get_navigation_type(action)) {
+    case WEBKIT_NAVIGATION_TYPE_LINK_CLICKED: req.origin = core::PopupOrigin::Link; break;
+    case WEBKIT_NAVIGATION_TYPE_FORM_SUBMITTED: req.origin = core::PopupOrigin::Form; break;
+    default: req.origin = core::PopupOrigin::Script; break;
+  }
+  static_cast<GtkEngineView*>(self)->client_.new_window_requested(req);
+  return nullptr;  // the shell opens the URL in a tab of its own (or blocks it)
 }
 
 void GtkEngineView::on_script_message(WebKitUserContentManager* /*manager*/, JSCValue* value,

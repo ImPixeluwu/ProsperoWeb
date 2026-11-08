@@ -128,7 +128,8 @@ cat > "${OUT}/config.json.sample" <<EOF
   "natural_scroll": false,
   "addons": {
     "adblock": { "enabled": true, "cookie_banners": false, "auto_update": true, "last_updated": 0 },
-    "sponsorblock": { "enabled": false, "categories": ["sponsor"] }
+    "sponsorblock": { "enabled": false, "categories": ["sponsor"] },
+    "popups": { "enabled": true, "allowed_sites": [] }
   }
 }
 EOF
