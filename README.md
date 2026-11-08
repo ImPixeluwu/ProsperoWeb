@@ -19,6 +19,7 @@ It is early software (version 0.1.0): expect rough edges, and launch it only the
 ## Features
 
 - Tabs, address bar with URL/search normalisation, back/forward/reload, bookmarks and history, session restore.
+- Page zoom from the menu (Zoom in / Zoom out, 50% to 300%; select the level to reset it), remembered per host across restarts like a desktop browser.
 - DualSense: a virtual pointer on the left stick or the touchpad (trackpad-style: slide, tap, two-finger scroll, press and slide to drag), trusted clicks and scrolling, tab switching, menu; USB keyboard. Optional D-pad link navigation (menu → "D-pad link navigation"): the D-pad moves the pointer to the nearest link, button or field in that direction and Cross clicks it; with nothing that way on screen it scrolls.
 - Text entry through the console's own keyboard dialog, pre-filled with the URL or the field's value; a built-in on-screen keyboard (Latin, Cyrillic, symbols) as the fallback.
 - HTML5 Fullscreen API and a chrome-hiding fullscreen mode.

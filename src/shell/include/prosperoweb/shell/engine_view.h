@@ -112,6 +112,9 @@ class EngineView {
   // Optional: lets the engine report media/EME capabilities. No-op by default.
   virtual void evaluate_capabilities() {}
   virtual void set_user_agent(const std::string& user_agent) = 0;
+  // Page zoom (1.0 = 100%): scales the whole page, layout included, like a
+  // desktop browser's zoom. Coordinates stay in view pixels.
+  virtual void set_zoom(double factor) = 0;
 };
 
 class EngineFactory {

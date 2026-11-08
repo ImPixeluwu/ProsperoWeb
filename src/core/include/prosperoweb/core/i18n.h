@@ -52,6 +52,9 @@ enum class Text : std::uint16_t {
   MenuNaturalScroll,  // {0} = On / Off
   MenuDiagnostics,
   MenuDpadLinks,  // {0} = On / Off
+  MenuZoomIn,
+  MenuZoomLevel,  // {0} = percentage, e.g. "125%"
+  MenuZoomOut,
   MenuNoBookmarks,
   MenuHistoryEmpty,
   MenuBack,

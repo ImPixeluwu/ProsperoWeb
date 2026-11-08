@@ -166,6 +166,8 @@ void GtkEngineView::set_user_agent(const std::string& user_agent) {
   webkit_settings_set_user_agent(webkit_web_view_get_settings(view_), user_agent.c_str());
 }
 
+void GtkEngineView::set_zoom(double factor) { webkit_web_view_set_zoom_level(view_, factor); }
+
 // ---------------------------------------------------------------------------
 // Signals
 

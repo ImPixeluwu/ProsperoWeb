@@ -16,6 +16,7 @@ All notable changes to ProsperoWeb are documented here. The format follows
 - All UI strings come from one table (`src/core/i18n.cpp`, `core::tr`), shared by the shell, the HTML chrome (sent once as `strings` in the chrome state), the on-screen keyboard and the PS5 splash screens. English is the fallback, so a language can be added before every string is translated. The menus and most notices were English-only before; Russian keeps its existing translations and falls back to English for the rest.
 - The host frontend picks Spanish from `$LANG` too.
 - D-pad link navigation (off by default; menu → "D-pad link navigation: On/Off", persisted as `dpad_links` in `config.json`, `--dpad-links` on the host). The D-pad moves the pointer to the nearest clickable element in the pressed direction (links, buttons, form fields, ARIA widgets) and Cross clicks it, which is faster than steering the pointer with the stick. An element in the same row or column wins over a nearer diagonal one; with nothing clickable that way on screen, the page scrolls by half a view. The pointer, sticks and touchpad keep working as before.
+- Page zoom: menu → Zoom in / Zoom out step through 50%-300% (the menu stays open so the level can be stepped several times; selecting "Zoom: N%" resets it to 100%). The level is remembered per host, applied to every tab of that host and on the next start (`zoom.json` in the profile), as desktop browsers do. It scales the whole layout (WebKit page zoom), which helps reading desktop sites from the couch.
 
 ## v0.2.1 - 2026-11-02
 

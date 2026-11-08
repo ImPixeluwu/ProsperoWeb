@@ -769,6 +769,13 @@ void WkWebView::deliver_bridged(const std::string& batch) {
   }
 }
 
+void WkWebView::set_page_zoom(double factor) {
+  if (WKPageGetPageZoomFactor(page_) != factor) {
+    WKPageSetPageZoomFactor(page_, factor);
+    log_printf("zoom: %.2f on view %s", factor, name_.c_str());
+  }
+}
+
 void WkWebView::set_user_agent(const std::string& user_agent) {
   auto s = make_wk_string(user_agent);
   WKPageSetCustomUserAgent(page_, s.get());

@@ -16,6 +16,7 @@ add_library(prosperoweb_core STATIC
   repeat_timer.cpp
   session.cpp
   spatial_nav.cpp
+  site_zoom.cpp
   sponsorblock.cpp
   storage.cpp
   tab_manager.cpp

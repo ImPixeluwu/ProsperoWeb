@@ -140,6 +140,8 @@ class WkWebView {
   using EvaluateDone = std::function<void(std::optional<std::string> result)>;
   void evaluate(const std::string& body, EvaluateDone done);
   void set_user_agent(const std::string& user_agent);
+  // WKPageSetPageZoomFactor (1.0 = 100%).
+  void set_page_zoom(double factor);
   void request_exit_fullscreen();
 
   // Paints rect into an ARGB32 (little-endian: B,G,R,A bytes) buffer of size
