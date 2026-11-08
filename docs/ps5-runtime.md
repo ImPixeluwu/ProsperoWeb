@@ -31,6 +31,8 @@ installed under `/data/prosperoweb/`:
   bookmarks.json        persisted bookmarks
   zoom.json             page zoom per host (core::SiteZoom; only levels other
                         than 100%)
+  user_agents.json      user-agent preset per host (core::SiteUserAgents; only
+                        hosts not on Default)
   cache/                network cache (WKWebsiteDataStore)
   storage/ localstorage/ indexeddb/   web storage (WKWebsiteDataStore)
   tmp/                  TMPDIR (created at startup)

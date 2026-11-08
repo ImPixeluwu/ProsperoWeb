@@ -26,6 +26,12 @@ bool Session::load_history(History& history) { return load(kHistoryKey, history)
 bool Session::load_bookmarks(Bookmarks& bookmarks) { return load(kBookmarksKey, bookmarks); }
 bool Session::load_zoom(SiteZoom& zoom) { return load(kZoomKey, zoom); }
 bool Session::save_zoom(const SiteZoom& zoom) { return save(kZoomKey, zoom.to_json()); }
+bool Session::load_user_agents(SiteUserAgents& user_agents) {
+  return load(kUserAgentsKey, user_agents);
+}
+bool Session::save_user_agents(const SiteUserAgents& user_agents) {
+  return save(kUserAgentsKey, user_agents.to_json());
+}
 
 bool Session::save_tabs(const TabManager& tabs) { return save(kTabsKey, tabs.to_json()); }
 bool Session::save_history(const History& history) {

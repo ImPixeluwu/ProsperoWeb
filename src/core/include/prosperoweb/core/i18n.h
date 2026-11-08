@@ -55,6 +55,7 @@ enum class Text : std::uint16_t {
   MenuZoomIn,
   MenuZoomLevel,  // {0} = percentage, e.g. "125%"
   MenuZoomOut,
+  MenuUserAgent,  // {0} = preset name
   MenuNoBookmarks,
   MenuHistoryEmpty,
   MenuBack,

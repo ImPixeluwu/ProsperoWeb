@@ -17,6 +17,7 @@ add_library(prosperoweb_core STATIC
   session.cpp
   spatial_nav.cpp
   site_zoom.cpp
+  site_user_agents.cpp
   sponsorblock.cpp
   storage.cpp
   tab_manager.cpp

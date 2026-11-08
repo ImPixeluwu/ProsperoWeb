@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -52,6 +53,10 @@ class ShellController {
   // D-pad link navigation scrolls this fraction of the view when nothing
   // clickable lies in the pressed direction.
   static constexpr float kSpatialScrollFraction = 0.5f;
+  // At most one automatic user-agent reload per tab within this many
+  // seconds: sites that redirect between www. and m. by user agent would
+  // otherwise bounce between two hosts with different presets forever.
+  static constexpr std::int64_t kUaReloadCooldownSeconds = 5;
   // How long after a Cross click a text_input_focused(true) opens the OSK.
   static constexpr float kClickFocusWindowSeconds = 1.0f;
   static constexpr std::size_t kMenuHistoryItems = 30;
@@ -222,6 +227,8 @@ class ShellController {
   bool dpad_links() const { return dpad_links_; }
   // Page zoom levels remembered per host (saved with the session).
   const core::SiteZoom& site_zoom() const { return zoom_; }
+  // User-agent presets chosen per host (saved with the session).
+  const core::SiteUserAgents& site_user_agents() const { return user_agents_; }
   // True while the active page reports a focused editable element; hosts
   // with a physical keyboard use it to stop treating letters as buttons.
   bool text_input_focused() const { return text_input_focused_; }
@@ -242,6 +249,9 @@ class ShellController {
     std::unique_ptr<EngineView> view;
     bool loaded = false;  // a URL was sent to the view
     double zoom = 1.0;    // page zoom last sent to the view
+    std::string user_agent;  // user agent last sent to the view
+    // When apply_user_agent() last reloaded the page on its own (now()).
+    std::int64_t ua_reload_at = std::numeric_limits<std::int64_t>::min();
     PageCursor cursor = PageCursor::Pointer;
   };
 
@@ -341,6 +351,16 @@ class ShellController {
   // Menu zoom: +1 in, -1 out, 0 back to 100% for the active tab's host;
   // saved and applied to every tab of that host.
   void change_zoom(int direction);
+  // Sends url's user agent (its host's preset, else Config::user_agent) to
+  // the tab's view if it differs from the last one, and then reloads a
+  // loaded page so its document is fetched with it: never (No), at most once
+  // per kUaReloadCooldownSeconds (Auto, after a navigation) or always
+  // (Always, the user changed the preset).
+  enum class UaReload : std::uint8_t { No, Auto, Always };
+  void apply_user_agent(std::uint64_t id, const std::string& url, UaReload reload);
+  // Menu: moves the active tab's host to the next user-agent preset, saves
+  // it and applies it to every loaded tab of that host.
+  void cycle_user_agent();
   core::Vec2 to_view(core::Vec2 window_pos) const;
 
   // Overlays.
@@ -410,6 +430,7 @@ class ShellController {
   core::DrmPolicy drm_;
   core::AddonsConfig addons_;
   core::SiteZoom zoom_;
+  core::SiteUserAgents user_agents_;
 
   std::map<std::uint64_t, TabEntry> entries_;
   std::optional<std::uint64_t> visible_tab_;

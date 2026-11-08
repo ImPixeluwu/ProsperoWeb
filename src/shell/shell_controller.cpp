@@ -154,6 +154,7 @@ ShellController::~ShellController() {
 
 void ShellController::start() {
   session_.load_zoom(zoom_);
+  session_.load_user_agents(user_agents_);
   session_.load_history(history_);
   session_.load_bookmarks(bookmarks_);
   if (!session_.load_tabs(tabs_) || tabs_.empty()) {
@@ -239,6 +240,7 @@ ShellController::TabEntry& ShellController::ensure_entry(std::uint64_t id) {
   if (!config_.user_agent.empty()) {
     entry.view->set_user_agent(config_.user_agent);
   }
+  entry.user_agent = config_.user_agent;
   entry.view->set_visible(false);
   auto& stored = entries_.emplace(id, std::move(entry)).first->second;
   apply_geometry();
@@ -396,6 +398,7 @@ void ShellController::load_in_tab_now(std::uint64_t id, const std::string& url) 
   entry.loaded = true;
   tabs_.update_url(id, url);
   apply_zoom(id, url);  // before the first paint
+  apply_user_agent(id, url, UaReload::No);  // the first request already carries it
   entry.view->load(url);
   mark_dirty();
   mark_session_dirty();
@@ -410,6 +413,9 @@ void ShellController::on_url_changed(std::uint64_t id, const std::string& url) {
     mark_session_dirty();
   }
   apply_zoom(id, url);  // another host may have another zoom level
+  // A link or redirect into a host with another user agent: its document
+  // was requested with the old one, so reload it once with the right one.
+  apply_user_agent(id, url, UaReload::Auto);
 }
 
 void ShellController::apply_zoom(std::uint64_t id, const std::string& url) {
@@ -439,6 +445,43 @@ void ShellController::change_zoom(int direction) {
   session_.save_zoom(zoom_);
   for (const auto& t : tabs_.tabs()) {
     apply_zoom(t.id, t.url);
+  }
+  rebuild_menu_keeping(menu_selected_);
+}
+
+void ShellController::apply_user_agent(std::uint64_t id, const std::string& url, UaReload reload) {
+  const auto it = entries_.find(id);
+  if (it == entries_.end() || !it->second.view) {
+    return;
+  }
+  auto& entry = it->second;
+  std::string ua = user_agents_.user_agent_for(url, config_.user_agent);
+  if (ua == entry.user_agent) {
+    return;
+  }
+  entry.view->set_user_agent(ua);
+  entry.user_agent = std::move(ua);
+  if (reload == UaReload::No || !entry.loaded || !core::SiteUserAgents::applies_to(url)) {
+    return;
+  }
+  const std::int64_t t = now();
+  if (reload == UaReload::Auto && entry.ua_reload_at != std::numeric_limits<std::int64_t>::min() &&
+      t - entry.ua_reload_at < kUaReloadCooldownSeconds) {
+    return;  // a redirect loop between hosts with different presets
+  }
+  entry.ua_reload_at = t;
+  entry.view->reload();
+}
+
+void ShellController::cycle_user_agent() {
+  const auto* tab = tabs_.active();
+  if (!tab || !core::SiteUserAgents::applies_to(tab->url)) {
+    return;
+  }
+  user_agents_.cycle(tab->url);
+  session_.save_user_agents(user_agents_);
+  for (const auto& t : tabs_.tabs()) {
+    apply_user_agent(t.id, t.url, UaReload::Always);
   }
   rebuild_menu_keeping(menu_selected_);
 }
@@ -1301,6 +1344,13 @@ void ShellController::show_menu_section(MenuSection section) {
             {ui_text(core::Text::MenuZoomLevel, {core::SiteZoom::percent(zoom_.for_url(tab->url))}),
              "", [this] { change_zoom(0); }});
         menu_items_.push_back({ui_text(core::Text::MenuZoomOut), "", [this] { change_zoom(-1); }});
+      }
+      if (tab && core::SiteUserAgents::applies_to(tab->url)) {
+        // Cycles this host through the presets; the page reloads with it.
+        menu_items_.push_back(
+            {ui_text(core::Text::MenuUserAgent,
+                     {core::ua_preset_label(user_agents_.preset_for(tab->url))}),
+             "", [this] { cycle_user_agent(); }});
       }
       if (config_.addons_backend) {
         // One coherent entry per add-on; each opens its own section.

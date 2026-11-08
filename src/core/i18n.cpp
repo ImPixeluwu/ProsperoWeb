@@ -71,6 +71,7 @@ constexpr Row kRows[] = {
     {Text::MenuZoomLevel, "menu.zoom_level", "Zoom: {0} (select to reset)", "",
      "Zoom: {0} (selecciona para restablecer)"},
     {Text::MenuZoomOut, "menu.zoom_out", "Zoom out", "", "Alejar"},
+    {Text::MenuUserAgent, "menu.user_agent", "User agent: {0}", "", "User agent: {0}"},
     {Text::MenuNoBookmarks, "menu.no_bookmarks", "No bookmarks yet", "",
      "Todavía no hay marcadores"},
     {Text::MenuHistoryEmpty, "menu.history_empty", "History is empty", "",
