@@ -32,6 +32,7 @@ struct Options {
   std::string demo;          // empty: off; otherwise chrome.html?demo=<demo>
   std::string language = "en";
   std::string user_agent;
+  bool dpad_links = false;   // start with the D-pad jumping between links
   std::string chrome_dir;    // empty: autodetect
   // Debug/automation: gamepad buttons pressed one by one after start.
   std::vector<std::string> input;

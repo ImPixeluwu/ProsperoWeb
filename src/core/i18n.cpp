@@ -65,6 +65,8 @@ constexpr Row kRows[] = {
     {Text::MenuNaturalScroll, "menu.natural_scroll", "Natural scrolling: {0}", "",
      "Desplazamiento natural: {0}"},
     {Text::MenuDiagnostics, "menu.diagnostics", "Diagnostics", "", "Diagnóstico"},
+    {Text::MenuDpadLinks, "menu.dpad_links", "D-pad link navigation: {0}", "",
+     "Navegación por enlaces con la cruceta: {0}"},
     {Text::MenuNoBookmarks, "menu.no_bookmarks", "No bookmarks yet", "",
      "Todavía no hay marcadores"},
     {Text::MenuHistoryEmpty, "menu.history_empty", "History is empty", "",

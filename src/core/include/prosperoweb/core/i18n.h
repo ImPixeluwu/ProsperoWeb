@@ -51,6 +51,7 @@ enum class Text : std::uint16_t {
   MenuSponsorBlock,
   MenuNaturalScroll,  // {0} = On / Off
   MenuDiagnostics,
+  MenuDpadLinks,  // {0} = On / Off
   MenuNoBookmarks,
   MenuHistoryEmpty,
   MenuBack,

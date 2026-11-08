@@ -34,9 +34,17 @@ struct Fixture {
   int addons_saves = 0;                  // on_addons_changed calls
   core::AddonsConfig saved_addons;       // last state passed to it
   std::string language = "en";
+  bool dpad_links = false;
+  int dpad_saves = 0;
+  bool dpad_saved = false;
 
   void make(bool start = true) {
     ShellController::Config config;
+    config.dpad_links = dpad_links;
+    config.on_dpad_links_changed = [this](bool v) {
+      ++dpad_saves;
+      dpad_saved = v;
+    };
     config.language = language;
     config.addons = addons;
     config.on_addons_changed = [this](const core::AddonsConfig& a) {
@@ -433,6 +441,94 @@ TEST_SUITE("shell.i18n") {
     ru.frame();
     CHECK(ru.chrome.last["strings"]["input.address"] == "Адрес или поиск");
     CHECK(ru.chrome.last["strings"]["menu.bookmarks"] == "Bookmarks");  // not translated yet
+  }
+}
+
+TEST_SUITE("shell.dpad") {
+  // Replies as the page script would, in view coordinates.
+  void reply(Fixture& f, const char* dir, json targets) {
+    f.active().client().script_message(
+        json{{"type", "spatial_targets"}, {"dir", dir}, {"targets", std::move(targets)}}.dump());
+  }
+
+  TEST_CASE("by default the D-pad scrolls and asks the page nothing") {
+    Fixture f;
+    f.make();
+    f.press(Button::Down);
+    CHECK(f.active().called("scroll 0,120"));
+    CHECK_FALSE(f.active().called_prefix("js "));
+  }
+
+  TEST_CASE("in link mode a press asks the page for its clickable elements") {
+    Fixture f;
+    f.dpad_links = true;
+    f.make();
+    f.press(Button::Down);
+    CHECK(f.active().called("js " + core::spatial_targets_script(core::NavDirection::Down)));
+    CHECK_FALSE(f.active().called_prefix("scroll "));
+  }
+
+  TEST_CASE("the reply moves the pointer to the chosen element and hovers it") {
+    Fixture f;
+    f.dpad_links = true;
+    f.make();
+    const float top = static_cast<float>(f.shell->content_top());
+    const auto before = f.shell->pointer();  // window centre
+    const float vy = before.y - top;         // the same point in view coordinates
+    f.press(Button::Down);
+    // One element above the pointer, two below: the nearer one below wins.
+    reply(f, "down",
+          json::array({json::array({900, int(vy) - 200, 120, 40}),
+                       json::array({900, int(vy) + 300, 120, 40}),
+                       json::array({900, int(vy) + 100, 120, 40})}));
+    const auto after = f.shell->pointer();
+    CHECK(after.x == doctest::Approx(960.0f));
+    CHECK(after.y == doctest::Approx(top + (int(vy) + 100) + 20.0f));
+    CHECK(f.active().called("pointer_move 960," + std::to_string(int(vy) + 120)));
+    CHECK(f.shell->pointer_visible());
+  }
+
+  TEST_CASE("nothing that way: the page scrolls by half a view") {
+    Fixture f;
+    f.dpad_links = true;
+    f.make();
+    f.press(Button::Up);
+    reply(f, "up", json::array());
+    const int step = static_cast<int>(static_cast<float>(1080 - f.shell->content_top()) *
+                                      ShellController::kSpatialScrollFraction);
+    CHECK(f.active().called("scroll 0," + std::to_string(-step)));
+  }
+
+  TEST_CASE("stale or unexpected replies are ignored") {
+    Fixture f;
+    f.dpad_links = true;
+    f.make();
+    const auto before = f.shell->pointer();
+    reply(f, "down", json::array({json::array({10, 900, 50, 20})}));  // no press
+    f.press(Button::Left);
+    reply(f, "down", json::array({json::array({10, 900, 50, 20})}));  // other direction
+    CHECK(f.shell->pointer().x == doctest::Approx(before.x));
+    CHECK(f.shell->pointer().y == doctest::Approx(before.y));
+    CHECK_FALSE(f.active().called_prefix("scroll "));
+  }
+
+  TEST_CASE("the menu switches the mode and persists it") {
+    Fixture f;
+    f.make();
+    f.press(Button::Options);
+    f.frame();
+    const auto& items = f.chrome.last["menu"]["items"];
+    long index = -1;
+    for (std::size_t i = 0; i < items.size(); ++i) {
+      if (items[i]["label"] == "D-pad link navigation: Off") index = static_cast<long>(i);
+    }
+    REQUIRE(index >= 0);
+    f.shell->on_chrome_event(json{{"type", "menu_select"}, {"index", index}});
+    f.frame();
+    CHECK(f.shell->dpad_links());
+    CHECK(f.dpad_saves == 1);
+    CHECK(f.dpad_saved);
+    CHECK(f.chrome.last["menu"]["items"][index]["label"] == "D-pad link navigation: On");
   }
 }
 
@@ -1285,10 +1381,11 @@ TEST_SUITE("shell.chrome_events") {
     f.make();
     f.press(Button::Options);
     f.frame();
-    // No Quit item any more: Diagnostics is last (after "Pop-up blocker").
-    REQUIRE(f.chrome.last["menu"]["items"].size() == 9);
-    CHECK(f.chrome.last["menu"]["items"][8]["label"] == "Diagnostics");
-    f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 8}});
+    // No Quit item any more: Diagnostics is last (after the pop-up blocker
+    // and the D-pad mode).
+    REQUIRE(f.chrome.last["menu"]["items"].size() == 10);
+    CHECK(f.chrome.last["menu"]["items"][9]["label"] == "Diagnostics");
+    f.shell->on_chrome_event({{"type", "menu_select"}, {"index", 9}});
     CHECK(f.shell->tabs().size() == 2);
     CHECK(f.active().called("load file:///data/prosperoweb/chrome/diag.html"));
     CHECK(f.shell->focus() == Focus::Page);

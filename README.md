@@ -19,7 +19,7 @@ It is early software (version 0.1.0): expect rough edges, and launch it only the
 ## Features
 
 - Tabs, address bar with URL/search normalisation, back/forward/reload, bookmarks and history, session restore.
-- DualSense: a virtual pointer on the left stick or the touchpad (trackpad-style: slide, tap, two-finger scroll, press and slide to drag), trusted clicks and scrolling, tab switching, menu; USB keyboard.
+- DualSense: a virtual pointer on the left stick or the touchpad (trackpad-style: slide, tap, two-finger scroll, press and slide to drag), trusted clicks and scrolling, tab switching, menu; USB keyboard. Optional D-pad link navigation (menu → "D-pad link navigation"): the D-pad moves the pointer to the nearest link, button or field in that direction and Cross clicks it; with nothing that way on screen it scrolls.
 - Text entry through the console's own keyboard dialog, pre-filled with the URL or the field's value; a built-in on-screen keyboard (Latin, Cyrillic, symbols) as the fallback.
 - HTML5 Fullscreen API and a chrome-hiding fullscreen mode.
 - HTML5 `<video>`/`<audio>` through an ffmpeg engine: Media Source Extensions (YouTube-style players; H.264 up to 1080p by default), progressive MP4/WebM and native HLS; software decoding (H.264, HEVC, VP8, VP9; AAC, MP3, Opus and others). Video is composed by the UI process under the page, audio is mixed and played by the UI process. Hardware decoding of 8-bit H.264 and HEVC with the console's `sceVideodec2` in the UI process, verified on the developer's console, with automatic fallback to software (`PROSPEROWEB_VIDEO_DECODE=webprocess` turns it off).
@@ -139,7 +139,7 @@ The keyboard stands in for a DualSense; an SDL2 game controller, if connected, w
 
 | Key | Button | Action in page mode |
 | --- | --- | --- |
-| Arrows | D-pad | Scroll |
+| Arrows | D-pad | Scroll, or jump between links (menu → "D-pad link navigation") |
 | Enter | Cross | Click at the pointer |
 | Escape | Circle | Back / leave fullscreen |
 | F1 | Triangle | Edit the address (system keyboard on the PS5, OSK on the host) |

@@ -192,6 +192,7 @@ int HostApp::run() {
   config.height = options_.height;
   config.home_url = options_.demo.empty() ? "https://duckduckgo.com/" : "about:blank";
   config.user_agent = options_.user_agent;
+  config.dpad_links = options_.dpad_links;
   config.language = options_.language;
   if (file_exists(chrome_dir + "/diag.html")) {
     gchar* diag = g_filename_to_uri((chrome_dir + "/diag.html").c_str(), nullptr, nullptr);

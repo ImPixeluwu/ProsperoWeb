@@ -50,6 +50,9 @@ Ps5Config Ps5Config::load(core::Storage& storage) {
   if (auto it = doc.find("natural_scroll"); it != doc.end() && it->is_boolean()) {
     cfg.natural_scroll = it->get<bool>();
   }
+  if (auto it = doc.find("dpad_links"); it != doc.end() && it->is_boolean()) {
+    cfg.dpad_links = it->get<bool>();
+  }
   cfg.addons = core::AddonsConfig::from_config_root(doc);
 
   return cfg;
@@ -77,6 +80,10 @@ bool Ps5Config::save_addons(core::Storage& storage, const core::AddonsConfig& ad
 
 bool Ps5Config::save_natural_scroll(core::Storage& storage, bool natural_scroll) {
   return update_config(storage, [&](nlohmann::json& doc) { doc["natural_scroll"] = natural_scroll; });
+}
+
+bool Ps5Config::save_dpad_links(core::Storage& storage, bool dpad_links) {
+  return update_config(storage, [&](nlohmann::json& doc) { doc["dpad_links"] = dpad_links; });
 }
 
 }  // namespace prosperoweb::frontend

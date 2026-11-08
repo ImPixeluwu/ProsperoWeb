@@ -139,6 +139,7 @@ ShellController::ShellController(EngineFactory& factory, ChromeUi& chrome, core:
   pointer_.set_position({config_.width / 2.0f, config_.height / 2.0f});
   addons_ = config_.addons;
   touchpad_.set_natural_scroll(config_.natural_scroll);
+  dpad_links_ = config_.dpad_links;
 }
 
 ShellController::~ShellController() {
@@ -497,6 +498,10 @@ void ShellController::on_script_message(std::uint64_t id, const std::string& tex
     }
     return;
   }
+  if (type == "spatial_targets") {
+    on_spatial_targets(id, msg);
+    return;
+  }
   if (type != "eme") {
     return;
   }
@@ -837,6 +842,57 @@ void ShellController::scroll_active(int dx, int dy) {
   view->scroll(static_cast<int>(p.x), static_cast<int>(p.y), dx, dy);
 }
 
+void ShellController::navigate_spatial(core::NavDirection dir) {
+  auto* view = active_view();
+  const auto id = tabs_.active_id();
+  if (!view || !id) {
+    return;
+  }
+  spatial_request_ = SpatialRequest{*id, dir};
+  view->run_javascript(core::spatial_targets_script(dir));
+}
+
+void ShellController::on_spatial_targets(std::uint64_t tab_id, const json& msg) {
+  const auto dir = core::direction_from_name(msg.value("dir", std::string()));
+  if (!spatial_request_ || spatial_request_->tab_id != tab_id || !dir ||
+      spatial_request_->dir != *dir || tabs_.active_id() != tab_id) {
+    return;  // stale: another press, tab or page since
+  }
+  spatial_request_.reset();
+
+  std::vector<core::NavRect> targets;
+  if (const auto it = msg.find("targets"); it != msg.end() && it->is_array()) {
+    for (const auto& t : *it) {
+      if (t.is_array() && t.size() == 4 && t[0].is_number() && t[1].is_number() &&
+          t[2].is_number() && t[3].is_number()) {
+        targets.push_back({t[0].get<float>(), t[1].get<float>(), t[2].get<float>(),
+                           t[3].get<float>()});
+      }
+    }
+  }
+  const auto pick = core::pick_spatial_target(to_view(pointer_.position()), *dir, targets);
+  if (!pick) {
+    // Nothing clickable that way on screen: scroll so the next press finds
+    // the elements that come into view.
+    const int step = static_cast<int>(static_cast<float>(config_.height - content_top()) *
+                                      kSpatialScrollFraction);
+    switch (*dir) {
+      case core::NavDirection::Up: scroll_active(0, -step); break;
+      case core::NavDirection::Down: scroll_active(0, step); break;
+      case core::NavDirection::Left: scroll_active(-step, 0); break;
+      case core::NavDirection::Right: scroll_active(step, 0); break;
+    }
+    return;
+  }
+  const core::NavRect& r = targets[*pick];
+  pointer_.set_position({r.x + r.width / 2.0f, r.y + r.height / 2.0f +
+                                                   static_cast<float>(content_top())});
+  pointer_hidden_by_mouse_ = false;
+  pointer_idle_seconds_ = 0.0f;
+  send_page_pointer_move();  // hover state on the new target
+  mark_dirty();
+}
+
 void ShellController::run_action(Action action) {
   if (action == Action::None) {
     return;
@@ -873,10 +929,22 @@ void ShellController::run_page_action(Action action) {
     case Action::Stop:
       if (view) view->stop();
       break;
-    case Action::ScrollUp: scroll_active(0, -kScrollStep); break;
-    case Action::ScrollDown: scroll_active(0, kScrollStep); break;
-    case Action::ScrollLeft: scroll_active(-kScrollStep, 0); break;
-    case Action::ScrollRight: scroll_active(kScrollStep, 0); break;
+    case Action::ScrollUp:
+      if (dpad_links_) navigate_spatial(core::NavDirection::Up);
+      else scroll_active(0, -kScrollStep);
+      break;
+    case Action::ScrollDown:
+      if (dpad_links_) navigate_spatial(core::NavDirection::Down);
+      else scroll_active(0, kScrollStep);
+      break;
+    case Action::ScrollLeft:
+      if (dpad_links_) navigate_spatial(core::NavDirection::Left);
+      else scroll_active(-kScrollStep, 0);
+      break;
+    case Action::ScrollRight:
+      if (dpad_links_) navigate_spatial(core::NavDirection::Right);
+      else scroll_active(kScrollStep, 0);
+      break;
     case Action::PageUp: scroll_active(0, -page); break;
     case Action::PageDown: scroll_active(0, page); break;
     case Action::FocusAddressBar: request_text_entry(OskTarget::Address); break;
@@ -1214,6 +1282,13 @@ void ShellController::show_menu_section(MenuSection section) {
                rebuild_menu_keeping(menu_selected_);
              }});
       }
+      menu_items_.push_back(
+          {ui_text(core::Text::MenuDpadLinks, {on_off(dpad_links_)}), "", [this] {
+             dpad_links_ = !dpad_links_;
+             spatial_request_.reset();
+             if (config_.on_dpad_links_changed) config_.on_dpad_links_changed(dpad_links_);
+             rebuild_menu_keeping(menu_selected_);
+           }});
       if (!config_.diagnostics_url.empty()) {
         menu_items_.push_back({ui_text(core::Text::MenuDiagnostics), "", [this] {
                                  close_menu();

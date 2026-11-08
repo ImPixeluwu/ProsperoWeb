@@ -35,6 +35,9 @@ struct Ps5Config {
   // Natural (content-follows-finger) touchpad scrolling; default false
   // (mouse-wheel direction, the previous behaviour).
   bool natural_scroll = false;
+  // D-pad link navigation (the D-pad jumps between clickable elements instead
+  // of scrolling); default false.
+  bool dpad_links = false;
   // Bundled add-ons (ad blocker, SponsorBlock); defaults when absent.
   core::AddonsConfig addons;
 
@@ -49,6 +52,10 @@ struct Ps5Config {
   // Writes the "natural_scroll" boolean into config.json, preserving every
   // other key. Returns false on write failure. Never throws.
   static bool save_natural_scroll(core::Storage& storage, bool natural_scroll);
+
+  // Writes the "dpad_links" boolean into config.json, preserving every other
+  // key. Returns false on write failure. Never throws.
+  static bool save_dpad_links(core::Storage& storage, bool dpad_links);
 };
 
 }  // namespace prosperoweb::frontend
