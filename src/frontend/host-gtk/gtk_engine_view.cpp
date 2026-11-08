@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "gtk_engine_view.h"
 
+#include <algorithm>
+
 #include <nlohmann/json.hpp>
 
 #include "prosperoweb/core/page_scripts.h"
@@ -11,6 +13,17 @@ namespace {
 
 std::string js_string(const std::string& s) {
   return nlohmann::json(s).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+// Every live view, for set_user_scripts().
+std::vector<GtkEngineView*>& all_views() {
+  static std::vector<GtkEngineView*> views;
+  return views;
+}
+
+std::vector<std::string>& user_scripts() {
+  static std::vector<std::string> sources;
+  return sources;
 }
 
 void add_user_script(WebKitUserContentManager* manager, const char* source) {
@@ -27,8 +40,8 @@ GtkEngineView::GtkEngineView(shell::EngineViewClient& client, WebKitNetworkSessi
                              GtkStack* stack)
     : client_(client), stack_(stack) {
   content_manager_ = webkit_user_content_manager_new();
-  add_user_script(content_manager_, core::kEmeDetectorScript);
-  add_user_script(content_manager_, core::kFocusReporterScript);
+  install_scripts();
+  all_views().push_back(this);
   webkit_user_content_manager_register_script_message_handler(content_manager_, "prosperoweb",
                                                               nullptr);
   g_signal_connect(content_manager_, "script-message-received::prosperoweb",
@@ -65,7 +78,25 @@ GtkEngineView::GtkEngineView(shell::EngineViewClient& client, WebKitNetworkSessi
   gtk_stack_add_child(stack_, GTK_WIDGET(view_));
 }
 
+void GtkEngineView::install_scripts() {
+  webkit_user_content_manager_remove_all_scripts(content_manager_);
+  add_user_script(content_manager_, core::kEmeDetectorScript);
+  add_user_script(content_manager_, core::kFocusReporterScript);
+  for (const auto& source : user_scripts()) {
+    add_user_script(content_manager_, source.c_str());
+  }
+}
+
+void GtkEngineView::set_user_scripts(std::vector<std::string> sources) {
+  user_scripts() = std::move(sources);
+  for (auto* view : all_views()) {
+    view->install_scripts();
+  }
+}
+
 GtkEngineView::~GtkEngineView() {
+  auto& views = all_views();
+  views.erase(std::remove(views.begin(), views.end(), this), views.end());
   g_signal_handlers_disconnect_by_data(webkit_web_view_get_back_forward_list(view_), this);
   g_signal_handlers_disconnect_by_data(view_, this);
   g_signal_handlers_disconnect_by_data(content_manager_, this);

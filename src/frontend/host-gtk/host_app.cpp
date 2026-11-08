@@ -112,6 +112,10 @@ std::unique_ptr<shell::EngineView> HostApp::create(shell::EngineViewClient& clie
   return std::make_unique<GtkEngineView>(client, session_, stack_);
 }
 
+void HostApp::set_user_scripts(std::vector<std::string> sources) {
+  GtkEngineView::set_user_scripts(std::move(sources));
+}
+
 // ---------------------------------------------------------------------------
 // Window
 
@@ -193,6 +197,7 @@ int HostApp::run() {
   config.home_url = options_.demo.empty() ? "https://duckduckgo.com/" : "about:blank";
   config.user_agent = options_.user_agent;
   config.dpad_links = options_.dpad_links;
+  config.user_scripts_backend = this;
   config.language = options_.language;
   if (file_exists(chrome_dir + "/diag.html")) {
     gchar* diag = g_filename_to_uri((chrome_dir + "/diag.html").c_str(), nullptr, nullptr);

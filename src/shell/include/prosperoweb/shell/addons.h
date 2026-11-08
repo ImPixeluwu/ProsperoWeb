@@ -36,4 +36,16 @@ class AddonsBackend {
   virtual bool filters_updating() const { return false; }
 };
 
+// Engine-side injection of the user's own scripts (core::UserscriptStore).
+// Separate from AddonsBackend so a frontend can offer user scripts without
+// the bundled add-ons.
+class UserScriptsBackend {
+ public:
+  virtual ~UserScriptsBackend() = default;
+  // Replaces the user scripts injected at document start into every frame of
+  // the content views; each source is core::userscript_wrapper() output and
+  // checks the page URL itself. Takes effect from the next navigation.
+  virtual void set_user_scripts(std::vector<std::string> sources) = 0;
+};
+
 }  // namespace prosperoweb::shell

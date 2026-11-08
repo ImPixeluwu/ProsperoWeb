@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <gtk/gtk.h>
 #include <webkit/webkit.h>
@@ -49,6 +50,10 @@ class GtkEngineView final : public shell::EngineView {
   WebKitWebView* web_view() const { return view_; }
   void grab_focus();
 
+  // Replaces the user scripts (core::userscript_wrapper() output) of every
+  // view, and of the views created later. Takes effect on the next load.
+  static void set_user_scripts(std::vector<std::string> sources);
+
  private:
   static void on_load_changed(WebKitWebView* view, WebKitLoadEvent event, gpointer self);
   static gboolean on_load_failed(WebKitWebView* view, WebKitLoadEvent event, const char* uri,
@@ -63,6 +68,8 @@ class GtkEngineView final : public shell::EngineView {
   static void on_script_message(WebKitUserContentManager* manager, JSCValue* value, gpointer self);
 
   void report_nav_state();
+  // The page scripts plus the current user scripts, on content_manager_.
+  void install_scripts();
 
   shell::EngineViewClient& client_;
   GtkStack* stack_;

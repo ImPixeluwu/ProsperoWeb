@@ -56,6 +56,21 @@ enum class Text : std::uint16_t {
   MenuZoomLevel,  // {0} = percentage, e.g. "125%"
   MenuZoomOut,
   MenuUserAgent,  // {0} = preset name
+  // User scripts
+  MenuUserscripts,
+  MenuUserscriptsActive,  // {0} = scripts that run on the current page
+  UserscriptsRemoveTitle,
+  UserscriptsNone,
+  UserscriptsHowTo,
+  UserscriptsItem,        // {0} = name and version, {1} = On / Off
+  UserscriptsRemoveMenu,
+  UserscriptsRemoveItem,  // {0} = name
+  UserscriptInstallTitle,
+  UserscriptUpdateTitle,
+  UserscriptRunsOn,       // {0} = sites
+  UserscriptTrustWarning,
+  UserscriptInstalledTitle,
+  UserscriptInstalledText,  // {0} = name
   MenuNoBookmarks,
   MenuHistoryEmpty,
   MenuBack,

@@ -33,6 +33,8 @@ installed under `/data/prosperoweb/`:
                         than 100%)
   user_agents.json      user-agent preset per host (core::SiteUserAgents; only
                         hosts not on Default)
+  userscripts.json      installed user scripts and their on/off state
+                        (core::UserscriptStore)
   cache/                network cache (WKWebsiteDataStore)
   storage/ localstorage/ indexeddb/   web storage (WKWebsiteDataStore)
   tmp/                  TMPDIR (created at startup)

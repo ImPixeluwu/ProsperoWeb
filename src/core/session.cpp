@@ -32,6 +32,12 @@ bool Session::load_user_agents(SiteUserAgents& user_agents) {
 bool Session::save_user_agents(const SiteUserAgents& user_agents) {
   return save(kUserAgentsKey, user_agents.to_json());
 }
+bool Session::load_userscripts(UserscriptStore& userscripts) {
+  return load(kUserscriptsKey, userscripts);
+}
+bool Session::save_userscripts(const UserscriptStore& userscripts) {
+  return save(kUserscriptsKey, userscripts.to_json());
+}
 
 bool Session::save_tabs(const TabManager& tabs) { return save(kTabsKey, tabs.to_json()); }
 bool Session::save_history(const History& history) {

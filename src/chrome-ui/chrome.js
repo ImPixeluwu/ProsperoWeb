@@ -192,7 +192,9 @@
     var titles = { main: t('menu.title', 'Menu'), bookmarks: t('menu.bookmarks', 'Bookmarks'),
                    history: t('menu.history', 'History'), adblock: t('menu.adblock', 'Ad blocker'),
                    sponsorblock: t('menu.sponsorblock', 'SponsorBlock'),
-                   popups: t('menu.popups', 'Pop-up blocker') };
+                   popups: t('menu.popups', 'Pop-up blocker'),
+                   userscripts: t('menu.userscripts', 'User scripts'),
+                   userscripts_remove: t('menu.userscripts_remove', 'Remove a user script') };
     setText($('menu-title'), titles[menu.section] || titles.main);
     var items = menu.items || [];
     var list = $('menu-items');
@@ -239,7 +241,7 @@
     setHidden($('notice-ok'), popup && !notice.can_open);
     setHidden($('notice-allow'), !popup);
     setText($('notice-cancel-label'), popup ? t('popup.dismiss', 'Dismiss') : t('chrome.cancel', 'Cancel'));
-    setHidden($('notice-cancel'), notice.kind !== 'drm' && !popup);
+    setHidden($('notice-cancel'), notice.kind !== 'drm' && notice.kind !== 'userscript' && !popup);
   }
 
   var OSK_SPECIAL = ['shift', 'layout', 'clear', 'left', 'space', 'right', 'backspace', 'enter'];

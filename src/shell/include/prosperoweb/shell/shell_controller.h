@@ -98,6 +98,9 @@ class ShellController {
     // Persists the add-ons state after a toggle (the frontend writes
     // config.json). Called with the new state.
     std::function<void(const core::AddonsConfig&)> on_addons_changed;
+    // Injects the enabled user scripts; nullptr: user scripts can still be
+    // installed and managed but do not run. Must outlive the controller.
+    UserScriptsBackend* user_scripts_backend = nullptr;
     // Natural (content-follows-finger) touchpad scrolling. Default false
     // (mouse-wheel direction). Applied to the touchpad model at startup.
     bool natural_scroll = false;
@@ -115,7 +118,7 @@ class ShellController {
   enum class Focus : std::uint8_t { Page, Chrome, Osk, Menu, Notice };
   enum class OskTarget : std::uint8_t { Address, Page };
   enum class MenuSection : std::uint8_t {
-    Main, Bookmarks, History, Adblock, SponsorBlock, Popups
+    Main, Bookmarks, History, Adblock, SponsorBlock, Popups, Userscripts, UserscriptsRemove
   };
 
   ShellController(EngineFactory& factory, ChromeUi& chrome, core::Storage& storage,
@@ -162,6 +165,7 @@ class ShellController {
   //   {type:'menu_open'} {type:'menu_select', index} {type:'menu_close'}
   //   {type:'notice_dismiss', proceed}
   //   {type:'notice_allow'}                 blocked pop-up: always allow on this site
+  //   {type:'notice_dismiss', proceed}    (a "userscript" notice installs on proceed)
   //   {type:'osk_key', row, col} {type:'osk_commit'} {type:'osk_cancel'}
   //   {type:'address_focus'} {type:'address_blur'}
   // event is a JSON object; a JSON string holding such an object is decoded
@@ -239,6 +243,8 @@ class ShellController {
   const core::AddonsConfig& addons() const { return addons_; }
   // Pop-ups the blocker refused since start-up.
   std::uint32_t blocked_popups() const { return blocked_popups_; }
+  // The installed user scripts (saved with the session).
+  const core::UserscriptStore& userscripts() const { return userscripts_; }
 
  private:
   class TabClient;
@@ -272,6 +278,12 @@ class ShellController {
     std::uint64_t tab_id = 0;
     std::string opener_url;
     std::string url;  // empty or about:blank when there is nothing to open
+  };
+
+  // The user script a "userscript" notice offers to install (Cross).
+  struct PendingInstall {
+    std::string source;
+    core::UserscriptMeta meta;
   };
 
   // The focused page field as reported by core::kFocusReporterScript
@@ -385,6 +397,13 @@ class ShellController {
   void build_popups_menu();
   // "Always allow" on a blocked pop-up's notice.
   void allow_pending_popup_site();
+  void build_userscripts_menu();
+  void build_userscripts_remove_menu();
+  // Saves the user scripts and hands the enabled ones to the backend.
+  void userscripts_changed();
+  void push_userscripts();
+  // {type:'userscript_source'} from core::userscript_source_script().
+  void on_userscript_source(std::uint64_t tab_id, const nlohmann::json& msg);
   void apply_addons();
   void persist_addons();
   // Rebuilds the current menu section but keeps the selection on `keep`.
@@ -431,6 +450,7 @@ class ShellController {
   core::AddonsConfig addons_;
   core::SiteZoom zoom_;
   core::SiteUserAgents user_agents_;
+  core::UserscriptStore userscripts_;
 
   std::map<std::uint64_t, TabEntry> entries_;
   std::optional<std::uint64_t> visible_tab_;
@@ -465,6 +485,7 @@ class ShellController {
     core::NavDirection dir = core::NavDirection::Down;
   };
   std::optional<SpatialRequest> spatial_request_;
+  std::optional<PendingInstall> pending_install_;
 
   // Held button for auto-repeat; held_in_osk_ selects osk_repeat_.
   std::optional<core::Button> held_button_;

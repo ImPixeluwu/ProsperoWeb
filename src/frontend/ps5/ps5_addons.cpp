@@ -498,6 +498,7 @@ std::vector<std::string> Ps5Addons::build_user_scripts() const {
     nlohmann::json sb = {{"enabled", true}, {"categories", cats}, {"api", "https://sponsor.ajay.app"}};
     scripts.push_back("window.__PROSPEROWEB_SB = " + sb.dump() + ";\n" + sponsorblock_js_);
   }
+  scripts.insert(scripts.end(), user_scripts_.begin(), user_scripts_.end());
   return scripts;
 }
 
@@ -533,6 +534,12 @@ void Ps5Addons::set_adblock(bool enabled, bool cookie_banners) {
 void Ps5Addons::set_sponsorblock(bool enabled, const std::vector<std::string>& categories) {
   cfg_.sponsorblock.enabled = enabled;
   cfg_.sponsorblock.categories = categories;
+  apply_user_scripts();
+}
+
+void Ps5Addons::set_user_scripts(std::vector<std::string> sources) {
+  user_scripts_ = std::move(sources);
+  log_printf("addons: %zu user script(s)", user_scripts_.size());
   apply_user_scripts();
 }
 
