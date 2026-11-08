@@ -76,6 +76,11 @@ newer name is also in the file is logged as ignored).
 }
 ```
 
+`language` picks the UI language and the language WebKit reports to pages
+(`Accept-Language`, `navigator.language`): `"en"`, `"es"` or `"ru"` (a tag such
+as `"es-MX"` also selects Spanish). The UI strings live in one table,
+`src/core/i18n.cpp`; a string with no translation shows its English text.
+
 `scripts/ps5/package.sh` assembles this directory as `dist/prosperoweb/`,
 plus `dist/homebrew/prosperoweb/` (`homebrew.js` + `sce_sys/icon0.png`) for
 `/data/homebrew/prosperoweb/`: websrv lists every `/data/homebrew/<name>/`
@@ -96,7 +101,7 @@ then overrides `SYSTEM_LANGUAGE` from `config.json`):
 | `FONTCONFIG_FILE` | `/data/prosperoweb/fonts/fonts.conf` | fontconfig (WebProcess) |
 | `FONTCONFIG_PATH` | `/data/prosperoweb/fonts` | fontconfig |
 | `PROSPEROWEB_CA_BUNDLE` | `/data/prosperoweb/cacert.pem` | curl SSL handle (NetworkProcess, patch 0004) |
-| `SYSTEM_LANGUAGE` | `en-US` / `ru-RU` from `config.json` `language` | WTF `platformUserPreferredLanguages` (patch 0006) |
+| `SYSTEM_LANGUAGE` | `en-US` / `es-ES` / `ru-RU` from `config.json` `language` | WTF `platformUserPreferredLanguages` (patch 0006) |
 | `TMPDIR` | `/data/prosperoweb/tmp` (created at startup) | temporary files |
 | `HOME` | `/data/prosperoweb` | home-relative defaults |
 

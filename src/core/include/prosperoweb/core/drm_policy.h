@@ -7,9 +7,9 @@
 #include <string_view>
 #include <vector>
 
-namespace prosperoweb::core {
+#include "prosperoweb/core/i18n.h"  // Language
 
-enum class Language : std::uint8_t { En, Ru };
+namespace prosperoweb::core {
 
 // The browser ships no CDM (Widevine, PlayReady, FairPlay). This policy
 // decides when to tell the user that protected playback cannot work.

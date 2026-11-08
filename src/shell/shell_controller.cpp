@@ -187,7 +187,32 @@ std::int64_t ShellController::now() const {
 }
 
 core::Language ShellController::language() const {
-  return config_.language == "ru" ? core::Language::Ru : core::Language::En;
+  return core::language_from_code(config_.language);
+}
+
+std::string ShellController::ui_text(core::Text text) const {
+  return std::string(core::tr(language(), text));
+}
+
+std::string ShellController::ui_text(core::Text text,
+                                     std::initializer_list<std::string_view> args) const {
+  return core::format_text(core::tr(language(), text), args);
+}
+
+std::string ShellController::on_off(bool on) const {
+  return ui_text(on ? core::Text::On : core::Text::Off);
+}
+
+std::string ShellController::osk_label(const OnScreenKeyboard::Key& key) const {
+  using Kind = OnScreenKeyboard::KeyKind;
+  switch (key.kind) {
+    case Kind::Shift: return ui_text(core::Text::KeyShift);
+    case Kind::Space: return ui_text(core::Text::KeySpace);
+    case Kind::Backspace: return ui_text(core::Text::KeyBackspace);
+    case Kind::Enter: return ui_text(core::Text::KeyEnter);
+    case Kind::Clear: return ui_text(core::Text::KeyClear);
+    default: return osk_.label(key);  // characters, arrows, layout names
+  }
 }
 
 void ShellController::set_viewport(int width, int height) {
@@ -230,9 +255,9 @@ EngineView* ShellController::active_view() {
 
 std::optional<std::uint64_t> ShellController::open_tab(const std::string& url, bool load_now) {
   if (tabs_.full()) {
-    show_notice({"error", "Tab limit reached",
-                 "Close a tab before opening a new one (at most " +
-                     std::to_string(core::TabManager::kMaxTabs) + " tabs)."});
+    show_notice({"error", ui_text(core::Text::TabLimitTitle),
+                 ui_text(core::Text::TabLimitText,
+                         {std::to_string(core::TabManager::kMaxTabs)})});
     return std::nullopt;
   }
   const auto id = tabs_.open(url);
@@ -357,9 +382,7 @@ void ShellController::load_in_tab(std::uint64_t id, const std::string& url) {
       drm_.should_notify(origin_of(url))) {
     pending_nav_ = PendingNavigation{id, url};
     tabs_.update_url(id, url);
-    show_notice({"drm",
-                 language() == core::Language::Ru ? "Защищённое видео не поддерживается"
-                                                  : "Protected video is not supported",
+    show_notice({"drm", ui_text(core::Text::DrmTitle),
                  std::string(core::DrmPolicy::notice_text(language()))});
     return;
   }
@@ -412,7 +435,7 @@ void ShellController::on_load_failed(std::uint64_t id, const std::string& url,
                                      const std::string& error) {
   tabs_.set_loading(id, false);
   if (tabs_.active_id() == id) {
-    show_notice({"error", "Could not load the page", url + "\n" + error});
+    show_notice({"error", ui_text(core::Text::LoadFailedTitle), url + "\n" + error});
   }
   mark_dirty();
 }
@@ -480,9 +503,7 @@ void ShellController::on_script_message(std::uint64_t id, const std::string& tex
   const std::string origin = msg.value("origin", std::string());
   const std::string key_system = msg.value("keySystem", std::string());
   if (drm_.record_eme_request(origin, key_system)) {
-    show_notice({"drm",
-                 language() == core::Language::Ru ? "Защищённое видео не поддерживается"
-                                                  : "Protected video is not supported",
+    show_notice({"drm", ui_text(core::Text::DrmTitle),
                  std::string(core::DrmPolicy::notice_text(language()))});
   }
 }
@@ -506,11 +527,11 @@ void ShellController::on_new_window(std::uint64_t id, const NewWindowRequest& re
   pending_popup_ = PendingPopup{id, opener_url, request.url};
 
   const std::string site = core::site_of_url(opener_url);
-  const std::string who = site.empty() ? std::string("This page") : site;
+  const std::string who = site.empty() ? ui_text(core::Text::PopupThisPage) : site;
   const bool blank = core::site_of_url(request.url).empty();
-  show_notice({"popup", "Pop-up blocked",
-               blank ? who + " tried to open a blank window."
-                     : who + " tried to open a new window:\n" + request.url});
+  show_notice({"popup", ui_text(core::Text::PopupBlockedTitle),
+               blank ? ui_text(core::Text::PopupBlockedBlank, {who})
+                     : ui_text(core::Text::PopupBlockedText, {who, request.url})});
 }
 
 void ShellController::on_text_input_focused(std::uint64_t id, bool focused) {
@@ -1001,13 +1022,12 @@ void ShellController::request_text_entry(OskTarget target) {
   if (text_request_) {
     return;
   }
-  const bool ru = language() == core::Language::Ru;
   TextInputRequest request;
   bool replace = false;
   if (target == OskTarget::Address) {
     const auto* tab = tabs_.active();
     request.kind = TextInputKind::Url;
-    request.title = ru ? "Адрес или поиск" : "Address or search";
+    request.title = ui_text(core::Text::InputAddress);
     request.initial = tab ? tab->url : std::string();
   } else {
     // A known field value is pre-filled and replaced on commit; without one
@@ -1015,7 +1035,7 @@ void ShellController::request_text_entry(OskTarget target) {
     // the caret, as typed.
     request.kind = focused_field_ ? text_input_kind_from_type(focused_field_->type)
                                   : TextInputKind::Text;
-    request.title = ru ? "Ввод текста" : "Enter text";
+    request.title = ui_text(core::Text::InputText);
     if (focused_field_ && focused_field_->value) {
       request.initial = *focused_field_->value;
       replace = true;
@@ -1146,41 +1166,47 @@ void ShellController::show_menu_section(MenuSection section) {
     case MenuSection::Main: {
       const auto* tab = tabs_.active();
       const bool bookmarked = tab && bookmarks_.contains(tab->url);
-      menu_items_.push_back({"Bookmarks", "", [this] { show_menu_section(MenuSection::Bookmarks); }});
-      menu_items_.push_back({"History", "", [this] { show_menu_section(MenuSection::History); }});
-      menu_items_.push_back({bookmarked ? "Remove bookmark" : "Add bookmark", "", [this] {
+      menu_items_.push_back({ui_text(core::Text::MenuBookmarks), "",
+                             [this] { show_menu_section(MenuSection::Bookmarks); }});
+      menu_items_.push_back({ui_text(core::Text::MenuHistory), "",
+                             [this] { show_menu_section(MenuSection::History); }});
+      menu_items_.push_back({ui_text(bookmarked ? core::Text::MenuRemoveBookmark
+                                                   : core::Text::MenuAddBookmark),
+                             "", [this] {
                                toggle_bookmark();
                                close_menu();
                              }});
-      menu_items_.push_back({"New tab", "", [this] {
+      menu_items_.push_back({ui_text(core::Text::MenuNewTab), "", [this] {
                                close_menu();
                                open_tab(config_.home_url, true);
                              }});
-      menu_items_.push_back({"Close tab", "", [this] {
+      menu_items_.push_back({ui_text(core::Text::MenuCloseTab), "", [this] {
                                close_menu();
                                if (const auto id = tabs_.active_id()) close_tab(*id);
                              }});
-      menu_items_.push_back({"Forward", "", [this] {
+      menu_items_.push_back({ui_text(core::Text::MenuForward), "", [this] {
                                close_menu();
                                if (auto* view = active_view()) view->go_forward();
                              }});
-      menu_items_.push_back({"Reload", "", [this] {
+      menu_items_.push_back({ui_text(core::Text::MenuReload), "", [this] {
                                close_menu();
                                if (auto* view = active_view()) view->reload();
                              }});
       if (config_.addons_backend) {
         // One coherent entry per add-on; each opens its own section.
         menu_items_.push_back(
-            {"Ad blocker", "", [this] { show_menu_section(MenuSection::Adblock); }});
+            {ui_text(core::Text::MenuAdblock), "",
+             [this] { show_menu_section(MenuSection::Adblock); }});
         menu_items_.push_back(
-            {"SponsorBlock", "", [this] { show_menu_section(MenuSection::SponsorBlock); }});
+            {ui_text(core::Text::MenuSponsorBlock), "",
+             [this] { show_menu_section(MenuSection::SponsorBlock); }});
       }
       // The pop-up blocker lives in the shell and needs no engine backend.
       menu_items_.push_back(
-          {"Pop-up blocker", "", [this] { show_menu_section(MenuSection::Popups); }});
+          {ui_text(core::Text::MenuPopups), "", [this] { show_menu_section(MenuSection::Popups); }});
       if (config_.on_natural_scroll_changed) {
         menu_items_.push_back(
-            {std::string("Natural scrolling: ") + (touchpad_.natural_scroll() ? "On" : "Off"), "",
+            {ui_text(core::Text::MenuNaturalScroll, {on_off(touchpad_.natural_scroll())}), "",
              [this] {
                const bool v = !touchpad_.natural_scroll();
                touchpad_.set_natural_scroll(v);
@@ -1189,7 +1215,7 @@ void ShellController::show_menu_section(MenuSection section) {
              }});
       }
       if (!config_.diagnostics_url.empty()) {
-        menu_items_.push_back({"Diagnostics", "", [this] {
+        menu_items_.push_back({ui_text(core::Text::MenuDiagnostics), "", [this] {
                                  close_menu();
                                  open_tab(config_.diagnostics_url, true);
                                }});
@@ -1206,7 +1232,7 @@ void ShellController::show_menu_section(MenuSection section) {
         menu_items_.push_back({b.title.empty() ? b.url : b.title, b.url, load_url(b.url)});
       }
       if (menu_items_.empty()) {
-        menu_items_.push_back({"No bookmarks yet", "", [] {}});
+        menu_items_.push_back({ui_text(core::Text::MenuNoBookmarks), "", [] {}});
       }
       break;
     case MenuSection::History:
@@ -1214,7 +1240,7 @@ void ShellController::show_menu_section(MenuSection section) {
         menu_items_.push_back({h.title.empty() ? h.url : h.title, h.url, load_url(h.url)});
       }
       if (menu_items_.empty()) {
-        menu_items_.push_back({"History is empty", "", [] {}});
+        menu_items_.push_back({ui_text(core::Text::MenuHistoryEmpty), "", [] {}});
       }
       break;
     case MenuSection::Adblock:
@@ -1232,42 +1258,42 @@ void ShellController::show_menu_section(MenuSection section) {
 
 namespace {
 
-std::string format_last_updated(std::int64_t last, std::int64_t now) {
+std::string format_last_updated(core::Language lang, std::int64_t last, std::int64_t now) {
+  using core::Text;
   if (last <= 0) {
-    return "never";
+    return std::string(core::tr(lang, Text::AgoNever));
   }
   std::int64_t age = now - last;
   if (age < 0) {
     age = 0;
   }
   if (age < 120) {
-    return "just now";
+    return std::string(core::tr(lang, Text::AgoJustNow));
   }
   if (age < 3600) {
-    return std::to_string(age / 60) + " min ago";
+    return core::format_text(core::tr(lang, Text::AgoMinutes), {std::to_string(age / 60)});
   }
   if (age < 86400) {
-    return std::to_string(age / 3600) + " h ago";
+    return core::format_text(core::tr(lang, Text::AgoHours), {std::to_string(age / 3600)});
   }
-  return std::to_string(age / 86400) + " d ago";
+  return core::format_text(core::tr(lang, Text::AgoDays), {std::to_string(age / 86400)});
 }
 
 }  // namespace
 
 void ShellController::build_adblock_menu() {
   menu_items_.clear();
-  auto onoff = [](bool b) { return b ? "On" : "Off"; };
   auto& ab = addons_.adblock;
 
   menu_items_.push_back(
-      {std::string("Ad blocker (EasyList/EasyPrivacy): ") + onoff(ab.enabled), "", [this] {
+      {ui_text(core::Text::AdblockToggle, {on_off(ab.enabled)}), "", [this] {
          addons_.adblock.enabled = !addons_.adblock.enabled;
          apply_addons();
          persist_addons();
          rebuild_menu_keeping(menu_selected_);
        }});
   menu_items_.push_back(
-      {std::string("Block cookie banners (EasyList-Cookie): ") + onoff(ab.cookie_banners), "",
+      {ui_text(core::Text::AdblockCookies, {on_off(ab.cookie_banners)}), "",
        [this] {
          addons_.adblock.cookie_banners = !addons_.adblock.cookie_banners;
          apply_addons();
@@ -1275,13 +1301,13 @@ void ShellController::build_adblock_menu() {
          rebuild_menu_keeping(menu_selected_);
        }});
   menu_items_.push_back(
-      {std::string("Auto-update filter lists: ") + onoff(ab.auto_update), "", [this] {
+      {ui_text(core::Text::AdblockAutoUpdate, {on_off(ab.auto_update)}), "", [this] {
          addons_.adblock.auto_update = !addons_.adblock.auto_update;
          apply_addons();
          persist_addons();
          rebuild_menu_keeping(menu_selected_);
        }});
-  menu_items_.push_back({"Update filter lists now", "", [this] {
+  menu_items_.push_back({ui_text(core::Text::AdblockUpdateNow), "", [this] {
                            if (config_.addons_backend) {
                              config_.addons_backend->update_filters_now();
                            }
@@ -1293,18 +1319,19 @@ void ShellController::build_adblock_menu() {
       last = config_.addons_backend->filters_last_updated();
     }
     const bool updating = config_.addons_backend && config_.addons_backend->filters_updating();
-    const std::string when = updating ? std::string("updating...") : format_last_updated(last, now());
-    menu_items_.push_back({std::string("Filter lists updated: ") + when, "", [] {}});
+    const std::string when = updating ? ui_text(core::Text::AdblockUpdating)
+                                      : format_last_updated(language(), last, now());
+    menu_items_.push_back({ui_text(core::Text::AdblockUpdated, {when}), "", [] {}});
   }
-  menu_items_.push_back({"Back", "", [this] { show_menu_section(MenuSection::Main); }});
+  menu_items_.push_back(
+      {ui_text(core::Text::MenuBack), "", [this] { show_menu_section(MenuSection::Main); }});
 }
 
 void ShellController::build_sponsorblock_menu() {
   menu_items_.clear();
-  auto onoff = [](bool b) { return b ? "On" : "Off"; };
   auto& sb = addons_.sponsorblock;
 
-  menu_items_.push_back({std::string("SponsorBlock: ") + onoff(sb.enabled), "", [this] {
+  menu_items_.push_back({ui_text(core::Text::SponsorBlockToggle, {on_off(sb.enabled)}), "", [this] {
                            addons_.sponsorblock.enabled = !addons_.sponsorblock.enabled;
                            apply_addons();
                            persist_addons();
@@ -1313,7 +1340,7 @@ void ShellController::build_sponsorblock_menu() {
   for (const auto& cat : core::AddonsConfig::all_sponsorblock_categories()) {
     const bool on = std::find(sb.categories.begin(), sb.categories.end(), cat) != sb.categories.end();
     menu_items_.push_back(
-        {std::string("  ") + cat + ": " + onoff(on), "", [this, cat] {
+        {std::string("  ") + cat + ": " + on_off(on), "", [this, cat] {
            auto& cats = addons_.sponsorblock.categories;
            auto it = std::find(cats.begin(), cats.end(), cat);
            if (it != cats.end()) {
@@ -1326,7 +1353,8 @@ void ShellController::build_sponsorblock_menu() {
            rebuild_menu_keeping(menu_selected_);
          }});
   }
-  menu_items_.push_back({"Back", "", [this] { show_menu_section(MenuSection::Main); }});
+  menu_items_.push_back(
+      {ui_text(core::Text::MenuBack), "", [this] { show_menu_section(MenuSection::Main); }});
 }
 
 void ShellController::build_popups_menu() {
@@ -1334,19 +1362,19 @@ void ShellController::build_popups_menu() {
   auto& pp = addons_.popups;
 
   menu_items_.push_back(
-      {std::string("Block pop-ups: ") + (pp.enabled ? "On" : "Off"), "", [this] {
+      {ui_text(core::Text::PopupToggle, {on_off(pp.enabled)}), "", [this] {
          addons_.popups.enabled = !addons_.popups.enabled;
          persist_addons();
          rebuild_menu_keeping(menu_selected_);
        }});
   menu_items_.push_back(
-      {"Blocked since start: " + std::to_string(blocked_popups_), "", [] {}});
+      {ui_text(core::Text::PopupBlockedCount, {std::to_string(blocked_popups_)}), "", [] {}});
   if (pp.allowed_sites.empty()) {
-    menu_items_.push_back({"No sites allowed to open pop-ups", "", [] {}});
+    menu_items_.push_back({ui_text(core::Text::PopupNoSites), "", [] {}});
   }
   for (const auto& site : pp.allowed_sites) {
     // Selecting an allowed site removes it from the list.
-    menu_items_.push_back({"Allowed: " + site + " (select to remove)", "", [this, site] {
+    menu_items_.push_back({ui_text(core::Text::PopupAllowedSite, {site}), "", [this, site] {
                              auto& sites = addons_.popups.allowed_sites;
                              sites.erase(std::remove(sites.begin(), sites.end(), site),
                                          sites.end());
@@ -1354,7 +1382,8 @@ void ShellController::build_popups_menu() {
                              rebuild_menu_keeping(menu_selected_);
                            }});
   }
-  menu_items_.push_back({"Back", "", [this] { show_menu_section(MenuSection::Main); }});
+  menu_items_.push_back(
+      {ui_text(core::Text::MenuBack), "", [this] { show_menu_section(MenuSection::Main); }});
 }
 
 void ShellController::apply_addons() {
@@ -1505,6 +1534,7 @@ void ShellController::on_chrome_event(const json& event) {
   };
 
   if (type == "ready") {
+    chrome_strings_pending_ = true;  // a (re)loaded chrome has no strings yet
     mark_dirty();
   } else if (type == "navigate") {
     close_osk();
@@ -1554,7 +1584,19 @@ void ShellController::on_chrome_event(const json& event) {
 
 void ShellController::render_now() {
   dirty_ = false;
-  chrome_.render(chrome_state());
+  json state = chrome_state();
+  if (chrome_strings_pending_) {
+    // Sent once, not on every render: the chrome keeps them until it reloads.
+    json strings = json::object();
+    for (std::size_t i = 0; i < static_cast<std::size_t>(core::Text::Count); ++i) {
+      const auto text = static_cast<core::Text>(i);
+      strings[std::string(core::text_id(text))] = std::string(core::tr(language(), text));
+    }
+    state["strings"] = std::move(strings);
+    state["lang"] = std::string(core::language_code(language()));
+    chrome_strings_pending_ = false;
+  }
+  chrome_.render(state);
   // The state carries the pointer: no separate ChromeUi::pointer() for it.
   const core::Vec2 p = pointer_.position();
   chrome_pointer_ = ChromePointer{static_cast<int>(p.x), static_cast<int>(p.y), pointer_visible()};
@@ -1636,7 +1678,7 @@ json ShellController::chrome_state() const {
       json r = json::array();
       for (const auto& key : row) {
         const auto [code, width] = key_code_and_width(key);
-        r.push_back({{"label", osk_.label(key)},
+        r.push_back({{"label", osk_label(key)},
                      {"code", code ? std::string(code) : key.value},
                      {"width", width}});
       }

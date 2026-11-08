@@ -9,6 +9,12 @@ All notable changes to ProsperoWeb are documented here. The format follows
 ### Added
 
 - Pop-up blocker (on by default). Pages can no longer open tabs on their own: a new window opens only for a link or form the user activated, or for a script pop-up to the same site after a click. Anything else (timers, page-load pop-ups, the cross-site pop-unders of streaming sites) is blocked with a notice that offers to open it, to always allow the site, or to dismiss it; a page shows at most one such notice per load. Menu → Pop-up blocker turns it off and lists the allowed sites. Persisted in `config.json` (`addons.popups`).
+- Spanish user interface (`"language": "es"` in `config.json`, `--lang es` on the host): menus, notices, the address bar, the title of the console's keyboard dialog (the keyboard itself follows the system language), the built-in on-screen keyboard used as its fallback and on the host, and the PS5 start-up screens. Pages also get `es-ES` as the preferred language.
+
+### Changed
+
+- All UI strings come from one table (`src/core/i18n.cpp`, `core::tr`), shared by the shell, the HTML chrome (sent once as `strings` in the chrome state), the on-screen keyboard and the PS5 splash screens. English is the fallback, so a language can be added before every string is translated. The menus and most notices were English-only before; Russian keeps its existing translations and falls back to English for the rest.
+- The host frontend picks Spanish from `$LANG` too.
 
 ## v0.2.1 - 2026-11-02
 

@@ -27,7 +27,7 @@ It is early software (version 0.1.0): expect rough edges, and launch it only the
 - **Pop-up blocker** (on by default; menu → Pop-up blocker): new windows open only for links and forms the user activated, or for a same-site script pop-up after a click. Other pop-ups, including cross-site pop-unders opened on a click, are blocked with a notice offering Open, Always allow (per site) or Dismiss.
 - Bundled fonts with Latin, Cyrillic, CJK and colour emoji coverage (Noto, Noto CJK, Noto Color Emoji, Liberation, DejaVu).
 - JavaScript JIT (baseline + DFG; FTL off) and WebAssembly, ~1.7x faster than the interpreter on a micro-benchmark; `config.json` `"env"` can turn them off ([docs/ps5-runtime.md](docs/ps5-runtime.md#javascript-jit-and-webassembly)).
-- English and Russian UI.
+- English and Spanish UI; Russian for the notices and the keyboard dialog titles (the rest falls back to English). `config.json` `"language"`: `"en"`, `"es"` or `"ru"`.
 - DRM notice: known DRM-only sites and pages that request EME get a clear message instead of a broken player.
 - Add-ons: a built-in ad blocker (native WebKit content rule list from EasyList, EasyPrivacy, Peter Lowe and uBlock Origin lists, plus a YouTube page/pre-roll script) and SponsorBlock (skips YouTube sponsor segments), toggled from the menu. These are independent implementations using the public lists and API, not the uBlock Origin or SponsorBlock extensions.
 

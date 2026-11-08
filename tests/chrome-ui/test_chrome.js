@@ -285,6 +285,22 @@ check($('notice-ok').hidden === false && $('notice-ok-label').textContent === 'O
 events.length = 0;
 $('notice-allow').click();
 check(events.length === 1 && events[0].type === 'notice_allow', 'Always allow sends notice_allow');
+// UI strings: applied once, kept across later renders without "strings".
+const es = state();
+es.lang = 'es';
+es.strings = { 'chrome.select': 'Seleccionar', 'chrome.search_placeholder': 'Busca o escribe una dirección',
+               'menu.title': 'Menú', 'chrome.new_tab': 'Nueva pestaña', 'chrome.ok': 'Aceptar' };
+chrome.render(es);
+check($('hint-select').textContent === 'Seleccionar', 'static texts are translated');
+check($('address').placeholder === 'Busca o escribe una dirección', 'placeholder is translated');
+check($('tab-new').title === 'Nueva pestaña', 'static titles are translated');
+check(document.documentElement.lang === 'es', 'document language follows the UI language');
+check($('osk-hint-done').textContent === 'Done', 'a missing key keeps the English text');
+const esMenu = state();
+esMenu.menu = { open: true, section: 'main', items: [{ label: 'Marcadores', url: '', selected: true }] };
+chrome.render(esMenu);
+check($('menu-title').textContent === 'Menú', 'menu title uses the strings sent earlier');
+check($('notice-ok-label').textContent === 'Aceptar', 'notice button label is translated');
 
 console.log(checks + ' checks, ' + failures + ' failures');
 process.exit(failures ? 1 : 0);

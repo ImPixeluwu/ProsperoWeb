@@ -22,7 +22,7 @@ inline constexpr const char* kDefaultUserAgent =
 struct Ps5Config {
   std::string home_url = "https://duckduckgo.com/";
   std::string user_agent = kDefaultUserAgent;
-  std::string language = "en";  // "en" or "ru"
+  std::string language = "en";  // "en", "ru" or "es" (core::language_from_code)
   // Directory where chrome.html and its assets are installed, as the
   // WebProcess sees it. PROSPEROWEB_CHROME_DIR (the native title's
   // <title>/data/chrome) replaces the default.

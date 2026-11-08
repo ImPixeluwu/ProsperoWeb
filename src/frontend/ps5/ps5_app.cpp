@@ -19,6 +19,7 @@
 
 #include "compose.h"
 #include "prosperoweb/core/gamepad.h"
+#include "prosperoweb/core/i18n.h"
 #include "prosperoweb/core/page_scripts.h"
 #include "ps5_diagnostics.h"
 #include "ps5_hwdec.h"
@@ -425,8 +426,11 @@ void Ps5App::draw_splash() {
   std::string error;
   const int title_px = std::max(24, surface->h * 96 / 1080);
   const int subtitle_px = std::max(12, surface->h * 30 / 1080);
-  const bool text = render_splash_text(font, "ProsperoWeb", title_px, splash_title_, error) &&
-                    render_splash_text(font, "Loading…", subtitle_px, splash_subtitle_, error);
+  const auto lang = core::language_from_code(config_.language);
+  const bool text =
+      render_splash_text(font, "ProsperoWeb", title_px, splash_title_, error) &&
+      render_splash_text(font, std::string(core::tr(lang, core::Text::SplashLoading)), subtitle_px,
+                         splash_subtitle_, error);
   if (!text) {
     splash_title_ = {};
     splash_subtitle_ = {};
@@ -548,19 +552,16 @@ void Ps5App::render_loader_missing(SDL_Surface* surface) {
   const int small_px = std::max(11, surface->h * 22 / 1080);
   std::string error;
   display::GrayImage l1, l2, l3, l4;
+  const auto lang = core::language_from_code(config_.language);
+  auto text = [lang](core::Text t) { return std::string(core::tr(lang, t)); };
   if (state == 2) {
-    render_splash_text(font, "ProsperoWeb started its loader but could not connect.", head_px, l1,
-                       error);
-    render_splash_text(font, "Waiting for the spawn broker on 127.0.0.1:17771 to answer.",
-                       body_px, l2, error);
-    render_splash_text(font, "Still trying — it should start on its own in a moment.", body_px, l3,
-                       error);
+    render_splash_text(font, text(core::Text::LoaderNoConnect1), head_px, l1, error);
+    render_splash_text(font, text(core::Text::LoaderNoConnect2), body_px, l2, error);
+    render_splash_text(font, text(core::Text::LoaderNoConnect3), body_px, l3, error);
   } else {
-    render_splash_text(font, "ProsperoWeb could not reach an ELF loader.", head_px, l1, error);
-    render_splash_text(font, "It needs a loader on 127.0.0.1:9021 to start its web engine.",
-                       body_px, l2, error);
-    render_splash_text(font, "Start etaHEN or elfldr — it will continue on its own, no relaunch.",
-                       body_px, l3, error);
+    render_splash_text(font, text(core::Text::LoaderMissing1), head_px, l1, error);
+    render_splash_text(font, text(core::Text::LoaderMissing2), body_px, l2, error);
+    render_splash_text(font, text(core::Text::LoaderMissing3), body_px, l3, error);
   }
   if (!detail.empty()) {
     render_splash_text(font, detail, small_px, l4, error);

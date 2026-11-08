@@ -33,9 +33,11 @@ struct Fixture {
   core::AddonsConfig addons;             // initial add-ons state
   int addons_saves = 0;                  // on_addons_changed calls
   core::AddonsConfig saved_addons;       // last state passed to it
+  std::string language = "en";
 
   void make(bool start = true) {
     ShellController::Config config;
+    config.language = language;
     config.addons = addons;
     config.on_addons_changed = [this](const core::AddonsConfig& a) {
       ++addons_saves;
@@ -355,6 +357,82 @@ TEST_SUITE("shell.popups") {
     f.frame();
     CHECK(f.chrome.last["menu"]["items"][0]["label"] == "Block pop-ups: Off");
     CHECK_FALSE(f.saved_addons.popups.enabled);
+  }
+}
+
+TEST_SUITE("shell.i18n") {
+  TEST_CASE("the first render carries the UI strings, later renders do not") {
+    Fixture f;
+    f.language = "es";
+    f.make();
+    f.frame();
+    REQUIRE(f.chrome.last.contains("strings"));
+    CHECK(f.chrome.last["lang"] == "es");
+    CHECK(f.chrome.last["strings"]["menu.bookmarks"] == "Marcadores");
+    CHECK(f.chrome.last["strings"]["chrome.search_placeholder"] ==
+          "Busca o escribe una dirección");
+
+    f.press(Button::Options);
+    f.frame();
+    CHECK_FALSE(f.chrome.last.contains("strings"));
+
+    f.shell->on_chrome_event(json{{"type", "ready"}});  // the chrome reloaded
+    f.frame();
+    CHECK(f.chrome.last.contains("strings"));
+  }
+
+  TEST_CASE("menus and notices follow the configured language") {
+    Fixture f;
+    f.language = "es-MX";
+    f.make();
+    f.press(Button::Options);
+    f.frame();
+    CHECK(f.chrome.last["menu"]["items"][0]["label"] == "Marcadores");
+    CHECK(f.chrome.last["menu"]["items"][1]["label"] == "Historial");
+    f.press(Button::Circle);  // close the menu
+
+    for (std::size_t i = 1; i < core::TabManager::kMaxTabs; ++i) {
+      f.shell->on_chrome_event({{"type", "tab_new"}});
+    }
+    f.shell->on_chrome_event({{"type", "tab_new"}});
+    f.frame();
+    CHECK(f.chrome.last["notice"]["title"] == "Límite de pestañas alcanzado");
+    CHECK(f.chrome.last["notice"]["text"] ==
+          "Cierra una pestaña antes de abrir otra (como máximo " +
+              std::to_string(core::TabManager::kMaxTabs) + " pestañas).");
+  }
+
+  TEST_CASE("the on-screen keyboard's special keys are translated") {
+    Fixture f;
+    f.language = "es";
+    f.make();
+    f.press(Button::Triangle);
+    f.frame();
+    REQUIRE(f.shell->focus() == Focus::Osk);
+    bool space = false;
+    bool english = false;
+    for (const auto& row : f.chrome.last["osk"]["rows"]) {
+      for (const auto& key : row) {
+        space = space || key["label"] == "Espacio";
+        english = english || key["label"] == "Space";
+      }
+    }
+    CHECK(space);
+    CHECK_FALSE(english);
+  }
+
+  TEST_CASE("English stays the default and the fallback") {
+    Fixture f;
+    f.make();
+    f.frame();
+    CHECK(f.chrome.last["lang"] == "en");
+    CHECK(f.chrome.last["strings"]["menu.bookmarks"] == "Bookmarks");
+    Fixture ru;
+    ru.language = "ru";
+    ru.make();
+    ru.frame();
+    CHECK(ru.chrome.last["strings"]["input.address"] == "Адрес или поиск");
+    CHECK(ru.chrome.last["strings"]["menu.bookmarks"] == "Bookmarks");  // not translated yet
   }
 }
 

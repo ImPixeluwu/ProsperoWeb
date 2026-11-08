@@ -46,7 +46,7 @@
 
   function tabLabel(tab) {
     if (tab.title) return tab.title;
-    if (!tab.url || tab.url === 'about:blank') return 'New tab';
+    if (!tab.url || tab.url === 'about:blank') return t('chrome.new_tab', 'New tab');
     return hostOf(tab.url);
   }
 
@@ -56,6 +56,44 @@
   // instead of rebuilding it: an element whose state did not change is never
   // recreated or written to. Recreating the tab spinners restarted their CSS
   // animation on every render, which froze them while the pointer moved.
+
+  // ---- UI strings --------------------------------------------------------
+  // The shell sends every UI string once ("strings", keyed by core::text_id)
+  // after the chrome loads; until then, and for missing keys, English is used.
+  var strings = {};
+  function t(id, english) {
+    return Object.prototype.hasOwnProperty.call(strings, id) ? strings[id] : english;
+  }
+  // Static texts of chrome.html: [element id, string id, English].
+  var STATIC_TEXTS = [
+    ['hint-select', 'chrome.select', 'Select'],
+    ['hint-back', 'menu.back', 'Back'],
+    ['notice-ok-label', 'chrome.ok', 'OK'],
+    ['notice-cancel-label', 'chrome.cancel', 'Cancel'],
+    ['notice-allow-label', 'popup.always_allow', 'Always allow'],
+    ['osk-hint-key', 'osk.hint_key', 'Key'],
+    ['osk-hint-caret', 'osk.hint_caret', 'Caret'],
+    ['osk-hint-delete', 'osk.hint_delete', 'Delete (hold to repeat)'],
+    ['osk-hint-space', 'key.space', 'Space'],
+    ['osk-hint-shift', 'osk.hint_shift', 'Shift'],
+    ['osk-hint-layout', 'osk.hint_layout', 'Layout'],
+    ['osk-hint-done', 'osk.hint_done', 'Done'],
+    ['osk-hint-cancel', 'chrome.cancel', 'Cancel']
+  ];
+  var STATIC_TITLES = [
+    ['tab-new', 'chrome.new_tab', 'New tab'],
+    ['nav-back', 'chrome.back_hint', 'Back (Circle)'],
+    ['nav-fwd', 'chrome.forward', 'Forward'],
+    ['menu-btn', 'chrome.menu_hint', 'Menu (Options)']
+  ];
+  function applyStrings(map, lang) {
+    strings = map || {};
+    STATIC_TEXTS.forEach(function (e) { setText($(e[0]), t(e[1], e[2])); });
+    STATIC_TITLES.forEach(function (e) { setTitle($(e[0]), t(e[1], e[2])); });
+    $('address').placeholder = t('chrome.search_placeholder', 'Search or enter address');
+    if (lang) document.documentElement.lang = lang;
+    menuKey = null;  // rebuild the menu with the new section title
+  }
 
   function setText(node, text) {
     if (node.textContent !== text) node.textContent = text;
@@ -83,7 +121,7 @@
     var entry = { node: node, title: el('span', 'tab-title'), spinner: null };
     node.appendChild(entry.title);
     var close = el('button', 'tab-close', '✕');
-    close.title = 'Close tab';
+    close.title = t('chrome.close_tab', 'Close tab');
     close.addEventListener('click', function (ev) {
       ev.stopPropagation();
       send({ type: 'tab_close', id: id });
@@ -125,7 +163,8 @@
     $('nav-back').classList.toggle('disabled', !nav.back);
     $('nav-fwd').classList.toggle('disabled', !nav.fwd);
     setText($('nav-reload'), nav.loading ? '✕' : '↻');
-    setTitle($('nav-reload'), nav.loading ? 'Stop' : 'Reload (Create)');
+    setTitle($('nav-reload'), nav.loading ? t('chrome.stop', 'Stop')
+                                          : t('chrome.reload_hint', 'Reload (Create)'));
     setHidden($('spinner'), !nav.loading);
 
     var address = state.address || {};
@@ -150,10 +189,11 @@
       menuKey = null;
       return;
     }
-    var titles = { main: 'Menu', bookmarks: 'Bookmarks', history: 'History',
-                   adblock: 'Ad blocker', sponsorblock: 'SponsorBlock',
-                   popups: 'Pop-up blocker' };
-    setText($('menu-title'), titles[menu.section] || 'Menu');
+    var titles = { main: t('menu.title', 'Menu'), bookmarks: t('menu.bookmarks', 'Bookmarks'),
+                   history: t('menu.history', 'History'), adblock: t('menu.adblock', 'Ad blocker'),
+                   sponsorblock: t('menu.sponsorblock', 'SponsorBlock'),
+                   popups: t('menu.popups', 'Pop-up blocker') };
+    setText($('menu-title'), titles[menu.section] || titles.main);
     var items = menu.items || [];
     var list = $('menu-items');
     var key = JSON.stringify([menu.section, items.map(function (item) {
@@ -195,10 +235,10 @@
     // A blocked pop-up: Cross opens it (hidden when there is nothing to
     // open), Triangle always allows the site, Circle dismisses.
     var popup = notice.kind === 'popup';
-    setText($('notice-ok-label'), popup ? 'Open' : 'OK');
+    setText($('notice-ok-label'), popup ? t('popup.open', 'Open') : t('chrome.ok', 'OK'));
     setHidden($('notice-ok'), popup && !notice.can_open);
     setHidden($('notice-allow'), !popup);
-    setText($('notice-cancel-label'), popup ? 'Dismiss' : 'Cancel');
+    setText($('notice-cancel-label'), popup ? t('popup.dismiss', 'Dismiss') : t('chrome.cancel', 'Cancel'));
     setHidden($('notice-cancel'), notice.kind !== 'drm' && !popup);
   }
 
@@ -243,7 +283,8 @@
       oskTextKey = null;
       return;
     }
-    setText($('osk-target'), osk.target === 'address' ? 'Address' : 'Text field');
+    setText($('osk-target'), osk.target === 'address' ? t('osk.target_address', 'Address')
+                                                      : t('osk.target_text', 'Text field'));
     // Redrawn only when it changed: redrawing restarts the caret blink.
     var textKey = JSON.stringify([osk.text || '', osk.caret_index]);
     if (textKey !== oskTextKey) {
@@ -261,7 +302,7 @@
         row.forEach(function (key, c) {
           var label = key.label;
           if (key.code === 'backspace') label = '⌫';
-          if (key.code === 'enter') label = 'Go';
+          if (key.code === 'enter') label = t('key.go', 'Go');
           if (key.code === 'shift') label = '⇧';
           var b = el('button', 'osk-key', label);
           b.style.flexGrow = String(key.width || 1);
@@ -310,6 +351,7 @@
 
   function render(state) {
     if (typeof state === 'string') state = JSON.parse(state);
+    if (state.strings) applyStrings(state.strings, state.lang);
     lastState = state;
     var content = state.content || {};
     var band = state.chrome_visible ? (content.y || 96) : 0;
