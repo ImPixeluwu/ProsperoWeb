@@ -13,6 +13,7 @@ add_library(prosperoweb_core STATIC
   on_screen_keyboard.cpp
   pointer_model.cpp
   popup_policy.cpp
+  remote_command.cpp
   repeat_timer.cpp
   session.cpp
   spatial_nav.cpp

@@ -26,6 +26,9 @@ void usage(const char* argv0) {
       "  --user-agent UA       override the user agent\n"
       "  --dpad-links          the D-pad jumps between links instead of scrolling\n"
       "  --chrome-dir DIR      directory with chrome.html\n"
+      "  --remote-port N       phone remote control port (default 17780)\n"
+      "  --remote              switch the phone remote control on at start; prints\n"
+      "                        its URL and PIN\n"
       "  --input LIST          press gamepad buttons after start, comma separated\n"
       "                        (cross,circle,square,triangle,l1,r1,l2,r2,l3,r3,up,down,\n"
       "                        left,right,options,share,touchpad,wait, or pointer:XxY\n"
@@ -86,6 +89,10 @@ int main(int argc, char** argv) {
       opt.user_agent = value("--user-agent");
     } else if (arg == "--dpad-links") {
       opt.dpad_links = true;
+    } else if (arg == "--remote-port") {
+      opt.remote_port = std::atoi(value("--remote-port"));
+    } else if (arg == "--remote") {
+      opt.remote = true;
     } else if (arg == "--chrome-dir") {
       opt.chrome_dir = value("--chrome-dir");
     } else if (arg == "--input") {

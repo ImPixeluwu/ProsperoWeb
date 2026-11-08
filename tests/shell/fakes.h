@@ -11,6 +11,7 @@
 
 #include "prosperoweb/shell/chrome_ui.h"
 #include "prosperoweb/shell/engine_view.h"
+#include "prosperoweb/shell/remote.h"
 #include "prosperoweb/shell/text_input.h"
 
 namespace prosperoweb::shell::test {
@@ -154,6 +155,43 @@ class FakeTextInputProvider final : public TextInputProvider {
     }
   }
   Completion done_;
+};
+
+// A remote control without sockets; tests set `devices` to simulate phones
+// pairing and `fail` to make start() fail.
+class FakeRemoteControl final : public RemoteControl {
+ public:
+  std::optional<Info> start(std::string& error) override {
+    ++starts;
+    if (fail) {
+      error = "port in use";
+      return std::nullopt;
+    }
+    on = true;
+    pin = std::to_string(100000 + starts);
+    return info();
+  }
+  void stop() override {
+    on = false;
+    devices = 0;
+  }
+  bool running() const override { return on; }
+  std::optional<Info> info() const override {
+    if (!on) return std::nullopt;
+    return Info{"http://192.0.2.1:17780", pin};
+  }
+  std::size_t paired_devices() const override { return devices; }
+  void disconnect_all() override {
+    devices = 0;
+    ++disconnects;
+  }
+
+  bool on = false;
+  bool fail = false;
+  std::size_t devices = 0;
+  int starts = 0;
+  int disconnects = 0;
+  std::string pin;
 };
 
 }  // namespace prosperoweb::shell::test

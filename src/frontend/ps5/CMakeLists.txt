@@ -108,6 +108,7 @@ target_include_directories(prosperoweb_frontend_ps5_objs SYSTEM PRIVATE
   "${PROSPEROWEB_THIRD_PARTY_DIR}")
 # prosperoweb::core / ::shell provide the public headers the frontend consumes.
 target_link_libraries(prosperoweb_frontend_ps5_objs PRIVATE prosperoweb::core prosperoweb::shell
+  prosperoweb::remote
   prosperoweb::spawn_util prosperoweb::spawn_broker prosperoweb::audio_server  # prosperoweb/spawn/spawn.h (the broker role entry)
   prosperoweb::display prosperoweb::video_server prosperoweb::cpu)
 
@@ -116,6 +117,7 @@ target_link_libraries(prosperoweb_frontend_ps5_objs PRIVATE prosperoweb::core pr
 add_executable(prosperoweb EXCLUDE_FROM_ALL
   $<TARGET_OBJECTS:prosperoweb_frontend_ps5_objs>)
 target_link_libraries(prosperoweb PRIVATE
+  prosperoweb::remote
   prosperoweb::shell
   prosperoweb::core
   prosperoweb::spawn
@@ -178,7 +180,7 @@ if(PROSPEROWEB_NATIVE_TITLE_TARGET)
     "${SDL2_INCLUDE_DIRS}"
     "${PROSPEROWEB_THIRD_PARTY_DIR}")
   target_link_libraries(prosperoweb_frontend_ps5_native_objs PRIVATE prosperoweb::core
-    prosperoweb::shell prosperoweb::spawn_util prosperoweb::spawn_broker
+    prosperoweb::shell prosperoweb::remote prosperoweb::spawn_util prosperoweb::spawn_broker
     prosperoweb::audio_server prosperoweb::display prosperoweb::video_server prosperoweb::cpu)
 
   # What the payload crt and libc.a gave the payload (native/*.c).
@@ -227,6 +229,7 @@ if(PROSPEROWEB_NATIVE_TITLE_TARGET)
     $<TARGET_OBJECTS:prosperoweb_native_vendor>)
   add_dependencies(prosperoweb_native prosperoweb_libc_native prosperoweb_videodec2_stub)
   target_link_libraries(prosperoweb_native PRIVATE
+    prosperoweb::remote
     prosperoweb::shell
     prosperoweb::core
     prosperoweb::spawn

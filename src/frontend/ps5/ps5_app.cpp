@@ -379,6 +379,9 @@ int Ps5App::run() {
       log_line("input: failed to persist dpad_links");
     }
   };
+  // Listens on all interfaces, port 17780, only while switched on.
+  remote_ = std::make_unique<remote::RemoteService>();
+  cfg.remote_control = remote_.get();
   if (use_system_ime(config_.osk)) {
     ime_input_ = std::make_unique<Ps5ImeTextInput>();
     cfg.text_input = ime_input_.get();
@@ -737,6 +740,7 @@ void Ps5App::frame() {
   if (addons_) {
     addons_->pump();  // finish a background filter-list refresh, daily cadence
   }
+  remote_->pump(*controller_);  // commands from a paired phone
   controller_->tick(dt);
   composite_and_present();
   collect_and_log_stats(now);

@@ -13,6 +13,7 @@ add_executable(prosperoweb_core_tests
   test_on_screen_keyboard.cpp
   test_pointer_model.cpp
   test_popup_policy.cpp
+  test_remote_command.cpp
   test_touchpad_model.cpp
   test_repeat_timer.cpp
   test_session.cpp
@@ -31,7 +32,8 @@ target_include_directories(prosperoweb_core_tests SYSTEM PRIVATE "${PROSPEROWEB_
 foreach(suite IN ITEMS
     adblock addons_config sponsorblock filter_update
     bookmarks drm_policy fullscreen gamepad_mapper history i18n legacy_profile osk pointer_model popup_policy
-    repeat_timer session site_user_agents site_zoom spatial_nav tab_manager touchpad_model url_normalizer userscripts utf16)
+    remote_command repeat_timer session site_user_agents site_zoom spatial_nav tab_manager touchpad_model
+    url_normalizer userscripts utf16)
   add_test(NAME core.${suite}
            COMMAND prosperoweb_core_tests --test-suite=${suite} --no-version)
 endforeach()

@@ -102,6 +102,22 @@ constexpr Row kRows[] = {
      "{0} runs from the next page load. Menu > User scripts turns it off or removes it.", "",
      "{0} se ejecutará desde la próxima carga de página. Menú > Scripts de usuario lo desactiva "
      "o lo quita."},
+
+    {Text::MenuRemote, "menu.remote", "Remote control: {0}", "", "Control remoto: {0}"},
+    {Text::MenuRemoteShowPin, "menu.remote_show_pin", "Show remote PIN", "",
+     "Mostrar el PIN del control remoto"},
+    {Text::MenuRemoteDisconnect, "menu.remote_disconnect", "Disconnect phones", "",
+     "Desconectar dispositivos"},
+    {Text::RemoteTitle, "remote.title", "Remote control", "", "Control remoto"},
+    {Text::RemoteText, "remote.text",
+     "On a phone, tablet or computer on the same network, open\n{0}\nand enter the PIN "
+     "{1}\n\nThe connection is not encrypted: avoid typing passwords from the other device.",
+     "",
+     "En un móvil, tablet u ordenador de la misma red, abre\n{0}\ne introduce el PIN "
+     "{1}\n\nLa conexión no está cifrada: evita escribir contraseñas desde el otro "
+     "dispositivo."},
+    {Text::RemoteUnavailable, "remote.unavailable", "Remote control unavailable", "",
+     "Control remoto no disponible"},
     {Text::MenuNoBookmarks, "menu.no_bookmarks", "No bookmarks yet", "",
      "Todavía no hay marcadores"},
     {Text::MenuHistoryEmpty, "menu.history_empty", "History is empty", "",

@@ -206,8 +206,21 @@ int HostApp::run() {
       g_free(diag);
     }
   }
+  remote::RemoteService::Options remote_options;
+  remote_options.port = options_.remote_port;
+  remote_ = std::make_unique<remote::RemoteService>(remote_options);
+  config.remote_control = remote_.get();
   shell_ = std::make_unique<shell::ShellController>(*this, *this, *storage_, config);
   shell_->start();
+  if (options_.remote) {
+    std::string error;
+    if (const auto info = remote_->start(error)) {
+      std::printf("remote: %s PIN %s\n", info->url.c_str(), info->pin.c_str());
+    } else {
+      std::fprintf(stderr, "remote: %s\n", error.c_str());
+    }
+    std::fflush(stdout);
+  }
   build_chrome_view(chrome_dir);
   if (!options_.url.empty()) {
     shell_->navigate(options_.url);
@@ -419,6 +432,7 @@ gboolean HostApp::on_tick(gpointer self) {
     me->input_release_.reset();
   }
   me->update_key_sticks();
+  me->remote_->pump(*me->shell_);
   me->shell_->tick(dt);
   if (me->shell_->quit_requested()) {
     me->tick_source_ = 0;

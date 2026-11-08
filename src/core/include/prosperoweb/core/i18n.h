@@ -71,6 +71,13 @@ enum class Text : std::uint16_t {
   UserscriptTrustWarning,
   UserscriptInstalledTitle,
   UserscriptInstalledText,  // {0} = name
+  // Remote control
+  MenuRemote,           // {0} = On / Off
+  MenuRemoteShowPin,
+  MenuRemoteDisconnect,
+  RemoteTitle,
+  RemoteText,           // {0} = URL, {1} = PIN
+  RemoteUnavailable,
   MenuNoBookmarks,
   MenuHistoryEmpty,
   MenuBack,
