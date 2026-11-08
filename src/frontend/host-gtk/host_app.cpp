@@ -347,6 +347,10 @@ void HostApp::on_chrome_load_changed(WebKitWebView* /*view*/, WebKitLoadEvent ev
   if (event == WEBKIT_LOAD_FINISHED) {
     me->chrome_loaded_ = true;
     if (me->shell_) {
+      // As if the chrome had just said "ready": renders buffered before the
+      // load finished keep only the latest state, which may have lost the UI
+      // strings the shell sends once after the chrome's own "ready".
+      me->shell_->on_chrome_event({{"type", "ready"}});
       me->shell_->render_now();
     }
   }
